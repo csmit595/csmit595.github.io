@@ -5,6 +5,7 @@ import * as M from './model.js';
 import { sync } from './sync.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, isMobile } from './ui.js';
 import { openQuickAdd, openTask } from './tasks.js';
+import { ocr } from './ocr.js';
 
 const go = hash => { location.hash = hash; };
 let scope = { kind: 'all' }, query = '', sortBy = 'updated';
@@ -49,7 +50,7 @@ function scopeNotes() {
   if (scope.kind === 'tag') list = list.filter(n => (n.tags || []).includes(scope.id));
   if (query.trim()) {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    list = list.filter(n => { const hay = ((n.title || '') + ' ' + textOf(n) + ' ' + (n.tags || []).join(' ') + ' ' + (n.attachments || []).map(a => a.name).join(' ')).toLowerCase(); return words.every(w => hay.includes(w)); });
+    list = list.filter(n => { const hay = ((n.title || '') + ' ' + textOf(n) + ' ' + (n.tags || []).join(' ') + ' ' + (n.attachments || []).map(a => a.name).join(' ') + ocr.textFor(n)).toLowerCase(); return words.every(w => hay.includes(w)); });
   }
   const key = sortBy === 'title' ? (a, b) => (a.title || '').localeCompare(b.title || '') : sortBy === 'created' ? (a, b) => b.createdAt - a.createdAt : (a, b) => b.updatedAt - a.updatedAt;
   return list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || key(a, b));
@@ -84,7 +85,7 @@ function drawList(el, route) {
     !list.length && h('div', { class: 'empty' }, h('strong', null, query ? 'No notes match' : scope.kind === 'trash' ? 'Trash is empty' : 'No notes here yet'), h('p', null, query ? 'Try fewer words.' : scope.kind === 'trash' ? '' : 'Tap New note to start one.'))));
   if (hadFocus) { const s = el.querySelector('.nsearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
 }
-async function destroy(n) { for (const a of n.attachments || []) await store.delBlob(a.id).catch(() => {}); store.remove('notes', n.id); }
+async function destroy(n) { for (const a of n.attachments || []) { await store.delBlob(a.id).catch(() => {}); store.remove('ocr', a.id, { silent: true }); } store.remove('notes', n.id); }
 
 // ---- attachments -----------------------------------------------------------------
 const attHtml = a => (a.mime || '').startsWith('image/') ? `<img data-att="${a.id}" alt="${esc(a.name)}">`
@@ -148,8 +149,14 @@ function mountEditor(pane, id) {
     insert(atts.map(attHtml).join('') + '<div><br></div>');
     await hydrate(body, get().attachments, urls);
     save(true);
+    ocr.kick(1500);
     if (sync.connected()) sync.run();
   };
+  const linkNote = () => { keepSel(); pickNote(id, n => insert(`<a class="nlink" href="#/note/${n.id}">${esc(n.title || 'Untitled')}</a>&nbsp;`)); };
+  body.addEventListener('input', () => {
+    const s = getSelection(), node = s.anchorNode, off = s.anchorOffset;
+    if (node?.nodeType === 3 && off >= 2 && node.data.slice(off - 2, off) === '[[') { node.deleteData(off - 2, 2); linkNote(); }
+  });
   const fileIn = h('input', { type: 'file', multiple: true, hidden: true, onchange: () => { attach([...fileIn.files]); fileIn.value = ''; } });
   const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true, onchange: () => { attach([...camIn.files]); camIn.value = ''; } });
   let rec = null;
@@ -176,6 +183,7 @@ function mountEditor(pane, id) {
     tb('—', 'Divider', () => cmd('insertHorizontalRule')),
     tb('▦', 'Table', () => insert('<table><tbody>' + '<tr><td><br></td><td><br></td><td><br></td></tr>'.repeat(3) + '</tbody></table><div><br></div>')),
     tb(icon('link', 15), 'Link', async () => { keepSel(); const url = await promptDlg('Link address', 'https://'); if (url) { const sel = savedRange && !savedRange.collapsed; if (sel) cmd('createLink', url); else insert(`<a href="${esc(url)}">${esc(url)}</a>&nbsp;`); } }),
+    tb(icon('note', 15), 'Link to another note (or type [[ )', linkNote),
     h('span', { class: 'sep' }),
     tb(icon('clip', 15), 'Attach a file', () => { keepSel(); fileIn.click(); }), tb(icon('camera', 15), 'Take a photo', () => { keepSel(); camIn.click(); }), recBtn,
     h('span', { class: 'sep' }), tb('↶', 'Undo', () => cmd('undo')), tb('↷', 'Redo', () => cmd('redo')));
@@ -185,6 +193,7 @@ function mountEditor(pane, id) {
     const li = e.target.closest?.('ul.todo > li');
     if (li && e.target === li && e.offsetX < 26) { li.toggleAttribute('data-checked'); if (li.hasAttribute('data-checked')) li.setAttribute('data-checked', '1'); touch(); }
     const a = e.target.closest?.('a[href]');
+    if (a && (a.getAttribute('href') || '').startsWith('#/note/')) { e.preventDefault(); save(true); location.hash = a.getAttribute('href'); return; }
     if (a && !a.classList.contains('att') && (e.metaKey || e.ctrlKey || trashed || isMobile())) { e.preventDefault(); window.open(a.href, '_blank', 'noopener'); }
   });
   body.addEventListener('paste', e => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); keepSel(); attach(files); } });
@@ -203,7 +212,8 @@ function mountEditor(pane, id) {
   const tasksEl = h('div', { class: 'ntasks' });
   const refreshTasks = () => {
     const list = store.all('tasks').filter(t => t.noteId === id && !t.completedAt);
-    fill(tasksEl, list.length > 0 && h('h4', null, 'Tasks linked to this note'), list.map(t => h('div', { class: `task pri${t.priority || 4}` }, h('button', { class: 'check', 'aria-label': 'Complete', onclick: () => { M.completeTask(t.id); } }, icon('check', 13)), h('div', { class: 'tbody', onclick: () => openTask(t.id) }, h('div', { class: 'tcontent' }, t.content)))));
+    const back = liveBacklinks(id);
+    fill(tasksEl, back.length > 0 && h('h4', null, 'Notes that link here'), back.map(n => h('a', { class: 'rowlink', href: '#/note/' + n.id }, icon('note', 16), n.title || 'Untitled')), list.length > 0 && h('h4', null, 'Tasks linked to this note'), list.map(t => h('div', { class: `task pri${t.priority || 4}` }, h('button', { class: 'check', 'aria-label': 'Complete', onclick: () => { M.completeTask(t.id); } }, icon('check', 13)), h('div', { class: 'tbody', onclick: () => openTask(t.id) }, h('div', { class: 'tcontent' }, t.content)))));
   };
   refreshTasks();
   const more = e => { const n = get(); menu(e.currentTarget, trashed ? [
@@ -229,6 +239,25 @@ function mountEditor(pane, id) {
 window.addEventListener('pagehide', () => mounted?.save(true));
 document.addEventListener('visibilitychange', () => { if (document.hidden) { mounted?.save(true); store.flush(); } });
 
+const liveBacklinks = id => M.liveNotes().filter(n => n.id !== id && (n.body || '').includes(`#/note/${id}"`));
+function pickNote(selfId, onPick) {
+  modal(close => {
+    const input = h('input', { class: 'field', placeholder: 'Find a note by title', autofocus: true });
+    const list = h('div', { class: 'rows picker' });
+    const draw = () => {
+      const q = input.value.toLowerCase().trim();
+      const notes = M.liveNotes().filter(n => n.id !== selfId && (!q || (n.title || '').toLowerCase().includes(q))).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 30);
+      fill(list, notes.map(n => h('button', { class: 'rowlink', onclick: () => { close(); onPick(n); } }, icon('note', 16), h('span', { class: 'grow' }, n.title || 'Untitled', h('small', null, store.get('notebooks', n.notebookId)?.name || '')))),
+        !notes.length && h('div', { class: 'sub' }, 'No notes match.'),
+        q && h('button', { class: 'rowlink', onclick: () => { const n = M.addNote({ title: input.value.trim(), notebookId: store.get('notes', selfId)?.notebookId }); close(); onPick(n); } }, icon('plus', 16), `Create a new note called "${input.value.trim()}"`));
+    };
+    input.addEventListener('input', draw);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') list.querySelector('button')?.click(); });
+    draw();
+    return h('div', { class: 'form' }, input, list);
+  }, { title: 'Link to a note', cls: 'small' });
+}
+
 // ---- clipping -----------------------------------------------------------------------
 /** Create a note from something shared into Steward (Android share sheet, Mac bookmark button). */
 export async function createClip({ title, text, url, html, files }) {
@@ -240,6 +269,7 @@ export async function createClip({ title, text, url, html, files }) {
   body += atts.map(attHtml).join('<div><br></div>');
   const n = M.addNote({ title: (title || (text || '').split('\n')[0] || (atts[0]?.name) || 'Clip').slice(0, 140), body, notebook: 'Clips', sourceUrl: url || '', attachments: atts });
   toast('Saved to the Clips notebook');
+  ocr.kick(1500);
   go('#/note/' + n.id);
   if (sync.connected()) sync.run();
   return n;
@@ -282,5 +312,6 @@ export async function importEnex(file, onProgress) {
     if (count % 20 === 0) await new Promise(r => setTimeout(r));
   }
   store.emit({});
+  ocr.kick(3000);
   return count;
 }

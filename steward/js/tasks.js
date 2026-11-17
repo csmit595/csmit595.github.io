@@ -49,13 +49,59 @@ function toggle(t, row) {
 }
 
 let dragId = null;
+const finePointer = () => window.matchMedia('(pointer: fine)').matches;
+function orderFor(tasks, id, targetId, before) {
+  const sibs = tasks.filter(x => x.id !== id);
+  const idx = sibs.findIndex(x => x.id === targetId);
+  if (idx < 0) return sibs.length ? Math.max(...sibs.map(x => x.order ?? 0)) + 1000 : Date.now();
+  const prev = sibs[before ? idx - 1 : idx], next = sibs[before ? idx : idx + 1];
+  return prev && next ? ((prev.order ?? 0) + (next.order ?? 0)) / 2 : prev ? (prev.order ?? 0) + 1000 : (next.order ?? 0) - 1000;
+}
+const clearMarks = () => document.querySelectorAll('.drop-before,.drop-after,.drop-into').forEach(n => n.classList.remove('drop-before', 'drop-after', 'drop-into'));
+/** Phones: press and hold a task, then drag it to a new spot or section. */
+function touchDrag(row, t) {
+  row.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1 || e.target.closest('.check')) return;
+    const start = e.touches[0]; let active = false, ghost = null, target = null, last = start;
+    const timer = setTimeout(() => {
+      active = true; navigator.vibrate?.(15);
+      const r = row.getBoundingClientRect();
+      ghost = row.cloneNode(true); ghost.classList.add('ghost');
+      Object.assign(ghost.style, { width: r.width + 'px', left: r.left + 'px', top: r.top + 'px' });
+      ghost._dy = start.clientY - r.top; document.body.append(ghost); row.classList.add('dragging');
+    }, 380);
+    const move = ev => {
+      const p = ev.touches[0]; last = p;
+      if (!active) { if (Math.hypot(p.clientX - start.clientX, p.clientY - start.clientY) > 10) end(); return; }
+      ev.preventDefault();
+      ghost.style.top = p.clientY - ghost._dy + 'px';
+      const main = document.getElementById('main');
+      if (p.clientY < 90) main.scrollTop -= 14; else if (p.clientY > window.innerHeight - 130) main.scrollTop += 14;
+      const el = document.elementFromPoint(p.clientX, p.clientY);
+      const list = el?.closest('.tlist'); clearMarks(); target = null;
+      if (!list?._dnd) { const col = el?.closest('.group')?.querySelector('.tlist'); if (col?._dnd) { col.classList.add('drop-into'); target = { list: col }; } return; }
+      const item = el.closest('.titem');
+      if (item && item.dataset.id !== t.id && item.parentElement === list) { const r = item.getBoundingClientRect(), before = p.clientY < r.top + r.height / 2; item.classList.add(before ? 'drop-before' : 'drop-after'); target = { list, id: item.dataset.id, before }; }
+      else if (!item) { list.classList.add('drop-into'); target = { list }; }
+    };
+    const end = () => {
+      clearTimeout(timer); document.removeEventListener('touchmove', move); document.removeEventListener('touchend', end); document.removeEventListener('touchcancel', end);
+      if (!active) return;
+      ghost?.remove(); row.classList.remove('dragging'); clearMarks();
+      const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+      row.addEventListener('click', swallow, { capture: true, once: true }); setTimeout(() => row.removeEventListener('click', swallow, true), 400);
+      if (target) target.list._dnd.onDrop?.(t.id, orderFor(target.list._dnd.tasks, t.id, target.id, target.before));
+    };
+    document.addEventListener('touchmove', move, { passive: false }); document.addEventListener('touchend', end); document.addEventListener('touchcancel', end);
+  }, { passive: true });
+}
 function taskRow(t, o = {}) {
   const kids = o.flat ? [] : M.childrenOf(t.id).sort(M.byOrder);
   const allKids = M.childrenOf(t.id);
   const doneKids = allKids.filter(k => k.completedAt).length;
   const nComments = store.all('comments').filter(c => c.taskId === t.id).length;
   const done = !!t.completedAt;
-  const row = h('div', { class: `task pri${t.priority || 4}${done ? ' done' : ''}`, dataset: { id: t.id }, draggable: o.drag ? 'true' : null },
+  const row = h('div', { class: `task pri${t.priority || 4}${done ? ' done' : ''}`, dataset: { id: t.id }, draggable: o.drag && finePointer() ? 'true' : null },
     h('button', { class: 'check', 'aria-label': done ? 'Mark not done' : 'Complete', onclick: e => { e.stopPropagation(); toggle(t, row); } }, icon('check', 13)),
     h('div', { class: 'tbody', onclick: () => openTask(t.id) },
       h('div', { class: 'tcontent' }, linkify(t.content)),
@@ -69,7 +115,8 @@ function taskRow(t, o = {}) {
         t.noteId && store.get('notes', t.noteId) && h('span', { class: 'meta' }, icon('note', 12)),
         (t.labels || []).map(l => h('span', { class: 'meta label' }, '@' + l)),
         o.showProject && h('span', { class: 'meta proj' }, M.projectName(t.projectId)))));
-  if (o.drag) {
+  if (o.drag && !finePointer()) touchDrag(row, t);
+  if (o.drag && finePointer()) {
     row.addEventListener('dragstart', e => { dragId = t.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', t.content); row.classList.add('dragging'); });
     row.addEventListener('dragend', () => { dragId = null; row.classList.remove('dragging'); document.querySelectorAll('.drop-before,.drop-after,.drop-into').forEach(n => n.classList.remove('drop-before', 'drop-after', 'drop-into')); });
   }
@@ -78,6 +125,7 @@ function taskRow(t, o = {}) {
 }
 function taskList(tasks, o = {}) {
   const list = h('div', { class: 'tlist' }, tasks.map(t => taskRow(t, o)));
+  if (o.drag) list._dnd = { tasks, onDrop: o.onDrop };
   if (o.drag) {
     const clear = () => list.querySelectorAll('.drop-before,.drop-after').forEach(n => n.classList.remove('drop-before', 'drop-after'));
     list.addEventListener('dragover', e => {

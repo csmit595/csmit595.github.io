@@ -3,7 +3,7 @@ import { uid } from './util.js';
 
 export const FILES = {
   tasks: ['projects', 'sections', 'tasks', 'comments', 'labels', 'filters'],
-  notes: ['notebooks', 'notes'],
+  notes: ['notebooks', 'notes', 'ocr'],
 };
 export const TYPES = [...FILES.tasks, ...FILES.notes];
 const fileOf = type => (FILES.tasks.includes(type) ? 'tasks' : 'notes');

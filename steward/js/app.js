@@ -8,8 +8,9 @@ import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from '.
 import { renderNotes, leaveNotes, newNote, createClip, importEnex } from './notes.js';
 import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
+import { ocr } from './ocr.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -110,11 +111,14 @@ function drawResults() {
   const hit = s => words.every(w => s.toLowerCase().includes(w));
   const tasks = store.all('tasks').filter(t => hit(`${t.content} ${t.description || ''} ${(t.labels || []).map(l => '@' + l).join(' ')} ${M.projectName(t.projectId)}`)).sort((a, b) => (a.completedAt ? 1 : 0) - (b.completedAt ? 1 : 0)).slice(0, 60);
   const strip = html => html.replace(/<[^>]+>/g, ' ');
-  const notes = M.liveNotes().filter(n => hit(`${n.title} ${strip(n.body || '')} ${(n.tags || []).join(' ')} ${(n.attachments || []).map(a => a.name).join(' ')}`)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60);
+  const inBody = n => `${n.title} ${strip(n.body || '')} ${(n.tags || []).join(' ')} ${(n.attachments || []).map(a => a.name).join(' ')}`;
+  const notes = M.liveNotes().filter(n => hit(inBody(n) + ocr.textFor(n))).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60);
   fill(el, 
     h('section', { class: 'group' }, h('div', { class: 'ghead' }, h('h3', null, `Tasks (${tasks.length})`)), h('div', { class: 'rows' }, tasks.map(t => h('button', { class: 'rowlink' + (t.completedAt ? ' done' : ''), onclick: () => openTask(t.id) }, icon(t.completedAt ? 'done' : 'check', 16), h('span', { class: 'grow' }, t.content, h('small', null, `${M.projectName(t.projectId)}${t.due ? ' · ' + fmtDate(t.due.date) : ''}`)))))),
-    h('section', { class: 'group' }, h('div', { class: 'ghead' }, h('h3', null, `Notes (${notes.length})`)), h('div', { class: 'rows' }, notes.map(n => h('a', { class: 'rowlink', href: '#/note/' + n.id }, icon('note', 16), h('span', { class: 'grow' }, n.title || 'Untitled', h('small', null, strip(n.body || '').replace(/\s+/g, ' ').trim().slice(0, 90))))))));
+    h('section', { class: 'group' }, h('div', { class: 'ghead' }, h('h3', null, `Notes (${notes.length})`)), h('div', { class: 'rows' }, notes.map(n => h('a', { class: 'rowlink', href: '#/note/' + n.id }, icon('note', 16), h('span', { class: 'grow' }, n.title || 'Untitled', h('small', null, hit(inBody(n)) ? strip(n.body || '').replace(/\s+/g, ' ').trim().slice(0, 90) : 'Found inside an attachment: ' + snippet(ocr.textFor(n), words[0]))))))));
 }
+
+const snippet = (text, w) => { const i = text.toLowerCase().indexOf(w); return text.slice(Math.max(0, i - 30), i + 60).replace(/\s+/g, ' ').trim(); };
 
 // ---- settings --------------------------------------------------------------------------------
 function viewSettings(main) {
@@ -245,7 +249,8 @@ async function start() {
   $('#scrim').addEventListener('click', closeDrawer);
   window.addEventListener('hashchange', () => { closeDrawer(); if (!location.hash.startsWith('#clip=') && location.hash !== '#shared') render(); else intake(); });
   const pushSoon = debounce(() => sync.run(), 4000);
-  store.on(info => { schedule(info); if (info.local) pushSoon(); });
+  store.on(info => { if (info.ocr) { pushSoon(); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); });
+  ocr.kick(15000);
   sync.on(() => { drawSidebar(parseRoute()); const l = $('#sync-line'); if (l) l.textContent = syncLine(); });
   if (!(await intake())) render();
   document.body.classList.add('ready');

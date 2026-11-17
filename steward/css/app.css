@@ -141,6 +141,11 @@ label.inline.block { margin: 5px 0; }
 .rowlink small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rowlink.done { color: var(--muted); }
 
+.task.ghost { position: fixed; z-index: 70; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 10px; opacity: .95; }
+@media (pointer: coarse) { .plist .tbody, .board .tbody { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; } }
+.ebody a.nlink { background: var(--soft); border-radius: 5px; padding: 1px 6px; text-decoration: none; font-weight: 550; cursor: pointer; }
+.picker { max-height: 46vh; overflow-y: auto; }
+
 /* dialogs, menus, toasts */
 .modal-wrap { position: fixed; inset: 0; background: rgba(20, 24, 16, .45); display: grid; place-items: start center; padding: 7vh 14px 14px; z-index: 50; overflow-y: auto; }
 .modal { background: var(--panel); border-radius: 14px; box-shadow: var(--shadow); width: min(600px, 100%); padding: 16px 18px 18px; }
