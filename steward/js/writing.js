@@ -25,7 +25,7 @@ export function computeNotes(doc, order = fnOrder(doc.body), fns = doc.footnotes
   const seen = new Set();
   return order.map((id, i) => {
     const f = fns[id] || {};
-    let html = f.html || '';
+    let html = sanitize(f.html || '');
     if (f.cite) {
       const s = store.get('sources', f.cite.sourceId);
       if (!s) html = '<i>[source was deleted]</i>';

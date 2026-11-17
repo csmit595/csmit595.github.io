@@ -86,16 +86,36 @@ export function mdToHtml(md) {
   return out.join('');
 }
 
-// Remove anything executable from HTML that came from outside (clips, imports, Claude).
+// Make HTML from outside (clips, imports, synced data, Claude) safe to show. Allowlist based: only known-harmless
+// tags and attributes survive; everything else is unwrapped or dropped. Applied every time stored HTML is displayed.
+const SAFE_TAGS = new Set('p div span br hr b strong i em u s strike del ins sup sub a ul ol li h1 h2 h3 h4 h5 h6 blockquote pre code table thead tbody tfoot tr td th caption col colgroup img audio font mark small dl dt dd figure figcaption section article header footer main aside abbr cite q kbd samp var time center address'.toUpperCase().split(' '));
+const DROP_TAGS = 'script,style,iframe,object,embed,link,meta,form,base,svg,math,template,noscript,xmp,plaintext,textarea,select,option,input,button,frame,frameset,applet,title,head,video,source,track,canvas,dialog,slot,portal,picture';
+const SAFE_ATTRS = new Set(['href', 'src', 'alt', 'title', 'class', 'style', 'colspan', 'rowspan', 'controls', 'align', 'face', 'color', 'start', 'type', 'contenteditable', 'data-att', 'data-fn', 'data-c', 'data-checked']);
+const SAFE_CLASSES = new Set(['fn', 'att', 'nlink', 'todo', 'cmt', 'pagebreak', 'outline']);
+const BAD_STYLE = ['position', 'z-index', 'top', 'left', 'right', 'bottom', 'inset', 'float', 'behavior', 'content', 'pointer-events', 'opacity', 'transform', 'filter', 'clip-path', 'mask', 'animation', 'transition', 'cursor', 'visibility', 'display'];
+const urlScheme = v => String(v).replace(/[\u0000-\u0020\u007f-\u009f\u200b-\u200f\u2028\u2029\ufeff]/g, '').toLowerCase();
 export function sanitize(html) {
   const doc = new DOMParser().parseFromString(`<body>${html || ''}</body>`, 'text/html');
-  doc.querySelectorAll('script,style,iframe,object,embed,link,meta,form,base').forEach(n => n.remove());
-  doc.querySelectorAll('*').forEach(n => {
+  doc.body.querySelectorAll(DROP_TAGS).forEach(n => n.remove());
+  for (const n of [...doc.body.querySelectorAll('*')]) {
+    if (!n.isConnected) continue;
+    if (!SAFE_TAGS.has(n.tagName) || n.namespaceURI !== 'http://www.w3.org/1999/xhtml') { n.replaceWith(...n.childNodes); continue; }
     for (const a of [...n.attributes]) {
-      const v = a.value.trim().toLowerCase();
-      if (a.name.startsWith('on') || ((a.name === 'href' || a.name === 'src') && /^(javascript|vbscript):/.test(v)) || a.name === 'srcdoc') n.removeAttribute(a.name);
+      const name = a.name.toLowerCase(), v = a.value;
+      if (!SAFE_ATTRS.has(name)) { n.removeAttribute(a.name); continue; }
+      if (name === 'href') { const u = urlScheme(v); if (!/^(https?:|mailto:|tel:|#)/.test(u)) n.removeAttribute(a.name); }
+      else if (name === 'src') { const u = urlScheme(v); if (!(/^https?:/.test(u) || /^blob:/.test(u) || /^data:image\/(png|jpe?g|gif|webp);base64,/.test(u)) || n.tagName === 'AUDIO' && !/^blob:/.test(u)) n.removeAttribute(a.name); }
+      else if (name === 'class') { const keep = v.split(/\s+/).filter(c => SAFE_CLASSES.has(c)); if (keep.length) n.setAttribute('class', keep.join(' ')); else n.removeAttribute('class'); }
+      else if (name === 'contenteditable') { if (v !== 'false') n.removeAttribute(a.name); }
+      else if (name === 'style') {
+        if (/url\s*\(|expression|@import|javascript:|-moz-binding|\\/i.test(v)) { n.removeAttribute('style'); continue; }
+        for (const prop of BAD_STYLE) n.style.removeProperty(prop);
+        for (const prop of [...n.style]) if (BAD_STYLE.some(b => prop === b || prop.startsWith(b + '-'))) n.style.removeProperty(prop);
+        if (!n.getAttribute('style')?.trim()) n.removeAttribute('style');
+      }
     }
-  });
+    if (n.tagName === 'A' && n.hasAttribute('href') && !n.getAttribute('href').startsWith('#')) n.setAttribute('rel', 'noopener noreferrer');
+  }
   return doc.body.innerHTML;
 }
 

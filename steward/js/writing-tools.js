@@ -1,6 +1,6 @@
 // Editing tools for the Writing section: undo history, find and replace, extra formatting, format painter,
 // table tools, outline numbering, symbols, comments, versions, word count, dictation, read-aloud, curly quotes.
-import { h, fill, uid, esc, debounce, stripHtml } from './util.js';
+import { h, fill, uid, esc, debounce, stripHtml, sanitize } from './util.js';
 import { store, settings } from './store.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu } from './ui.js';
 
@@ -150,7 +150,7 @@ export function installTools(E) {
       h('div', { class: 'row gap' }, btn('Save a version now', async () => { const name = await promptDlg('Name this version (optional)', '', 'Before the rewrite'); if (name === null) return; await saveVersion(name || 'Saved by hand'); close(); toast('Version saved'); }, 'tiny primary')),
       h('div', { class: 'rows picker' }, list.map((v, i) => h('div', { class: 'rowlink' }, icon('upcoming', 16), h('span', { class: 'grow' }, new Date(v.at).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), h('small', null, `${v.words} words${v.label ? ' · ' + v.label : ''}`)),
         btn('Open as a copy', () => { const d = store.put('docs', { title: (v.title || 'Untitled') + ' (earlier version)', kind: E.doc.kind, body: v.body, footnotes: v.footnotes, comments: v.comments || {}, meta: v.meta, trashed: false }); close(); location.hash = '#/doc/' + d.id; }, 'tiny'),
-        btn('Restore', async () => { if (!(await confirmDlg('Replace the document with this version? Your current text is saved as a version first.', 'Restore', false))) return; await saveVersion('Before restoring'); mark(); apply({ html: v.body, fns: JSON.stringify(v.footnotes || {}), cm: JSON.stringify(v.comments || {}), caret: 0 }); mark(); close(); toast('Version restored'); }, 'tiny'))), !list.length && h('p', { class: 'sub' }, 'No versions yet.'))), { title: 'Versions' }); };
+        btn('Restore', async () => { if (!(await confirmDlg('Replace the document with this version? Your current text is saved as a version first.', 'Restore', false))) return; await saveVersion('Before restoring'); mark(); apply({ html: sanitize(v.body), fns: JSON.stringify(v.footnotes || {}), cm: JSON.stringify(v.comments || {}), caret: 0 }); mark(); close(); toast('Version restored'); }, 'tiny'))), !list.length && h('p', { class: 'sub' }, 'No versions yet.'))), { title: 'Versions' }); };
 
   // ---- word count, symbols, dictation, read aloud ------------------------------------------------------------
   const countDlg = () => { const text = stripHtml(body.innerHTML.replace(/<(\/?(div|p|li|h\d|tr|br|td|th|blockquote))\b/gi, ' <$1')), selText = String(getSelection()), notes = Object.values(fns).map(f => stripHtml(f.html || '')).join(' ');

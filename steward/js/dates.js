@@ -111,10 +111,11 @@ function parseDay(text, now) {
   let m;
   const cut = m => text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length);
   const y = fromYmd(now).getFullYear();
+  const real = (yr, mo, d) => { const dt = new Date(yr, mo, d); return dt.getFullYear() === yr && dt.getMonth() === mo && dt.getDate() === d ? dt : null; }; // rejects Feb 30 and the like
   const future = (mo, d, yr) => {
-    let dt = new Date(yr || y, mo, d);
-    if (!yr && ymd(dt) < now) dt = new Date(y + 1, mo, d);
-    return ymd(dt);
+    let dt = real(yr || y, mo, d);
+    if (!yr && (!dt || ymd(dt) < now)) dt = real(y + 1, mo, d) || dt;
+    return dt ? ymd(dt) : null;
   };
   if ((m = text.match(/\b(today|tod|tonight)\b/i))) return { date: now, rest: cut(m), time: /tonight/i.test(m[1]) ? '19:00' : null };
   if ((m = text.match(/\b(tomorrow|tom|tmrw|tmr)\b/i))) return { date: addDays(now, 1), rest: cut(m) };
@@ -128,13 +129,13 @@ function parseDay(text, now) {
   if ((m = text.match(/\bnext\s+month\b/i))) return { date: addMonths(now, 1, 1), rest: cut(m) };
   if ((m = text.match(/\b(?:this\s+)?weekend\b/i))) return { date: nextDow(now, 6, false), rest: cut(m) };
   if ((m = text.match(/\bend\s+of\s+(?:the\s+)?month\b/i))) return { date: addMonths(now, 0, 31), rest: cut(m) };
-  if ((m = text.match(new RegExp(`\\b(${MON_RE})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`, 'i')))) return { date: future(monIdx(m[1]), +m[2], m[3] && +m[3]), rest: cut(m) };
-  if ((m = text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MON_RE})\\b(?:,?\\s+(\\d{4}))?`, 'i')))) return { date: future(monIdx(m[2]), +m[1], m[3] && +m[3]), rest: cut(m) };
+  if ((m = text.match(new RegExp(`\\b(${MON_RE})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`, 'i')))) { const date = future(monIdx(m[1]), +m[2], m[3] && +m[3]); if (date) return { date, rest: cut(m) }; }
+  if ((m = text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MON_RE})\\b(?:,?\\s+(\\d{4}))?`, 'i')))) { const date = future(monIdx(m[2]), +m[1], m[3] && +m[3]); if (date) return { date, rest: cut(m) }; }
   if ((m = text.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/)) && +m[1] <= 12 && +m[2] <= 31) {
     const yr = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : null;
-    return { date: future(+m[1] - 1, +m[2], yr), rest: cut(m) };
+    const date = future(+m[1] - 1, +m[2], yr); if (date) return { date, rest: cut(m) };
   }
-  if ((m = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/))) return { date: m[0], rest: cut(m) };
+  if ((m = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/)) && real(+m[1], +m[2] - 1, +m[3])) return { date: m[0], rest: cut(m) };
   if ((m = text.match(new RegExp(`\\b(next\\s+|this\\s+|on\\s+)?(${DAY_RE})\\b`, 'i')))) {
     let date = nextDow(now, dayIdx(m[2]), !/this/i.test(m[1] || ''));
     if (/next/i.test(m[1] || '') && fromYmd(date).getDay() > fromYmd(now).getDay() && fromYmd(now).getDay() !== 0) date = addDays(date, 7);

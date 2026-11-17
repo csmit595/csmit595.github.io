@@ -13,7 +13,7 @@ import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -204,7 +204,7 @@ function viewSettings(main) {
       perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Steward in this browser’s settings.')),
     card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
       h('label', { class: 'inline' }, 'Week starts on ', ws)),
-    card('Search by meaning', h('label', { class: 'inline' }, semBox, ' Find notes and tasks by what they are about, not only the exact words'),
+    card('Search by meaning', h('label', { class: 'inline' }, semBox, h('span', { class: 'grow' }, 'Find notes and tasks by what they are about, not only the exact words')),
       h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
       h('p', { class: 'sub', id: 'sem-line' }, semLine())),
     card('Clip from the web and other apps',
@@ -286,6 +286,8 @@ async function start() {
   $('#scrim').addEventListener('click', closeDrawer);
   window.addEventListener('hashchange', () => { closeDrawer(); if (!location.hash.startsWith('#clip=') && location.hash !== '#shared') render(); else intake(); });
   const pushSoon = debounce(() => sync.run(), 4000);
+  let warned = 0;
+  store.on(info => { if (info.storageError && Date.now() - warned > 30000) { warned = Date.now(); toast('Steward could not save to this device (' + info.storageError + '). Free up storage space, then make another change so it retries.', null, null, 15000); } });
   store.on(info => { if (info.ocr) { pushSoon(); semantic.kick(12000); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); if (info.local || info.remote || info.ocr) semantic.kick(info.local ? 6000 : 12000); });
   ocr.kick(15000);
   semantic.kick(20000);

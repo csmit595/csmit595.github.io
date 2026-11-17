@@ -18,7 +18,7 @@ async function reader() {
 async function readImage(source) { const r = await (await reader()).recognize(source); return r.data.text || ''; }
 async function readPdf(blob) {
   if (!pdfjs) { pdfjs = await import(url('vendor/pdf/pdf.min.mjs')); pdfjs.GlobalWorkerOptions.workerSrc = url('vendor/pdf/pdf.worker.min.mjs'); }
-  const doc = await pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise;
+  const doc = await pdfjs.getDocument({ data: await blob.arrayBuffer(), isEvalSupported: false }).promise;
   let text = '';
   const pages = Math.min(doc.numPages, 80);
   for (let i = 1; i <= pages && text.length < MAX_CHARS; i++) {

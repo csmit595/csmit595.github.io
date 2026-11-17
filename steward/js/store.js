@@ -12,15 +12,16 @@ const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
 const data = Object.fromEntries(TYPES.map(t => [t, new Map()]));
 const listeners = new Set();
 let db = null;
-const pending = new Set();
+const pending = new Map(); // "type|id" -> [type, id]: only changed items are written to disk
+const touchItem = (type, id) => pending.set(type + '|' + id, [type, id]);
 let flushTimer = null;
 
 function openDb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('steward', 2);
+    const r = indexedDB.open('steward', 3);
     r.onupgradeneeded = () => {
       const d = r.result;
-      for (const s of ['kv', 'blobs', 'events', 'vec']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
+      for (const s of ['kv', 'blobs', 'events', 'vec', 'items']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
     };
     r.onsuccess = () => { r.result.onversionchange = () => r.result.close(); res(r.result); };
     r.onerror = () => rej(r.error);
@@ -39,9 +40,14 @@ function idb(storeName, mode, fn) {
 export const store = {
   async init() {
     db = await openDb();
-    for (const t of TYPES) {
-      const arr = (await idb('kv', 'readonly', s => s.get(t))) || [];
-      data[t] = new Map(arr.map(x => [x.id, x]));
+    // Each item is stored on its own, so saving one note never rewrites the whole library.
+    const rows = await new Promise((res, rej) => { const out = []; const tx = db.transaction('items', 'readonly'); const c = tx.objectStore('items').openCursor(); c.onsuccess = () => { const cur = c.result; if (cur) { out.push(cur.value); cur.continue(); } }; tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); });
+    for (const row of rows) if (data[row.t]) data[row.t].set(row.v.id, row.v);
+    for (const t of TYPES) { // one-time move from the old whole-list storage
+      const arr = await idb('kv', 'readonly', st => st.get(t));
+      if (!arr?.length) continue;
+      for (const x of arr) if (x?.id && !data[t].has(x.id)) { data[t].set(x.id, x); touchItem(t, x.id); }
+      await this.flush(); await idb('kv', 'readwrite', st => st.delete(t));
     }
     if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   },
@@ -55,7 +61,7 @@ export const store = {
     if (!item.createdAt) item.createdAt = Date.now();
     item.updatedAt = Date.now();
     data[type].set(item.id, item);
-    this._changed(type, opts);
+    this._changed(type, opts, item.id);
     return item;
   },
   patch(type, id, fields, opts) {
@@ -66,19 +72,26 @@ export const store = {
   remove(type, id, opts = {}) {
     if (!data[type].has(id)) return;
     data[type].set(id, { id, deleted: true, updatedAt: Date.now() });
-    this._changed(type, opts);
+    this._changed(type, opts, id);
   },
-  _changed(type, opts) {
-    pending.add(type);
+  _changed(type, opts, id) {
+    touchItem(type, id);
     localStorage.setItem('steward.dirty.' + fileOf(type), '1');
     clearTimeout(flushTimer);
-    flushTimer = setTimeout(() => this.flush(), 250);
+    flushTimer = setTimeout(() => this.flush().catch(e => console.warn('save failed', e)), 250);
     if (!opts.silent) this.emit({ type, local: true });
   },
   async flush() {
     clearTimeout(flushTimer);
-    const types = [...pending]; pending.clear();
-    for (const t of types) await idb('kv', 'readwrite', s => s.put([...data[t].values()], t));
+    if (!pending.size) return;
+    const batch = [...pending.values()]; pending.clear();
+    try {
+      await new Promise((res, rej) => {
+        const tx = db.transaction('items', 'readwrite'), st = tx.objectStore('items');
+        for (const [t, id] of batch) { const v = data[t].get(id); if (v) st.put({ t, v }, t + '|' + id); else st.delete(t + '|' + id); }
+        tx.oncomplete = res; tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error('aborted'));
+      });
+    } catch (e) { for (const b of batch) touchItem(b[0], b[1]); this.emit({ storageError: e?.name || String(e) }); throw e; }
   },
   isDirty(file) { return localStorage.getItem('steward.dirty.' + file) === '1'; },
   clearDirty(file) { localStorage.removeItem('steward.dirty.' + file); },
@@ -92,23 +105,24 @@ export const store = {
   /** Merge a remote snapshot. Newest edit of each item wins. Returns whether this device holds anything the remote lacks. */
   merge(file, remote) {
     let localNewer = false, changed = false;
-    const cutoff = Date.now() - 90 * 864e5;
+    const cutoff = Date.now() - 90 * 864e5, soon = Date.now() + 5 * 60000;
     for (const t of FILES[file]) {
       const map = data[t];
       const seen = new Set();
       for (const r of remote?.[t] || []) {
         if (!r || !r.id) continue;
+        if ((r.updatedAt || 0) > soon) r.updatedAt = Date.now(); // a device with a wrong clock must not win forever
         seen.add(r.id);
         const l = map.get(r.id);
-        if (!l || (r.updatedAt || 0) > (l.updatedAt || 0)) { map.set(r.id, r); changed = true; pending.add(t); }
+        if (!l || (r.updatedAt || 0) > (l.updatedAt || 0)) { map.set(r.id, r); changed = true; touchItem(t, r.id); }
         else if ((l.updatedAt || 0) > (r.updatedAt || 0)) localNewer = true;
       }
       for (const [id, l] of map) {
         if (!seen.has(id)) localNewer = true;
-        if (l.deleted && (l.updatedAt || 0) < cutoff) { map.delete(id); pending.add(t); }
+        if (l.deleted && (l.updatedAt || 0) < cutoff) { map.delete(id); touchItem(t, id); }
       }
     }
-    if (changed) { this.flush(); this.emit({ remote: true }); }
+    if (changed) { this.flush().catch(() => {}); this.emit({ remote: true }); }
     return { localNewer, changed };
   },
 
@@ -132,9 +146,9 @@ export const store = {
   },
   importAll(obj) {
     let n = 0;
-    for (const t of TYPES) for (const x of obj[t] || []) { if (x && x.id) { data[t].set(x.id, { ...x, updatedAt: Date.now() }); pending.add(t); n++; } }
+    for (const t of TYPES) for (const x of obj[t] || []) { if (x && x.id) { data[t].set(x.id, { ...x, updatedAt: Date.now() }); touchItem(t, x.id); n++; } }
     for (const f of Object.keys(FILES)) localStorage.setItem('steward.dirty.' + f, '1');
-    this.flush(); this.emit({});
+    this.flush().catch(() => {}); this.emit({});
     return n;
   },
 };

@@ -134,7 +134,7 @@ label.inline.block { margin: 5px 0; }
 #main > .board { max-width: none; }
 .board .col { flex: 0 0 280px; background: var(--line2); border-radius: 10px; padding: 8px 10px; margin: 0; }
 .board .task { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 6px; }
-.rows { display: grid; }
+.rows { display: grid; grid-template-columns: minmax(0, 1fr); }
 .rowlink { display: flex; align-items: center; gap: 10px; padding: 9px 4px; border: 0; border-bottom: 1px solid var(--line2); background: none; text-align: left; color: var(--text); text-decoration: none; width: 100%; }
 .rowlink:hover { background: var(--line2); }
 .rowlink a.grow { color: var(--text); text-decoration: none; }
@@ -347,3 +347,8 @@ sup.fn.flash, .wnote.flash { background: #fff3a3; }
   #main, #main.notes-layout, .neditor, .escroll { display: block; overflow: visible; padding: 0; height: auto; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* audit fixes */
+.modal .task { background: transparent; }
+label.inline > span.grow { flex: 1; min-width: 0; }
+label.inline > input[type=checkbox] { flex: none; }

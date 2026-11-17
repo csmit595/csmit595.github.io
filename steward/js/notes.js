@@ -239,7 +239,7 @@ function mountEditor(pane, id) {
   if (!n0.title && !trashed && !isMobile()) title.focus();
 }
 window.addEventListener('pagehide', () => mounted?.save(true));
-document.addEventListener('visibilitychange', () => { if (document.hidden) { mounted?.save(true); store.flush(); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { mounted?.save(true); store.flush().catch(() => {}); } });
 
 const liveBacklinks = id => M.liveNotes().filter(n => n.id !== id && (n.body || '').includes(`#/note/${id}"`));
 function pickNote(selfId, onPick) {
