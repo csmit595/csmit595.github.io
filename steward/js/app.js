@@ -13,7 +13,7 @@ import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '2.5.0';
+const VERSION = '2.5.1';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -67,9 +67,11 @@ function drawSidebar(route) {
     { label: 'Delete notebook', icon: 'trash', danger: true, onclick: async () => { const inside = notes.filter(n => n.notebookId === nb.id); if (await confirmDlg(`Delete "${nb.name}"? Its ${inside.length} notes move to the trash.`)) { for (const n of inside) store.patch('notes', n.id, { trashed: true }, { silent: true }); store.remove('notebooks', nb.id); location.hash = '#/notes'; } } },
   ]); }, 'mini');
   const st = sync.status;
-  const pill = h('button', { class: 'syncpill ' + st, title: sync.message || '', onclick: () => { if (!sync.configured()) location.hash = '#/settings'; else sync.run(true); } },
-    icon(st === 'offline' || st === 'off' ? 'cloudoff' : 'sync', 14),
-    st === 'syncing' ? 'Syncing…' : st === 'off' ? (sync.configured() && sync.connected() ? 'Sync' : 'Not syncing yet') : st === 'offline' ? 'Offline · saved here' : st === 'auth' ? 'Tap to reconnect' : st === 'error' ? 'Sync problem' : 'Synced ' + (sync.lastSync ? new Date(sync.lastSync).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : ''));
+  const time = sync.lastSync ? new Date(sync.lastSync).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
+  // Long label for a full-width sidebar; short one for a narrow window (split screen). Hover shows the long one.
+  const [long, short] = st === 'syncing' ? ['Syncing…', 'Syncing…'] : st === 'off' ? (sync.configured() && sync.connected() ? ['Sync', 'Sync'] : ['Not syncing yet', 'Set up']) : st === 'offline' ? ['Offline · saved here', 'Offline'] : st === 'auth' ? ['Tap to reconnect', 'Reconnect'] : st === 'error' ? ['Sync problem', 'Problem'] : ['Synced ' + time, time || 'Synced'];
+  const pill = h('button', { class: 'syncpill ' + st, title: sync.message || long, onclick: () => { if (!sync.configured()) location.hash = '#/settings'; else sync.run(true); } },
+    icon(st === 'offline' || st === 'off' ? 'cloudoff' : 'sync', 14), h('span', { class: 'pl-long' }, long), h('span', { class: 'pl-short' }, short));
   fill(side, 
     h('div', { class: 'brand' }, h('img', { src: 'icons/mark.png', alt: '', width: 44, height: 44 }), h('strong', null, 'Steward'), h('span', { class: 'grow' }), pill),
     h('div', { class: 'addline' }, h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task'), iconBtn('sidebar', 'Hide sidebar (⌘\\)', toggleSide, 'only-desktop')),

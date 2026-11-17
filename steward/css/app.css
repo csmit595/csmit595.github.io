@@ -320,6 +320,7 @@ sup.fn.flash, .wnote.flash { background: #fff3a3; }
 }
 #side-show { display: none; }
 .addline { display: flex; align-items: center; gap: 4px; margin: 4px 0 10px; } .addline .btn.wide { margin: 0; flex: 1; }
+.syncpill .pl-short { display: none; }
 .syncpill { white-space: nowrap; min-width: 0; overflow: hidden; flex: 0 1 auto; }
 body.side-hidden { grid-template-columns: minmax(0, 1fr); }
 body.side-hidden #side { display: none; }
@@ -357,6 +358,7 @@ body.side-hidden .writer .wbar { padding-left: 52px; }
   #side { padding: 12px 10px 24px; }
   #main.notes-layout { grid-template-columns: 270px minmax(0, 1fr); }
   .nlist { padding-left: 12px; padding-right: 12px; } .nlist .vhead { flex-wrap: wrap; row-gap: 8px; }
+  .syncpill .pl-long { display: none; } .syncpill .pl-short { display: inline; }
   .brand img { width: 36px; height: 36px; } .brand strong { font-size: 19px; }
   .wsheet { padding: 0.65in; }
   .board .col { flex-basis: 250px; }
