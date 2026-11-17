@@ -3,7 +3,7 @@ import { h, fill, today, debounce, fmtDate } from './util.js';
 import { store, settings } from './store.js';
 import * as M from './model.js';
 import { sync } from './sync.js';
-import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpen, isMobile } from './ui.js';
+import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpen, isMobile, PHONE_MQ } from './ui.js';
 import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from './tasks.js';
 import { renderNotes, leaveNotes, newNote, createClip, importEnex } from './notes.js';
 import { renderCalendar } from './calendar.js';
@@ -13,7 +13,7 @@ import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '2.4.0';
+const VERSION = '2.4.1';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -284,6 +284,8 @@ async function start() {
   $('#fab').addEventListener('click', () => (NOTE_VIEWS.includes(parseRoute().view) ? newNote() : openQuickAdd(defaultsForRoute())));
   $('#menu-btn').addEventListener('click', e => { e.preventDefault(); document.body.classList.toggle('drawer'); });
   $('#scrim').addEventListener('click', closeDrawer);
+  // Rotating the phone switches between layouts: redraw so the calendar etc. pick up the new size.
+  window.matchMedia(PHONE_MQ).addEventListener('change', () => { closeDrawer(); schedule({ force: true }); });
   window.addEventListener('hashchange', () => { closeDrawer(); if (!location.hash.startsWith('#clip=') && location.hash !== '#shared') render(); else intake(); });
   const pushSoon = debounce(() => sync.run(), 4000);
   let warned = 0;

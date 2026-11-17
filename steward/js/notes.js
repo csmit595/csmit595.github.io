@@ -15,7 +15,7 @@ const textCache = new Map();
 function textOf(n) {
   const c = textCache.get(n.id);
   if (c && c.at === n.updatedAt) return c.text;
-  const text = stripHtml(n.body).replace(/\s+/g, ' ').trim();
+  const text = stripHtml((n.body || '').replace(/<(\/?(div|p|li|h\d|tr|br|td|th|blockquote))\b/gi, ' <$1')).replace(/\s+/g, ' ').trim();
   textCache.set(n.id, { at: n.updatedAt, text });
   return text;
 }

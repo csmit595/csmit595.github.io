@@ -106,4 +106,6 @@ export function menu(anchor, items) {
   const off = e => { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('pointerdown', off, true); } };
   setTimeout(() => document.addEventListener('pointerdown', off, true));
 }
-export const isMobile = () => window.matchMedia('(max-width: 820px)').matches;
+// Phone layout: narrow screens, and phones turned sideways (e.g. Galaxy S24 Ultra landscape is ~832 x 384).
+export const PHONE_MQ = '(max-width: 820px), (orientation: landscape) and (max-height: 500px) and (pointer: coarse)';
+export const isMobile = () => window.matchMedia(PHONE_MQ).matches;

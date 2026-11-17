@@ -6,7 +6,7 @@ import { sync, isoLocal } from './sync.js';
 import { icon, btn, iconBtn, modal, confirmDlg, toast, isMobile } from './ui.js';
 import { openTask } from './tasks.js';
 
-const HOUR = 52;
+let HOUR = 52; // px per hour; taller on phones so short tasks stay readable
 let anchor = today();
 let savedScroll = null;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -47,6 +47,7 @@ const open = it => (it.kind === 'task' ? openTask(it.t.id) : editEvent(it.e));
 const chip = it => h('button', { class: 'cchip ' + it.kind, style: it.kind === 'event' ? { background: it.color } : null, title: it.title, onclick: e => { e.stopPropagation(); open(it); } }, it.kind === 'task' && h('span', { class: `dot pri${it.t.priority || 4}` }), it.start != null && h('span', { class: 'ct' }, fmtTime(`${pad(Math.floor(it.start / 60))}:${pad(it.start % 60)}`)), it.title);
 
 export function renderCalendar(route, main) {
+  HOUR = isMobile() ? 64 : 52;
   let view = settings.get('calView');
   if (isMobile() && view === 'week') view = '3day';
   const n = { day: 1, '3day': 3, week: 7 }[view];
@@ -79,7 +80,7 @@ function timeGrid(from, n) {
     h('div', { class: 'gut' }, Array.from({ length: 24 }, (_, hr) => h('div', { class: 'hr', style: { top: hr * HOUR + 'px' } }, hr ? fmtTime(pad(hr) + ':00') : ''))),
     data.map((x, i) => {
       const col = h('div', { class: 'cg-col' + (days[i] === now ? ' now' : ''), onclick: e => { if (e.target !== col) return; const m = Math.floor((e.offsetY / HOUR) * 2) * 30; editEvent({ date: days[i], time: `${pad(Math.floor(m / 60))}:${pad(m % 60)}` }); } },
-        layout(x.timed).map(it => h('button', { class: 'cblock ' + it.kind + (it.kind === 'task' ? ` pri${it.t.priority || 4}` : ''), title: it.title,
+        layout(x.timed).map(it => h('button', { class: 'cblock ' + it.kind + ((it.end - it.start) / 60 * HOUR < 44 ? ' short' : '') + (it.kind === 'task' ? ` pri${it.t.priority || 4}` : ''), title: it.title,
           style: { top: (it.start / 60) * HOUR + 'px', height: Math.max(22, ((it.end - it.start) / 60) * HOUR - 2) + 'px', left: `calc(${(it.col / it.cols) * 100}% + 1px)`, width: `calc(${100 / it.cols}% - 3px)`, ...(it.kind === 'event' ? { background: it.color } : {}) },
           onclick: e => { e.stopPropagation(); open(it); } }, h('b', null, it.title), h('span', null, fmtTime(`${pad(Math.floor(it.start / 60))}:${pad(it.start % 60)}`)))));
       if (days[i] === now) col.append(h('div', { class: 'nowline', style: { top: (minsOf(new Date()) / 60) * HOUR + 'px' } }));
@@ -87,7 +88,7 @@ function timeGrid(from, n) {
     }));
   const scroll = h('div', { class: 'cg-scroll' }, body);
   const grid = h('div', { class: 'cg', style: { '--n': n } }, head, allday, scroll);
-  grid.style.setProperty('--n', n);
+  grid.style.setProperty('--n', n); grid.style.setProperty('--hour', HOUR + 'px');
   requestAnimationFrame(() => { scroll.scrollTop = savedScroll ?? Math.max(0, Math.min(7, new Date().getHours() - 1) * HOUR); scroll.addEventListener('scroll', () => { savedScroll = scroll.scrollTop; }); });
   return grid;
 }
