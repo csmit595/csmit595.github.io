@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clip to Steward</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<header><img src="icons/icon-48.png" alt=""><strong>Clip to Steward</strong><button id="open" class="link" type="button">Open Steward</button></header>
+
+<main id="form">
+  <label class="lbl" for="title">Title</label>
+  <input id="title" class="field" autocomplete="off">
+
+  <div class="lbl">Save as</div>
+  <div id="modes" class="modes" role="radiogroup"></div>
+
+  <div id="preview" class="preview"><span class="sub">Reading the page…</span></div>
+  <div id="before" class="before" hidden></div>
+
+  <label class="lbl" for="notebook">Notebook</label><input id="notebook" class="field" list="nbs" autocomplete="off"><datalist id="nbs"></datalist>
+  <label class="lbl" for="tag">Tags</label>
+  <div id="tags" class="tags field"><input id="tag" list="tagl" placeholder="Add a tag, then Enter" autocomplete="off"></div><datalist id="tagl"></datalist>
+
+  <label class="lbl" for="remark">Note to yourself <span class="sub">(optional)</span></label>
+  <textarea id="remark" class="field" rows="1" placeholder="Why you're saving this"></textarea>
+
+  <button id="save" class="btn primary" type="button">Save to Steward</button>
+  <div id="status" class="status" aria-live="polite"></div>
+</main>
+
+<section id="done" class="done" hidden>
+  <div class="tick">✓</div>
+  <p id="doneMsg"></p>
+  <div class="row"><button id="openNote" class="btn primary" type="button">Open the note</button><button id="close" class="btn" type="button">Close</button></div>
+</section>
+<script src="popup.js"></script>
+</body>
+</html>

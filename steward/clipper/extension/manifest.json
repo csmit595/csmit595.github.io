@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Steward Clipper",
+  "version": "1.0.0",
+  "description": "Clip articles, whole pages, selections, bookmarks, screenshots and PDFs into Steward.",
+  "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
+  "action": { "default_popup": "popup.html", "default_title": "Clip to Steward (Option+Shift+S)", "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png" } },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["activeTab", "scripting", "contextMenus", "storage", "unlimitedStorage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    { "matches": ["https://csmit595.github.io/steward/*"], "js": ["bridge.js"], "run_at": "document_idle" }
+  ],
+  "commands": {
+    "_execute_action": { "suggested_key": { "default": "Alt+Shift+S", "mac": "Alt+Shift+S" }, "description": "Open the clipper" },
+    "clip-now": { "suggested_key": { "default": "Alt+Shift+A", "mac": "Alt+Shift+A" }, "description": "Clip this page right away (article, or the selection if there is one)" }
+  }
+}

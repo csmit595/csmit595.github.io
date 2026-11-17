@@ -264,7 +264,7 @@ function pickNote(selfId, onPick) {
 
 // ---- clipping -----------------------------------------------------------------------
 /** Create a note from something shared into Steward (Android share sheet, Mac bookmark button). */
-export async function createClip({ title, text, url, html, files, images }) {
+export async function createClip({ title, text, url, html, files, images, notebook, tags, quiet }) {
   const atts = files?.length ? await filesToAttachments(files) : [];
   const shared = [...atts]; // files shared in go at the end; pictures from the page stay where they were
   let body = '';
@@ -284,12 +284,12 @@ export async function createClip({ title, text, url, html, files, images }) {
     body = doc.body.innerHTML;
   }
   else if (text) body += mdToHtml(text);
-  if (url && !html && !(text || '').includes(url)) body += `<div><a href="${esc(url)}">${esc(url)}</a></div>`;
+  if (url && html === undefined && !(text || '').includes(url)) body += `<div><a href="${esc(url)}">${esc(url)}</a></div>`;
   body += shared.map(attHtml).join('<div><br></div>');
-  const n = M.addNote({ title: (title || (text || '').split('\n')[0] || (atts[0]?.name) || 'Clip').slice(0, 140), body, notebook: 'Clips', sourceUrl: url || '', attachments: atts });
-  toast('Saved to the Clips notebook');
+  const n = M.addNote({ title: (title || (text || '').split('\n')[0] || (atts[0]?.name) || 'Clip').slice(0, 140), body, notebook: notebook || 'Clips', tags: [...new Set((tags || []).map(t => String(t).trim()).filter(Boolean))], sourceUrl: url || '', attachments: atts });
   ocr.kick(1500);
-  go('#/note/' + n.id);
+  if (quiet) toast(`Clipped “${n.title.slice(0, 60)}” to ${notebook || 'Clips'}`, 'Open', () => go('#/note/' + n.id), 6000);
+  else { toast('Saved to the ' + (notebook || 'Clips') + ' notebook'); go('#/note/' + n.id); }
   if (sync.connected()) sync.run();
   return n;
 }

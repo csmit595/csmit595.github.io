@@ -1,5 +1,5 @@
 // Service worker: makes Steward open with no connection and receives things shared from other apps.
-const VERSION = 'steward-3.0.1';
+const VERSION = 'steward-3.1.0';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'css/app.css', 'icons/icon-192.png', 'icons/mark.png', 'icons/icon-512.png',
   'js/app.js', 'js/util.js', 'js/store.js', 'js/model.js', 'js/dates.js', 'js/filters.js', 'js/sync.js', 'js/ui.js', 'js/tasks.js', 'js/notes.js', 'js/calendar.js', 'js/ocr.js', 'js/search.js', 'js/semantic.js', 'js/semantic-worker.js', 'js/writing.js', 'js/cite.js', 'js/export-docx.js', 'js/writing-tools.js', 'js/dayplan.js', 'js/import-todoist.js'];
 
@@ -27,7 +27,7 @@ self.addEventListener('fetch', e => {
     })());
     return;
   }
-  if (e.request.method !== 'GET') return;
+  if (e.request.method !== 'GET' || url.pathname.includes('/clipper/')) return;
   // Network first so updates arrive; fall back to the saved copy when offline.
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);

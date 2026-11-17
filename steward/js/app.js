@@ -14,7 +14,7 @@ import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 import { importTodoist, describeImport } from './import-todoist.js';
 
-const VERSION = '3.0.1';
+const VERSION = '3.1.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -246,7 +246,15 @@ function viewSettings(main) {
       h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
       h('p', { class: 'sub', id: 'sem-line' }, semLine())),
     card('Clip from the web and other apps',
-      h('p', null, h('b', null, 'On your Mac: '), 'drag this button to your browser’s bookmarks bar. On any page, select text (or nothing, for the whole article) and click it.'), clipLink,
+      h('p', null, h('b', null, 'On your Mac, best: the Steward Clipper for Chrome. '), 'Clip the article, text only, the full page, a selection, a bookmark, a screenshot or a PDF, choose the notebook and tags, and add a note to yourself. It also adds “Save to Steward” to the right-click menu, and Option+Shift+S opens it.'),
+      h('a', { class: 'btn primary', href: 'clipper/steward-clipper.zip', download: 'steward-clipper.zip' }, 'Download the Steward Clipper'),
+      h('details', { class: 'help' }, h('summary', null, 'How to install it (one time, about a minute)'), h('ol', null,
+        h('li', null, 'Double-click the downloaded ', h('b', null, 'steward-clipper.zip'), ' in your Downloads folder. A ', h('b', null, 'steward-clipper'), ' folder appears. Move it somewhere it can stay, like Documents.'),
+        h('li', null, 'In Chrome, type ', h('code', null, 'chrome://extensions'), ' in the address bar and press Return.'),
+        h('li', null, 'Turn on ', h('b', null, 'Developer mode'), ' (top right).'),
+        h('li', null, 'Click ', h('b', null, 'Load unpacked'), ' and choose the ', h('b', null, 'steward-clipper'), ' folder.'),
+        h('li', null, 'Click the puzzle-piece button next to the address bar and pin ', h('b', null, 'Steward Clipper'), '.'))),
+      h('p', null, h('b', null, 'Any browser: '), 'drag this button to your bookmarks bar. On any page, select text (or nothing, for the whole article) and click it.'), clipLink,
       h('p', null, h('b', null, 'On your phone: '), 'in any app, tap Share and choose Steward. Shared text asks whether to make a task or a note; links, photos, PDFs and recordings become notes in the Clips notebook.'),
       h('p', null, h('b', null, 'One-tap “Add task” on your phone: '), 'press and hold the Steward icon, then drag “Add task” onto your home screen. Tapping it opens Steward straight to a new task.')),
     card('Bring in your old data',
@@ -392,6 +400,45 @@ async function intake() {
   return false;
 }
 
+// ---- the Steward Clipper Chrome extension --------------------------------------------------------
+// The extension's helper runs inside this page and passes clips in with postMessage. Steward tells it which notebooks
+// and tags exist (for its menus) and which pages are already clipped, then saves each clip and says when it is done.
+const dataUrlBlob = d => { const m = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(d || ''); if (!m) return null; const bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: m[1] || 'application/octet-stream' }); };
+function extMeta() {
+  return { version: VERSION, notebooks: store.all('notebooks').filter(n => !n.deleted).map(n => n.name).sort((a, b) => a.localeCompare(b)),
+    tags: M.allTags().map(t => t[0]), clipped: M.liveNotes().filter(n => n.sourceUrl).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 3000).map(n => [n.sourceUrl, n.id, (n.title || '').slice(0, 80)]) };
+}
+const extAnnounce = () => window.postMessage({ steward: 'ext-ready', meta: extMeta() }, location.origin);
+function extBridge() {
+  const seen = () => { try { return JSON.parse(localStorage.getItem('steward.extClips') || '{}'); } catch { return {}; } };
+  window.addEventListener('message', async e => {
+    if (e.source !== window || e.origin !== location.origin || !e.data || typeof e.data !== 'object') return;
+    if (e.data.steward === 'ext-ping') { extAnnounce(); return; }
+    if (e.data.steward !== 'ext-clip' || !e.data.clip?.id) return;
+    const c = e.data.clip, answer = r => window.postMessage({ steward: 'ext-saved', id: c.id, ...r }, location.origin);
+    const done = seen();
+    if (done[c.id] && store.get('notes', done[c.id])) return answer({ ok: true, noteId: done[c.id], notebook: c.notebook }); // sent twice
+    if (extBusy.has(c.id)) return; // already being saved; its answer covers this one
+    extBusy.add(c.id);
+    try {
+      const images = (c.images || []).map(i => ({ src: i.src, blob: dataUrlBlob(i.data) })).filter(i => i.blob);
+      const files = (c.files || []).map(f => { const b = dataUrlBlob(f.data); return b && new File([b], f.name || 'file', { type: f.mime || b.type }); }).filter(Boolean);
+      const n = await createClip({ title: c.title, url: c.url, html: c.html || '', images, files, notebook: c.notebook, tags: c.tags, quiet: true });
+      done[c.id] = n.id;
+      const keys = Object.keys(done); if (keys.length > 300) for (const k of keys.slice(0, keys.length - 300)) delete done[k];
+      try { localStorage.setItem('steward.extClips', JSON.stringify(done)); } catch {}
+      // Let the note reach Google Drive before saying it's saved, so a tab the clipper opened can close.
+      const until = Date.now() + 25000;
+      if (sync.connected()) { await sleep(300); while ((sync.busy || sync.again) && Date.now() < until) await sleep(400); }
+      answer({ ok: true, noteId: n.id, notebook: c.notebook || 'Clips' });
+      extAnnounce();
+    } catch (err) { console.warn('clip', err); answer({ ok: false, error: 'Steward could not save it: ' + (err?.message || err) }); }
+    finally { extBusy.delete(c.id); }
+  });
+}
+const extBusy = new Set();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 function seed() {
   store.merge('tasks', { filters: [
     { id: 'seed-f-promises', name: 'Customer promises', query: '@promise', favorite: true, updatedAt: 1, createdAt: 1 },
@@ -429,6 +476,7 @@ async function start() {
   sync.on(() => { drawSidebar(parseRoute()); const l = $('#sync-line'); if (l) l.textContent = syncLine(); });
   if (!(await intake())) render();
   document.body.classList.add('ready');
+  extBridge(); extAnnounce();
   if (sync.connected()) sync.run();
   window.addEventListener('online', () => sync.run());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (Date.now() - sync.lastSync > 60000) sync.run(); checkReminders(); schedule(); } });
