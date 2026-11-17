@@ -62,7 +62,7 @@ export function modal(build, opts = {}) {
   const built = build(close, body);
   if (built) body.append(built);
   root.append(wrap); stack.push(close);
-  setTimeout(() => (card.querySelector('[autofocus]') || card.querySelector('input,textarea'))?.focus(), 30);
+  setTimeout(() => { if (!card.contains(document.activeElement)) (card.querySelector('[autofocus]') || card.querySelector('input,textarea'))?.focus(); }, 30); // never pull the cursor away from a box already in use
   return close;
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && stack.length) { e.preventDefault(); stack[stack.length - 1](); } });

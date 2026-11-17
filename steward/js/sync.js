@@ -1,5 +1,5 @@
 // Google sign-in, Google Drive sync, Google Calendar, and phone reminders (through a "Steward Reminders" calendar).
-import { store, settings, FILES } from './store.js';
+import { store, settings, BUNDLES, ITEMWISE } from './store.js';
 import { applyOps, buildSummary, reminderTimes, openTasks } from './model.js';
 import { pad } from './util.js';
 
@@ -7,7 +7,22 @@ const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const CAL = 'https://www.googleapis.com/calendar/v3';
-const FILE_NAMES = { tasks: 'steward-tasks.json', notes: 'steward-notes.json', writing: 'steward-writing.json' };
+const FILE_NAMES = { tasks: 'steward-tasks.json' };
+// Before 2.4, notes and writing were whole-section files. Any still found are read in once, then moved to the trash.
+const OLD_FILES = { 'steward-notes.json': ['notebooks', 'notes', 'ocr'], 'steward-writing.json': ['docs', 'sources'] };
+const LIB = 'library';
+const WINDOW = 10 * 60000; // re-list files changed this long before the last one seen: Drive's file list can lag a little
+const itemName = (t, id) => `${t}.${id}.json`;
+const parseName = n => { const m = /^([a-z]+)\.(.+)\.json$/.exec(n || ''); return m && ITEMWISE.includes(m[1]) ? { t: m[1], id: m[2] } : null; };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+/** Run fn over items, n at a time. Stops starting new work after the first failure, then reports it. */
+async function pool(items, n, fn) {
+  let i = 0, err = null;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (!err && i < items.length) { const it = items[i++]; try { await fn(it); } catch (e) { err ||= e; } }
+  }));
+  if (err) throw err;
+}
 
 const ls = {
   get(k, d) { try { return JSON.parse(localStorage.getItem('steward.' + k)) ?? d; } catch { return d; } },
@@ -61,17 +76,29 @@ export const sync = {
     const t = ls.get('token');
     if (t && window.google?.accounts) try { google.accounts.oauth2.revoke(t.access_token, () => {}); } catch {}
     for (const k of ['token', 'connected', 'drive', 'versions', 'remCal', 'email']) ls.del(k);
+    store.driveClear().catch(() => {});
     this.set('off');
   },
   email() { return ls.get('email', ''); },
 
   async api(url, opts = {}, raw = false) {
-    const tok = await this.token(false);
-    const r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + tok, ...(opts.headers || {}) } });
-    if (r.status === 401) { ls.del('token'); throw new Error('auth'); }
-    if (!r.ok) { const e = new Error(`Google said ${r.status}`); e.status = r.status; try { e.detail = (await r.json()).error?.message; } catch {} throw e; }
-    if (raw) return r;
-    return r.status === 204 ? null : r.json();
+    const safe = !opts.method || opts.method === 'GET' || /\/upload\/drive\/v3\/files\/[^/?]+/.test(url) && opts.method === 'PATCH';
+    for (let attempt = 0; ; attempt++) {
+      const tok = await this.token(false);
+      let r;
+      try { r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + tok, ...(opts.headers || {}) } }); }
+      catch (e) { if (safe && attempt < 2 && navigator.onLine) { await wait(600 * 3 ** attempt); continue; } throw e; }
+      if (r.status === 401) { ls.del('token'); throw new Error('auth'); }
+      if (!r.ok) {
+        const e = new Error(`Google said ${r.status}`); e.status = r.status; try { e.detail = (await r.json()).error?.message; } catch {}
+        // Google asks apps to slow down and try again when busy; only repeat requests that cannot create a duplicate.
+        const busy = r.status === 429 || r.status === 503 || (r.status === 403 && /rate limit/i.test(e.detail || '')) || (safe && r.status >= 500);
+        if (busy && attempt < 2) { await wait(600 * 3 ** attempt); continue; }
+        throw e;
+      }
+      if (raw) return r;
+      return r.status === 204 ? null : r.json();
+    }
   },
 
   // ---- Drive helpers -----------------------------------------------------------
@@ -95,11 +122,11 @@ export const sync = {
     return d;
   },
   async upload(id, name, parent, mime, body) {
-    if (id) return this.api(`${UPLOAD}/files/${id}?uploadType=media&fields=id,version`, { method: 'PATCH', headers: { 'Content-Type': mime }, body });
+    if (id) return this.api(`${UPLOAD}/files/${id}?uploadType=media&fields=id,version,md5Checksum`, { method: 'PATCH', headers: { 'Content-Type': mime }, body });
     const form = new FormData();
     form.append('metadata', new Blob([JSON.stringify({ name, parents: [parent], mimeType: mime })], { type: 'application/json' }));
     form.append('file', body instanceof Blob ? body : new Blob([body], { type: mime }));
-    return this.api(`${UPLOAD}/files?uploadType=multipart&fields=id,version`, { method: 'POST', body: form });
+    return this.api(`${UPLOAD}/files?uploadType=multipart&fields=id,version,md5Checksum`, { method: 'POST', body: form });
   },
 
   // ---- the sync cycle ------------------------------------------------------------
@@ -112,9 +139,10 @@ export const sync = {
       await this.token(interactive);
       const d = await this.layout();
       await this.inbox(d);
-      let wrote = false;
-      for (const file of Object.keys(FILES)) wrote = (await this.syncFile(d, file)) || wrote;
       await this.pushAttachments(d);
+      let wrote = false;
+      for (const file of Object.keys(BUNDLES)) wrote = (await this.syncFile(d, file)) || wrote;
+      wrote = (await this.syncLibrary(d)) || wrote;
       if (wrote || !d.files.summary) await this.writeSummary(d);
       ls.set('drive', d);
       await this.syncReminders().catch(e => console.warn('reminders', e));
@@ -123,7 +151,7 @@ export const sync = {
       this.set('idle');
     } catch (e) {
       console.warn('sync', e);
-      if (e.status === 404) ls.del('drive');
+      if (e.status === 404) { ls.del('drive'); store.driveClear().catch(() => {}); }
       if (['auth', 'popup_failed_to_open', 'popup_closed', 'interaction_required', 'access_denied'].includes(e.message)) { this.set('auth', 'Tap to reconnect to Google'); this.armGesture(); }
       else if (e.message === 'offline' || e instanceof TypeError) this.set('offline', 'No signal. Changes are saved on this device and will sync later.');
       else this.set('error', e.detail || e.message);
@@ -162,6 +190,106 @@ export const sync = {
     }
     ls.set('versions', versions);
     return false;
+  },
+  /**
+   * Notes, notebooks, page text from scans, and Writing documents and sources: one small file per item in Steward/library.
+   * 1. Ask Drive which files changed since last time and download only those.
+   * 2. Upload only the items edited on this device since they were last uploaded.
+   * Newest edit of each item wins, as before.
+   */
+  async syncLibrary(d) {
+    const map = await store.driveAll();
+    let cursor = map.get('_cursor') || 0;
+    // the library folder: create it, and start over if someone deleted it
+    let alive = false;
+    if (d.lib) { try { alive = !(await this.api(`${DRIVE}/files/${d.lib}?fields=trashed`)).trashed; } catch (e) { if (e.status !== 404) throw e; } }
+    if (!alive) { d.lib = await this.folder(LIB, d.root); ls.set('drive', d); if (map.size) { await store.driveClear(); map.clear(); } cursor = 0; }
+    const save = [];
+    let changed = false;
+
+    // ---- 1. what changed in Drive ----
+    let q = `'${d.lib}' in parents and trashed=false`;
+    if (cursor) q += ` and modifiedTime > '${new Date(cursor - WINDOW).toISOString()}'`;
+    const listed = [];
+    let pageToken = '';
+    do {
+      const r = await this.api(`${DRIVE}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent('nextPageToken,files(id,name,version,md5Checksum,modifiedTime)')}&pageSize=1000${pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''}`);
+      listed.push(...(r.files || [])); pageToken = r.nextPageToken || '';
+    } while (pageToken);
+    const byFile = new Map(); for (const [k, m] of map) if (k !== '_cursor' && m?.f) byFile.set(m.f, k);
+    const known = f => { const m = map.get(byFile.get(f.id)); return m && (m.v === f.version || (m.h && m.h === f.md5Checksum)); };
+    const want = listed.filter(f => parseName(f.name) && !known(f)).sort((a, b) => a.id < b.id ? -1 : 1);
+    let newest = cursor;
+    for (const f of listed) { const t = Date.parse(f.modifiedTime); if (t > newest) newest = t; }
+    const losers = new Set();
+    let n = 0;
+    const take = (key, f, u) => {
+      const m = map.get(key);
+      if (m && m.f && m.f !== f.id) { // the same item in two files (two devices created it at once): both devices keep the same one
+        const win = m.f < f.id ? m.f : f.id; losers.add(win === f.id ? m.f : f.id);
+        if (win !== f.id) { byFile.delete(f.id); return; }
+      }
+      const v = { f: f.id, v: f.version, h: f.md5Checksum || null, u };
+      map.set(key, v); byFile.set(f.id, key); save.push([key, v]);
+    };
+    try { await pool(want, 6, async f => {
+      const nm = parseName(f.name);
+      let item = null;
+      try {
+        const j = JSON.parse(await (await this.api(`${DRIVE}/files/${f.id}?alt=media`, {}, true)).text());
+        if (j?.t === nm.t && j.v?.id === nm.id) item = j.v;
+      } catch (e) { if (e.message === 'auth' || e instanceof TypeError || e.status >= 500 || e.status === 429) throw e; }
+      const key = nm.t + '|' + nm.id;
+      if (!item) { take(key, f, null); } // unreadable: this device's copy (if it has one) will replace it
+      else { const u = item.updatedAt || 0; if (store.mergeItem(nm.t, item) === 'took') changed = true; take(key, f, u); }
+      if (want.length > 30 && ++n % 25 === 0) this.set('syncing', `Downloading ${n} of ${want.length}`);
+    }); } finally { store.settle(); if (save.length) await store.drivePut(save.splice(0)); } // keep what arrived even if Google stopped part-way
+    for (const id of losers) { await this.api(`${DRIVE}/files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => {}); }
+    if (newest !== cursor) { map.set('_cursor', newest); save.push(['_cursor', newest]); }
+    if (save.length) await store.drivePut(save.splice(0));
+
+    // ---- 2. forget items deleted more than 90 days ago, and their files ----
+    const cutoff = Date.now() - 90 * 864e5;
+    for (const t of ITEMWISE) for (const x of store.raw(t)) {
+      if (!x.deleted || (x.updatedAt || 0) > cutoff) continue;
+      const key = t + '|' + x.id, m = map.get(key);
+      if (m?.f) await this.api(`${DRIVE}/files/${m.f}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(e => { if (e.status !== 404) throw e; });
+      map.delete(key); await store.drivePut([[key, null]]); store.purge(t, x.id);
+    }
+
+    // ---- 3. upload what this device changed ----
+    const todo = [];
+    for (const t of ITEMWISE) for (const x of store.raw(t)) {
+      const m = map.get(t + '|' + x.id);
+      if (x.deleted && !m) continue; // made and deleted before it was ever uploaded
+      if (!m || m.u !== (x.updatedAt || 0)) todo.push([t, x.id]);
+    }
+    n = 0;
+    await pool(todo, 4, async ([t, id]) => {
+      const x = store.rawGet(t, id);
+      if (!x) return;
+      const key = t + '|' + id, m = map.get(key), u = x.updatedAt || 0;
+      const body = JSON.stringify({ app: 'steward', t, v: x });
+      let r;
+      try { r = await this.upload(m?.f, itemName(t, id), d.lib, 'text/plain', body); }
+      catch (e) { if (e.status !== 404 || !m?.f) throw e; r = await this.upload(null, itemName(t, id), d.lib, 'text/plain', body); } // its file was deleted: make a new one
+      const v = { f: r.id, v: r.version, h: r.md5Checksum || null, u };
+      map.set(key, v); await store.drivePut([[key, v]]);
+      if (todo.length > 30 && ++n % 25 === 0) this.set('syncing', `Uploading ${n} of ${todo.length}`);
+    });
+
+    // ---- 4. notes and writing saved by Steward 2.3 or earlier (on a device not yet updated) ----
+    const oq = `'${d.root}' in parents and trashed=false and (name='steward-notes.json' or name='steward-writing.json')`;
+    const old = (await this.api(`${DRIVE}/files?q=${encodeURIComponent(oq)}&fields=files(id,name)`)).files || [];
+    for (const f of old) {
+      const types = OLD_FILES[f.name]; if (!types) continue;
+      let j; try { j = JSON.parse(await (await this.api(`${DRIVE}/files/${f.id}?alt=media`, {}, true)).text()); } catch (e) { if (e.message === 'auth' || e instanceof TypeError) throw e; continue; }
+      for (const t of types) for (const x of j?.[t] || []) if (store.mergeItem(t, x) === 'took') changed = true;
+      store.settle(); await store.flush();
+      await this.api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
+      this.again = true; // upload what came in on the next pass
+    }
+    return changed || todo.length > 0;
   },
   async writeSummary(d) {
     if (!d.files.summary) { const f = await this.find('steward-summary.md', d.root); if (f) d.files.summary = f.id; }

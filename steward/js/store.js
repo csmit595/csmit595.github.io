@@ -7,6 +7,10 @@ export const FILES = {
   writing: ['docs', 'sources'],
 };
 export const TYPES = Object.values(FILES).flat();
+// Synced to Drive as one file per item (folder Steward/library), so editing one note uploads only that note.
+export const ITEMWISE = ['notebooks', 'notes', 'ocr', 'docs', 'sources'];
+// Synced as one combined file (small and changes often).
+export const BUNDLES = { tasks: FILES.tasks };
 const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
 
 const data = Object.fromEntries(TYPES.map(t => [t, new Map()]));
@@ -18,10 +22,10 @@ let flushTimer = null;
 
 function openDb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('steward', 3);
+    const r = indexedDB.open('steward', 4);
     r.onupgradeneeded = () => {
       const d = r.result;
-      for (const s of ['kv', 'blobs', 'events', 'vec', 'items']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
+      for (const s of ['kv', 'blobs', 'events', 'vec', 'items', 'drive']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
     };
     r.onsuccess = () => { r.result.onversionchange = () => r.result.close(); res(r.result); };
     r.onerror = () => rej(r.error);
@@ -55,6 +59,7 @@ export const store = {
   emit(info) { for (const fn of listeners) fn(info || {}); },
   all(type) { const out = []; for (const x of data[type].values()) if (!x.deleted) out.push(x); return out; },
   raw(type) { return [...data[type].values()]; },
+  rawGet(type, id) { return data[type].get(id) || null; },
   get(type, id) { const x = data[type].get(id); return x && !x.deleted ? x : null; },
   put(type, item, opts = {}) {
     if (!item.id) item.id = uid();
@@ -76,7 +81,7 @@ export const store = {
   },
   _changed(type, opts, id) {
     touchItem(type, id);
-    localStorage.setItem('steward.dirty.' + fileOf(type), '1');
+    if (!ITEMWISE.includes(type)) localStorage.setItem('steward.dirty.' + fileOf(type), '1');
     clearTimeout(flushTimer);
     flushTimer = setTimeout(() => this.flush().catch(e => console.warn('save failed', e)), 250);
     if (!opts.silent) this.emit({ type, local: true });
@@ -125,6 +130,24 @@ export const store = {
     if (changed) { this.flush().catch(() => {}); this.emit({ remote: true }); }
     return { localNewer, changed };
   },
+
+  /** Merge one item read from its own Drive file. Returns 'took' (Drive copy was newer), 'mine' (this device is newer) or 'same'. */
+  mergeItem(type, r) {
+    if (!data[type] || !r || !r.id) return 'same';
+    if ((r.updatedAt || 0) > Date.now() + 5 * 60000) r.updatedAt = Date.now(); // a device with a wrong clock must not win forever
+    const l = data[type].get(r.id);
+    if (!l || (r.updatedAt || 0) > (l.updatedAt || 0)) { data[type].set(r.id, r); touchItem(type, r.id); this._merged = true; return 'took'; }
+    return (l.updatedAt || 0) > (r.updatedAt || 0) ? 'mine' : 'same';
+  },
+  /** After a batch of mergeItem calls: save and tell the screens once. */
+  settle() { if (this._merged) { this._merged = false; this.flush().catch(() => {}); this.emit({ remote: true }); } },
+  /** Forget a long-deleted item for good. */
+  purge(type, id) { if (data[type].delete(id)) touchItem(type, id); },
+
+  // ---- which Drive file holds which item (this device only) -------------------
+  driveAll() { return new Promise((res, rej) => { const out = new Map(); const tx = db.transaction('drive', 'readonly'); const c = tx.objectStore('drive').openCursor(); c.onsuccess = () => { const cur = c.result; if (cur) { out.set(cur.key, cur.value); cur.continue(); } }; tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); }); },
+  drivePut(entries) { return idb('drive', 'readwrite', s => { for (const [k, v] of entries) v == null ? s.delete(k) : s.put(v, k); }); },
+  driveClear() { return idb('drive', 'readwrite', s => s.clear()); },
 
   // ---- attachments (binary files) ----------------------------------------
   putBlob(id, blob) { return idb('blobs', 'readwrite', s => s.put(blob, id)); },
