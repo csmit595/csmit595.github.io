@@ -177,7 +177,7 @@ export const store = {
 };
 
 // ---- settings (per device, not synced) -------------------------------------
-const defaults = { theme: 'light', weekStart: 0, home: 'today', autoRemind: true, remindLead: 0, clientId: '953176719624-701gj43chqpp040biv5qvvr628o8rflo.apps.googleusercontent.com', calView: 'week', hidden: [] };
+const defaults = { theme: 'light', weekStart: 0, home: 'today', autoRemind: true, remindLead: 0, clientId: '953176719624-701gj43chqpp040biv5qvvr628o8rflo.apps.googleusercontent.com', calView: 'week', hidden: [], workStart: '07:00', workEnd: '18:00', restDay: 0 };
 export const settings = {
   get(k) { try { const v = JSON.parse(localStorage.getItem('steward.set.' + k)); return v ?? defaults[k]; } catch { return defaults[k]; } },
   set(k, v) { localStorage.setItem('steward.set.' + k, JSON.stringify(v)); },

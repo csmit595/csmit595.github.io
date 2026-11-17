@@ -13,7 +13,7 @@ import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '2.6.0';
+const VERSION = '2.7.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -189,6 +189,9 @@ function viewSettings(main) {
   // Calendars
   const hidden = settings.get('hidden');
   const cals = sync.calendars().filter(c => c.summary !== 'Steward Reminders');
+  const timeIn = k => { const i = h('input', { type: 'time', class: 'field slim', value: settings.get(k), onchange: () => { if (i.value) settings.set(k, i.value); } }); return i; };
+  const restSel = h('select', { class: 'field slim', onchange: () => settings.set('restDay', +restSel.value) }, h('option', { value: -1 }, 'none'), ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => h('option', { value: i }, d)));
+  restSel.value = settings.get('restDay');
   const ws = h('select', { class: 'field slim', onchange: () => settings.set('weekStart', +ws.value) }, h('option', { value: 0 }, 'Sunday'), h('option', { value: 1 }, 'Monday'));
   ws.value = settings.get('weekStart');
   const theme = h('select', { class: 'field slim', onchange: () => { settings.set('theme', theme.value); applyTheme(); } }, [['auto', 'Match my device'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => h('option', { value: v }, l)));
@@ -214,6 +217,9 @@ function viewSettings(main) {
       perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Steward in this browser’s settings.')),
     card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
       h('label', { class: 'inline' }, 'Week starts on ', ws)),
+    card('Day plan', h('p', { class: 'sub' }, 'Today and Upcoming compare the minutes on each day’s tasks with the work hours left after your calendar blocks, so you can see whether the day fits.'),
+      h('label', { class: 'inline' }, 'Work hours from ', timeIn('workStart'), ' to ', timeIn('workEnd')),
+      h('label', { class: 'inline block' }, 'Rest day ', restSel)),
     card('Search by meaning', h('label', { class: 'inline' }, semBox, h('span', { class: 'grow' }, 'Find notes and tasks by what they are about, not only the exact words')),
       h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
       h('p', { class: 'sub', id: 'sem-line' }, semLine())),

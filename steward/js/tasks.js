@@ -4,6 +4,7 @@ import { store, settings } from './store.js';
 import * as M from './model.js';
 import { parseQuickAdd, parseDue, describeDue } from './dates.js';
 import { compileFilter } from './filters.js';
+import { planCard, planLine } from './dayplan.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu } from './ui.js';
 
 const go = hash => { location.hash = hash; };
@@ -175,6 +176,7 @@ function viewToday(main) {
   const planned = todays.reduce((n, t) => n + (t.duration || 0), 0);
   const d = new Date();
   main.append(header('Today', `${d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${todays.length} task${todays.length === 1 ? '' : 's'}${planned ? ' · ' + mins(planned) + ' planned' : ''}`));
+  main.append(planCard(now, { openTask, editHours: () => go('#/settings') }));
   if (overdue.length) main.append(group(`Overdue (${overdue.length})`, taskList(overdue, { showProject: true, flat: true }),
     btn('Move all to today', () => { for (const t of overdue) store.patch('tasks', t.id, { due: { ...t.due, date: now } }, { silent: true }); store.emit({ local: true }); }, 'link')));
   main.append(group('Today', h('div', null, todays.length ? taskList(todays, { showProject: true, flat: true }) : (!overdue.length && empty('Nothing due today', 'Add a task, or enjoy the margin.')), addRow('Add task', { due: { date: now, time: null, recur: null } }))));
@@ -189,7 +191,7 @@ function viewUpcoming(main) {
     const day = addDays(now, i), list = tasks.filter(t => t.due.date === day).sort((a, b) => (a.due.time || '99').localeCompare(b.due.time || '99') || byPri(a, b));
     const total = list.reduce((n, t) => n + (t.duration || 0), 0);
     main.append(group(fmtDate(day, true) + (i < 2 ? ' · ' + fromYmd(day).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : ''),
-      h('div', null, taskList(list, { showProject: true, flat: true }), addRow('Add task', { due: { date: day, time: null, recur: null } })), total ? h('span', { class: 'sub' }, mins(total)) : null));
+      h('div', null, taskList(list, { showProject: true, flat: true }), addRow('Add task', { due: { date: day, time: null, recur: null } })), planLine(day) || (total ? h('span', { class: 'sub' }, mins(total)) : null)));
   }
   const later = tasks.filter(t => t.due.date > addDays(now, 13)).sort(byDue);
   if (later.length) main.append(group(`Later (${later.length})`, taskList(later, { showProject: true, flat: true })));
