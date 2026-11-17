@@ -146,6 +146,12 @@ label.inline.block { margin: 5px 0; }
 .ebody a.nlink { background: var(--soft); border-radius: 5px; padding: 1px 6px; text-decoration: none; font-weight: 550; cursor: pointer; }
 .picker { max-height: 46vh; overflow-y: auto; }
 
+mark { background: var(--hl); color: inherit; border-radius: 3px; padding: 0 1px; }
+.sres { align-items: flex-start; } .sres svg { margin-top: 3px; flex: none; }
+.sres .stitle { font-weight: 600; display: block; overflow-wrap: anywhere; }
+.sres small { white-space: normal; } .sres small em { font-style: normal; font-weight: 600; } .sres .smeta { opacity: .8; font-size: 11.5px; }
+.skinds { margin-bottom: 10px; } .scount { margin-bottom: 4px; min-height: 18px; }
+
 /* dialogs, menus, toasts */
 .modal-wrap { position: fixed; inset: 0; background: rgba(20, 24, 16, .45); display: grid; place-items: start center; padding: 7vh 14px 14px; z-index: 50; overflow-y: auto; }
 .modal { background: var(--panel); border-radius: 14px; box-shadow: var(--shadow); width: min(600px, 100%); padding: 16px 18px 18px; }

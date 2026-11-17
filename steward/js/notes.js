@@ -6,6 +6,7 @@ import { sync } from './sync.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, isMobile } from './ui.js';
 import { openQuickAdd, openTask } from './tasks.js';
 import { ocr } from './ocr.js';
+import { search } from './search.js';
 
 const go = hash => { location.hash = hash; };
 let scope = { kind: 'all' }, query = '', sortBy = 'updated';
@@ -48,9 +49,10 @@ function scopeNotes() {
   let list = scope.kind === 'trash' ? store.all('notes').filter(n => n.trashed) : M.liveNotes();
   if (scope.kind === 'nb') list = list.filter(n => n.notebookId === scope.id);
   if (scope.kind === 'tag') list = list.filter(n => (n.tags || []).includes(scope.id));
+  if (query.trim() && scope.kind === 'trash') { const w = query.toLowerCase().split(/\s+/).filter(Boolean); return list.filter(n => w.every(x => ((n.title || '') + ' ' + textOf(n)).toLowerCase().includes(x))); }
   if (query.trim()) {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    list = list.filter(n => { const hay = ((n.title || '') + ' ' + textOf(n) + ' ' + (n.tags || []).join(' ') + ' ' + (n.attachments || []).map(a => a.name).join(' ') + ocr.textFor(n)).toLowerCase(); return words.every(w => hay.includes(w)); });
+    const ids = new Set(list.map(n => n.id));
+    return search(query, { kind: 'note', filter: n => ids.has(n.id) }).results.map(r => r.item).filter(n => ids.has(n.id));
   }
   const key = sortBy === 'title' ? (a, b) => (a.title || '').localeCompare(b.title || '') : sortBy === 'created' ? (a, b) => b.createdAt - a.createdAt : (a, b) => b.updatedAt - a.updatedAt;
   return list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || key(a, b));

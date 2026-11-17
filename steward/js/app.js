@@ -9,8 +9,9 @@ import { renderNotes, leaveNotes, newNote, createClip, importEnex } from './note
 import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
 import { ocr } from './ocr.js';
+import { search, highlight, excerpt } from './search.js';
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -98,26 +99,27 @@ function defaultsForRoute() {
 const closeDrawer = () => document.body.classList.remove('drawer');
 
 // ---- search -------------------------------------------------------------------------------
+let searchKind = '';
 function viewSearch(main) {
-  const input = h('input', { class: 'field big', type: 'search', placeholder: 'Search tasks and notes', value: searchQ, autofocus: true, oninput: debounce(() => { searchQ = input.value; drawResults(); }, 150) });
-  main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Search'))), input, h('div', { class: 'results' }));
+  const input = h('input', { class: 'field big', type: 'search', placeholder: 'Search tasks, notes and attachments', value: searchQ, autofocus: true, oninput: debounce(() => { searchQ = input.value; drawResults(); }, 120) });
+  const chips = h('div', { class: 'seg skinds' }, [['', 'Everything'], ['task', 'Tasks'], ['note', 'Notes']].map(([k, l]) => h('button', { type: 'button', class: k === searchKind ? 'on' : '', onclick: e => { searchKind = k; chips.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.currentTarget.classList.add('on'); drawResults(); } }, l)));
+  main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Search'))), input, chips, h('div', { class: 'results' }),
+    h('details', { class: 'help' }, h('summary', null, 'Search tips'), h('div', { html: 'Words can be in any order and partly typed. Small typos are forgiven when nothing else matches.<br><code>"exact phrase"</code> <code>-word</code> to leave something out<br><code>tag:receipts</code> <code>notebook:clips</code> <code>has:file</code> <code>in:notes</code><br><code>@promise</code> <code>project:hanel</code> <code>is:done</code> <code>in:tasks</code>' })));
   drawResults();
   if (!isMobile()) setTimeout(() => input.focus(), 30);
 }
 function drawResults() {
   const el = $('.results'); if (!el) return;
-  const words = searchQ.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return fill(el, h('div', { class: 'empty' }, h('strong', null, 'Search everything'), h('p', null, 'Tasks, notes, tags and attachment names.')));
-  const hit = s => words.every(w => s.toLowerCase().includes(w));
-  const tasks = store.all('tasks').filter(t => hit(`${t.content} ${t.description || ''} ${(t.labels || []).map(l => '@' + l).join(' ')} ${M.projectName(t.projectId)}`)).sort((a, b) => (a.completedAt ? 1 : 0) - (b.completedAt ? 1 : 0)).slice(0, 60);
-  const strip = html => html.replace(/<[^>]+>/g, ' ');
-  const inBody = n => `${n.title} ${strip(n.body || '')} ${(n.tags || []).join(' ')} ${(n.attachments || []).map(a => a.name).join(' ')}`;
-  const notes = M.liveNotes().filter(n => hit(inBody(n) + ocr.textFor(n))).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60);
-  fill(el, 
-    h('section', { class: 'group' }, h('div', { class: 'ghead' }, h('h3', null, `Tasks (${tasks.length})`)), h('div', { class: 'rows' }, tasks.map(t => h('button', { class: 'rowlink' + (t.completedAt ? ' done' : ''), onclick: () => openTask(t.id) }, icon(t.completedAt ? 'done' : 'check', 16), h('span', { class: 'grow' }, t.content, h('small', null, `${M.projectName(t.projectId)}${t.due ? ' · ' + fmtDate(t.due.date) : ''}`)))))),
-    h('section', { class: 'group' }, h('div', { class: 'ghead' }, h('h3', null, `Notes (${notes.length})`)), h('div', { class: 'rows' }, notes.map(n => h('a', { class: 'rowlink', href: '#/note/' + n.id }, icon('note', 16), h('span', { class: 'grow' }, n.title || 'Untitled', h('small', null, hit(inBody(n)) ? strip(n.body || '').replace(/\s+/g, ' ').trim().slice(0, 90) : 'Found inside an attachment: ' + snippet(ocr.textFor(n), words[0]))))))));
+  if (!searchQ.trim()) return fill(el, h('div', { class: 'empty' }, h('strong', null, 'Search everything'), h('p', null, 'Tasks, notes, comments, tags, and the text inside photos and PDFs.')));
+  const { q, results, fuzzy } = search(searchQ, { kind: searchKind || undefined });
+  const shown = results.slice(0, 80);
+  const row = r => r.kind === 'task'
+    ? h('button', { class: 'rowlink sres' + (r.item.completedAt ? ' done' : ''), onclick: () => openTask(r.item.id) }, icon(r.item.completedAt ? 'done' : 'check', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, q.terms)), (r.where.has('body')) && h('small', null, excerpt(r, q.terms)), h('small', { class: 'smeta' }, `Task · ${M.projectName(r.item.projectId)}${r.item.due ? ' · ' + fmtDate(r.item.due.date) : ''}${r.item.completedAt ? ' · completed' : ''}${(r.item.labels || []).length ? ' · @' + r.item.labels.join(' @') : ''}`)))
+    : h('a', { class: 'rowlink sres', href: '#/note/' + r.item.id }, icon('note', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, q.terms)), h('small', null, excerpt(r, q.terms)), h('small', { class: 'smeta' }, `Note · ${store.get('notebooks', r.item.notebookId)?.name || ''} · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}${(r.item.tags || []).length ? ' · ' + r.item.tags.join(', ') : ''}`)));
+  fill(el, h('div', { class: 'sub scount' }, results.length ? `${results.length} result${results.length === 1 ? '' : 's'}${results.length > 80 ? ', showing the best 80' : ''}${fuzzy ? ' · including close spellings' : ''}` : ''),
+    h('div', { class: 'rows' }, shown.map(row)),
+    !results.length && h('div', { class: 'empty' }, h('strong', null, 'Nothing found'), h('p', null, 'Try fewer or shorter words.')));
 }
-
 const snippet = (text, w) => { const i = text.toLowerCase().indexOf(w); return text.slice(Math.max(0, i - 30), i + 60).replace(/\s+/g, ' ').trim(); };
 
 // ---- settings --------------------------------------------------------------------------------

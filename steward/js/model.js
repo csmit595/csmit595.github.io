@@ -127,6 +127,16 @@ export function applyOps(ops) {
         if (it.markdown !== undefined) { it.body = mdToHtml(it.markdown); delete it.markdown; }
         if (it.appendMarkdown !== undefined) { it.body = (cur?.body || '') + mdToHtml(it.appendMarkdown); delete it.appendMarkdown; }
         if (it.text !== undefined) { it.body = esc(it.text).replace(/\n/g, '<br>'); delete it.text; }
+        if (Array.isArray(it.files)) { // files Claude uploaded to Steward/attachments: [{driveId, name, mime, size, text}]
+          const atts = [...(cur?.attachments || [])]; let add = '';
+          for (const f of it.files) {
+            if (!f?.driveId) continue;
+            const a = { id: 'g' + String(f.driveId).replace(/[^\w-]/g, '').slice(0, 40), name: f.name || 'file', mime: f.mime || 'application/octet-stream', size: f.size || 0, driveId: f.driveId };
+            if (!atts.find(x => x.id === a.id)) { atts.push(a); add += (a.mime.startsWith('image/') ? `<img data-att="${a.id}" alt="${esc(a.name)}">` : a.mime.startsWith('audio/') ? `<audio controls data-att="${a.id}"></audio>` : `<a class="att" data-att="${a.id}" contenteditable="false">${esc(a.name)}</a>`) + '<div><br></div>'; }
+            if (f.text) store.put('ocr', { id: a.id, name: a.name, text: String(f.text).slice(0, 30000), by: 'claude' }, { silent: true });
+          }
+          it.attachments = atts; it.body = (it.body ?? cur?.body ?? '') + add; delete it.files;
+        }
         if (it.body !== undefined) it.body = sanitize(it.body);
         if (cur) store.put('notes', { ...cur, ...it });
         else addNote(it);
