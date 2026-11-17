@@ -5,7 +5,8 @@ const FONT = 'Times New Roman';
 export async function toDocx(doc, { meta, notes, bib }) {
   await load();
   const D = window.docx;
-  const size = Math.round(meta.fontSize * 2), line = Math.round(meta.spacing * 240);
+  // BJU manual: set line spacing to an exact number of points (24 for the body, 12 for single-spaced parts), not Word's "double".
+  const size = Math.round(meta.fontSize * 2), line = Math.round(meta.fontSize * meta.spacing * 20), one = Math.round(meta.fontSize * 20), EX = 'exact';
   const numOf = new Map(notes.map(n => [n.id, n.n]));
   let listSeq = 0;
 
@@ -31,20 +32,20 @@ export async function toDocx(doc, { meta, notes, bib }) {
   const align = el => { const a = (el.getAttribute?.('style') || '').match(/text-align:\s*(\w+)/)?.[1] || el.getAttribute?.('align'); return a === 'center' ? D.AlignmentType.CENTER : a === 'right' ? D.AlignmentType.RIGHT : undefined; };
   const BLOCK = /^(P|DIV|H1|H2|H3|H4|BLOCKQUOTE|UL|OL|TABLE|HR|LI|SECTION)$/;
   const hasBlocks = el => [...el.children].some(c => BLOCK.test(c.tagName));
-  const para = (el, opts = {}) => new D.Paragraph({ children: runs(el, opts.fmt), alignment: opts.alignment ?? align(el), spacing: { line: opts.line ?? line, lineRule: 'auto', before: opts.before, after: opts.after }, indent: opts.indent ?? { firstLine: 720 }, keepNext: opts.keepNext, bullet: opts.bullet, numbering: opts.numbering });
+  const para = (el, opts = {}) => new D.Paragraph({ children: runs(el, opts.fmt), alignment: opts.alignment ?? align(el), spacing: { line: opts.line ?? line, lineRule: EX, before: opts.before, after: opts.after }, indent: opts.indent ?? { firstLine: 720 }, keepNext: opts.keepNext, bullet: opts.bullet, numbering: opts.numbering });
 
   const blocks = (parent, ctx = {}) => {
     const out = []; let loose = null;
-    const flush = () => { if (loose && loose.textContent.trim()) out.push(para(loose, ctx.quote ? { line: 240, indent: { left: 720 }, after: 240 } : {})); loose = null; };
+    const flush = () => { if (loose && loose.textContent.trim()) out.push(para(loose, ctx.quote ? { line: one, indent: { left: 720 }, after: one } : {})); loose = null; };
     for (const c of [...parent.childNodes]) {
       if (c.nodeType === 3 || (c.nodeType === 1 && !BLOCK.test(c.tagName))) { if (c.nodeType === 3 && !c.data.trim() && !loose) continue; loose ||= parent.ownerDocument.createElement('span'); loose.append(c.cloneNode(true)); continue; }
       if (c.nodeType !== 1) continue;
       flush();
       const t = c.tagName;
-      if (t === 'H1') out.push(para(c, { alignment: D.AlignmentType.CENTER, indent: {}, keepNext: true, fmt: { bold: true } }));
-      else if (t === 'H2') out.push(para(c, { alignment: D.AlignmentType.CENTER, indent: {}, keepNext: true }));
-      else if (t === 'H3' || t === 'H4') out.push(para(c, { indent: {}, keepNext: true, fmt: { bold: true } }));
-      else if (t === 'BLOCKQUOTE') { if (hasBlocks(c)) out.push(...blocks(c, { quote: true })); else out.push(para(c, { line: 240, indent: { left: 720 }, before: 240, after: 240 })); }
+      if (t === 'H1') out.push(para(c, { alignment: D.AlignmentType.CENTER, indent: {}, keepNext: true, before: one, fmt: { italics: true } }));
+      else if (t === 'H2') out.push(para(c, { alignment: D.AlignmentType.CENTER, indent: {}, keepNext: true, before: one }));
+      else if (t === 'H3' || t === 'H4') out.push(para(c, { indent: {}, keepNext: true, before: one, fmt: { italics: true } }));
+      else if (t === 'BLOCKQUOTE') { if (hasBlocks(c)) out.push(...blocks(c, { quote: true })); else out.push(para(c, { line: one, indent: { left: 720 }, before: one, after: one })); }
       else if (t === 'UL' || t === 'OL') {
         const inst = ++listSeq, level = ctx.level || 0;
         for (const li of c.children) {
@@ -55,12 +56,12 @@ export async function toDocx(doc, { meta, notes, bib }) {
         }
       }
       else if (t === 'TABLE') {
-        const rows = [...c.querySelectorAll('tr')].map(tr => new D.TableRow({ children: [...tr.children].map(td => new D.TableCell({ children: [new D.Paragraph({ children: runs(td, td.tagName === 'TH' ? { bold: true } : {}), spacing: { line: 240, lineRule: 'auto' } })], margins: { top: 60, bottom: 60, left: 100, right: 100 } })) }));
-        if (rows.length) out.push(new D.Table({ rows, width: { size: 100, type: D.WidthType.PERCENTAGE } }), new D.Paragraph({ children: [], spacing: { line: 240 } }));
+        const rows = [...c.querySelectorAll('tr')].map(tr => new D.TableRow({ children: [...tr.children].map(td => new D.TableCell({ children: [new D.Paragraph({ children: runs(td, td.tagName === 'TH' ? { bold: true } : {}), spacing: { line: one, lineRule: EX } })], margins: { top: 60, bottom: 60, left: 100, right: 100 } })) }));
+        if (rows.length) out.push(new D.Table({ rows, width: { size: 100, type: D.WidthType.PERCENTAGE } }), new D.Paragraph({ children: [], spacing: { line: one, lineRule: EX } }));
       }
       else if (t === 'HR') { if (c.classList.contains('pagebreak')) out.push(new D.Paragraph({ children: [new D.PageBreak()] })); }
       else if (hasBlocks(c)) out.push(...blocks(c, ctx));
-      else if (ctx.quote) out.push(para(c, { line: 240, indent: { left: 720 }, after: 240 }));
+      else if (ctx.quote) out.push(para(c, { line: one, indent: { left: 720 }, after: one }));
       else out.push(para(c));
     }
     flush();
@@ -69,20 +70,27 @@ export async function toDocx(doc, { meta, notes, bib }) {
 
   const dom = new DOMParser().parseFromString(`<body>${doc.body || ''}</body>`, 'text/html');
   const body = blocks(dom.body);
-  if (!meta.titlePage && doc.title) body.unshift(new D.Paragraph({ children: [new D.TextRun({ text: doc.title, bold: true, font: FONT, size })], alignment: D.AlignmentType.CENTER, spacing: { line, lineRule: 'auto', after: 240 } }));
+  const heading = (text, extra = {}) => new D.Paragraph({ children: [new D.TextRun({ text, bold: true, font: FONT, size })], alignment: D.AlignmentType.CENTER, spacing: { line: one, lineRule: EX, after: one * 2 }, ...extra });
+  if (doc.title) body.unshift(heading(doc.title)); // paper title in bold at the top of page 1, followed by a triple space
   if (bib.length) {
-    body.push(new D.Paragraph({ children: [new D.TextRun({ text: 'Bibliography', bold: true, font: FONT, size })], alignment: D.AlignmentType.CENTER, pageBreakBefore: true, spacing: { line, lineRule: 'auto', after: 480 } }));
-    for (const b of bib) body.push(new D.Paragraph({ children: fromHtml(b), indent: { left: 720, hanging: 720 }, spacing: { line: 240, lineRule: 'auto', after: 240 } }));
+    body.push(heading('Bibliography', { pageBreakBefore: true }));
+    for (const b of bib) body.push(new D.Paragraph({ children: fromHtml(b), indent: { left: 720, hanging: 720 }, spacing: { line: one, lineRule: EX, after: one } }));
   }
   const footnotes = {};
-  for (const n of notes) footnotes[n.n] = { children: [new D.Paragraph({ children: [new D.TextRun({ text: ' ', font: FONT, size: 20 }), ...fromHtml(n.html, { size: 20 })], indent: { firstLine: 720 }, spacing: { line: 240, lineRule: 'auto', after: 200 } })] };
+  for (const n of notes) footnotes[n.n] = { children: [new D.Paragraph({ children: [new D.TextRun({ text: ' ', font: FONT, size: 20 }), ...fromHtml(n.html, { size: 20 })], indent: { firstLine: 720 }, spacing: { line: 240, lineRule: EX, after: 240 } })] };
 
   const margin = { top: 1440, right: 1440, bottom: 1440, left: 1440 };
   const pageNo = () => new D.Paragraph({ alignment: meta.pageNum === 'top' ? D.AlignmentType.RIGHT : D.AlignmentType.CENTER, children: [new D.TextRun({ children: [D.PageNumber.CURRENT], font: FONT, size: 24 })] });
   const sections = [];
-  if (meta.titlePage) {
-    const c = (text, opts = {}) => new D.Paragraph({ alignment: D.AlignmentType.CENTER, spacing: { line: 480, lineRule: 'auto', before: opts.before }, children: [new D.TextRun({ text, font: FONT, size: 24, bold: opts.bold })] });
-    sections.push({ properties: { page: { margin, size: { width: 12240, height: 15840 } } }, children: [c(doc.title || 'Untitled', { bold: true, before: 3400 }), ...(meta.subtitle ? [c(meta.subtitle)] : []), ...[meta.author, meta.course, meta.professor, meta.date].filter(Boolean).map((t, i) => c(t, i === 0 ? { before: 3200 } : {}))] });
+  if (meta.titlePage) { // BJU title page: 2-inch top margin; title, byline, affiliation and place/date spread down the page
+    const c = (text, o = {}) => new D.Paragraph({ alignment: D.AlignmentType.CENTER, spacing: { line: o.line || 480, lineRule: EX, before: o.before }, children: [new D.TextRun({ text, font: FONT, size: 24, bold: o.bold })] });
+    const titleLines = Math.max(1, Math.ceil((doc.title || 'Untitled').length / 62));
+    const gap = Math.max(900, Math.round((11520 - 240 - titleLines * 240 - 8 * 480) / 3)); // space left on the page, shared between the three gaps
+    sections.push({ properties: { page: { margin: { ...margin, top: 2880 }, size: { width: 12240, height: 15840 } } }, children: [
+      c(doc.title || 'Untitled', { bold: true, line: 240 }),
+      c('by', { before: gap }), c(meta.author || '', { bold: true }),
+      c('A Paper Submitted to', { before: gap }), c('the Faculty of BJU Seminary'), c('in Fulfillment of the Requirements for the Degree of'), c(meta.degree || ''),
+      c(meta.place || 'Greenville, South Carolina', { before: gap }), c(meta.monthYear || '')] });
   }
   sections.push({
     properties: { page: { margin, size: { width: 12240, height: 15840 }, pageNumbers: { start: 1, formatType: D.NumberFormat.DECIMAL } } },
@@ -91,9 +99,22 @@ export async function toDocx(doc, { meta, notes, bib }) {
   });
   const file = new D.Document({
     creator: meta.author || 'Steward', title: doc.title || 'Document',
-    styles: { default: { document: { run: { font: FONT, size }, paragraph: { spacing: { line, lineRule: 'auto' } } } } },
+    styles: { default: { document: { run: { font: FONT, size }, paragraph: { spacing: { line, lineRule: EX } } } } },
     numbering: { config: [{ reference: 'numbers', levels: [0, 1, 2, 3].map(level => ({ level, format: D.LevelFormat.DECIMAL, text: `%${level + 1}.`, alignment: D.AlignmentType.START })) }] },
     footnotes, sections,
   });
-  return D.Packer.toBlob(file);
+  const blob = await D.Packer.toBlob(file);
+  // BJU manual: footnotes sit "below text", not at the bottom of the page. Word stores that in settings.xml, which the builder cannot set, so patch the file.
+  try {
+    if (!window.fflate) await new Promise((res, rej) => { const s = document.createElement('script'); s.src = new URL('vendor/fflate/fflate.js', document.baseURI).href; s.onload = res; s.onerror = rej; document.head.append(s); });
+    const F = window.fflate, files = F.unzipSync(new Uint8Array(await blob.arrayBuffer()));
+    const key = 'word/settings.xml';
+    if (files[key]) {
+      let xml = F.strFromU8(files[key]);
+      if (!xml.includes('<w:footnotePr>')) xml = xml.includes('<w:compat>') ? xml.replace('<w:compat>', '<w:footnotePr><w:pos w:val="beneathText"/></w:footnotePr><w:compat>') : xml.replace('</w:settings>', '<w:footnotePr><w:pos w:val="beneathText"/></w:footnotePr></w:settings>');
+      files[key] = F.strToU8(xml);
+      return new Blob([F.zipSync(files)], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    }
+  } catch (e) { console.warn('footnote position not set', e); }
+  return blob;
 }

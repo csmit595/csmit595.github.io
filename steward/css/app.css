@@ -235,10 +235,10 @@ a.att::before { content: "📎"; }
 .wtp { display: grid; justify-items: center; gap: 0; width: 100%; border: 1px dashed #bbb; background: #fafafa; border-radius: 6px; padding: 14px; margin-bottom: 26px; font: inherit; line-height: 1.5; color: #333; text-align: center; }
 .wtp .gap { height: 14px; } .wtp small { color: #888; font: 12px var(--sans); margin-top: 8px; }
 .wtitle { display: block; width: 100%; border: 0; outline: none; background: none; color: #111; font: bold var(--fs)/var(--sp) "Times New Roman", Times, serif; text-align: center; margin-bottom: 12pt; }
-.wsheet.paper .wtitle { display: none; } .wsheet.paper .wtp b::after { content: ""; }
+.wsheet.paper .wtitle { line-height: 1.1; margin-bottom: 24pt; }
 .wbody { outline: none; min-height: 5in; counter-reset: fn; overflow-wrap: anywhere; }
 .wbody p, .wbody > div { margin: 0; text-indent: 0.5in; }
-.wbody h1, .wbody h2, .wbody h3 { font: inherit; margin: 0; text-indent: 0; } .wbody h1 { text-align: center; font-weight: bold; } .wbody h2 { text-align: center; } .wbody h3 { font-weight: bold; }
+.wbody h1, .wbody h2, .wbody h3 { font: inherit; font-weight: normal; margin: 12pt 0 0; text-indent: 0; } .wbody h1 { text-align: center; font-style: italic; } .wbody h2 { text-align: center; } .wbody h3 { font-style: italic; }
 .wbody blockquote { margin: 12pt 0 12pt 0.5in; line-height: 1.15; text-indent: 0; } .wbody blockquote p { text-indent: 0; }
 .wbody ul, .wbody ol { margin: 0; padding-left: 1in; } .wbody li { text-indent: 0; }
 .wbody table { border-collapse: collapse; width: 100%; line-height: 1.15; margin: 12pt 0; } .wbody td, .wbody th { border: 1px solid #000; padding: 3pt 5pt; text-indent: 0; min-width: 40px; }
@@ -247,7 +247,7 @@ sup.fn { cursor: pointer; font-size: 0.7em; line-height: 0; color: #14401c; padd
 sup.fn.flash, .wnote.flash { background: #fff3a3; }
 .wrule { width: 2in; border-top: 1px solid #000; margin: 30pt 0 8pt; }
 .wnote { display: flex; gap: 6px; font-size: 10pt; line-height: 1.25; margin-bottom: 8pt; align-items: flex-start; border-radius: 4px; }
-.wnum { border: 0; background: none; padding: 0; font: inherit; color: #14401c; cursor: pointer; min-width: 0.4in; text-align: right; }
+.wnum { border: 0; background: none; padding: 0; font: inherit; font-size: 0.75em; vertical-align: super; color: #14401c; cursor: pointer; min-width: 0.5in; text-align: right; align-self: flex-start; }
 .wtext { flex: 1; outline: none; min-height: 1.2em; } .wtext:empty::before { content: attr(data-placeholder); color: #999; }
 .wtools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 3px; font-family: var(--sans); }
 .wpg, .wsfx { border: 1px solid #ccc; border-radius: 5px; padding: 2px 6px; font: 12px var(--sans); background: #fff; color: #111; } .wpg { width: 70px; } .wsfx { flex: 1; min-width: 120px; }

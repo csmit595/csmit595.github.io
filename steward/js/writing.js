@@ -8,9 +8,9 @@ import { icon, btn, iconBtn, modal, confirmDlg, toast, menu, isMobile } from './
 
 const go = hash => { location.hash = hash; };
 let mounted = null, listQ = '';
-const KINDS = { paper: 'Turabian paper', sermon: 'Sermon', other: 'Document' };
+const KINDS = { paper: 'Turabian paper (BJU Seminary)', sermon: 'Sermon', other: 'Document' };
 const TEMPLATES = {
-  paper: { title: '', body: '<p><br></p>', meta: { titlePage: true, bibliography: true, spacing: 2, fontSize: 12, pageNum: 'bottom' } },
+  paper: { title: '', body: '<p><br></p>', meta: { titlePage: true, bibliography: true, spacing: 2, fontSize: 12, pageNum: 'bottom', place: 'Greenville, South Carolina' } },
   sermon: { title: '', body: '<h3>Passage</h3><p><br></p><h3>Introduction</h3><p><br></p><h3>Exposition</h3><p><br></p><h3>Application</h3><p><br></p><h3>Conclusion</h3><p><br></p>', meta: { titlePage: false, bibliography: false, spacing: 1.5, fontSize: 14, pageNum: 'bottom' } },
   other: { title: '', body: '<p><br></p>', meta: { titlePage: false, bibliography: false, spacing: 1.5, fontSize: 12, pageNum: 'bottom' } },
 };
@@ -36,7 +36,7 @@ export function computeNotes(doc, order = fnOrder(doc.body), fns = doc.footnotes
 export function bibliographyFor(doc, order = fnOrder(doc.body), fns = doc.footnotes || {}) {
   const ids = new Set(order.map(id => fns[id]?.cite?.sourceId).filter(Boolean));
   for (const id of metaOf(doc).extraSources || []) ids.add(id);
-  return [...ids].map(id => store.get('sources', id)).filter(Boolean).sort((a, b) => C.sortKey(a).localeCompare(C.sortKey(b))).map(s => C.bibEntry(s));
+  return C.bibliography([...ids].map(id => store.get('sources', id)).filter(Boolean));
 }
 /** Plain text of a document (body plus footnotes), for search. */
 export function docText(doc) {
@@ -59,7 +59,7 @@ export function renderWriting(route, main, info = {}) {
 // ---- document list ---------------------------------------------------------------------
 function newDoc(kind) {
   const t = TEMPLATES[kind];
-  const d = store.put('docs', { title: '', kind, body: t.body, footnotes: {}, meta: { ...t.meta, date: new Date().toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) }, trashed: false });
+  const d = store.put('docs', { title: '', kind, body: t.body, footnotes: {}, meta: { ...t.meta, monthYear: new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) }, trashed: false });
   go('#/doc/' + d.id);
 }
 function viewList(main) {
@@ -78,7 +78,7 @@ function viewList(main) {
   };
   main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Writing'), h('div', { class: 'sub' }, 'Papers, sermons and other long documents')),
     h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/sources' }, icon('book', 16), 'Sources'),
-      btn('New', e => menu(e.currentTarget, [{ label: 'Turabian paper', icon: 'edit', onclick: () => newDoc('paper') }, { label: 'Sermon manuscript', icon: 'edit', onclick: () => newDoc('sermon') }, { label: 'Blank document', icon: 'edit', onclick: () => newDoc('other') }]), 'primary', 'plus'))),
+      btn('New', e => menu(e.currentTarget, [{ label: 'Turabian paper (BJU Seminary)', icon: 'edit', onclick: () => newDoc('paper') }, { label: 'Sermon manuscript', icon: 'edit', onclick: () => newDoc('sermon') }, { label: 'Blank document', icon: 'edit', onclick: () => newDoc('other') }]), 'primary', 'plus'))),
     search, rows);
   draw();
 }
@@ -111,7 +111,7 @@ function viewSources(main) {
       !list.length && h('div', { class: 'empty' }, h('strong', null, 'No sources yet'), h('p', null, 'Add each book or article once. Steward writes the footnotes and bibliography from it.')));
   };
   search.addEventListener('input', draw);
-  main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Sources'), h('div', { class: 'sub' }, 'Shared by all your documents · Turabian notes-bibliography style')),
+  main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Sources'), h('div', { class: 'sub' }, 'Shared by all your documents · formatted to the BJU Seminary style manual (Turabian 9)')),
     h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/writing' }, icon('back', 16), 'Documents'), btn('New source', () => editSource(null, draw), 'primary', 'plus'))), search, rows);
   draw();
 }
@@ -154,7 +154,7 @@ function mountEditor(main, id) {
   const touch = () => { dirty = true; queue(); };
   const sheet = h('div', { class: 'wsheet' });
   const applyLook = () => { sheet.style.setProperty('--sp', meta.spacing); sheet.style.setProperty('--fs', meta.fontSize + 'pt'); sheet.classList.toggle('paper', d0.kind === 'paper');
-    fill(tp, meta.titlePage ? [h('b', null, title.value || 'Title'), meta.subtitle && h('span', null, meta.subtitle), h('span', { class: 'gap' }), h('span', null, meta.author || 'Your name'), h('span', null, meta.course || 'Course'), meta.professor && h('span', null, meta.professor), h('span', null, meta.date || 'Date'), h('small', null, 'Title page · click to edit')] : h('small', null, 'No title page · click for page setup')); };
+    fill(tp, meta.titlePage ? [h('b', null, title.value || 'Title'), h('span', { class: 'gap' }), h('span', null, 'by'), h('b', null, meta.author || 'Your name'), h('span', { class: 'gap' }), h('span', null, 'A Paper Submitted to the Faculty of BJU Seminary'), h('span', null, 'in Fulfillment of the Requirements for the Degree of'), h('span', null, meta.degree || '<Degree Name>'), h('span', { class: 'gap' }), h('span', null, meta.place || 'Greenville, South Carolina'), h('span', null, meta.monthYear || 'Month Year'), h('small', null, 'Title page · click to edit')] : h('small', null, 'No title page · click for page setup')); };
 
   // selection helpers
   let saved = null;
@@ -169,7 +169,7 @@ function mountEditor(main, id) {
     const ord = order(); lastOrder = ord.join(',');
     const notes = computeNotes({}, ord, fns);
     fill(notesEl, notes.length > 0 && h('div', { class: 'wrule' }), notes.map(n => {
-      const row = h('div', { class: 'wnote', dataset: { fn: n.id } }, h('button', { class: 'wnum', type: 'button', title: 'Go to this footnote in the text', onclick: () => { const m = body.querySelector(`sup.fn[data-fn="${n.id}"]`); m?.scrollIntoView({ block: 'center', behavior: 'smooth' }); m?.classList.add('flash'); setTimeout(() => m?.classList.remove('flash'), 1200); } }, n.n + '.'));
+      const row = h('div', { class: 'wnote', dataset: { fn: n.id } }, h('button', { class: 'wnum', type: 'button', title: 'Go to this footnote in the text', onclick: () => { const m = body.querySelector(`sup.fn[data-fn="${n.id}"]`); m?.scrollIntoView({ block: 'center', behavior: 'smooth' }); m?.classList.add('flash'); setTimeout(() => m?.classList.remove('flash'), 1200); } }, String(n.n)));
       if (n.cite) {
         const pg = h('input', { class: 'wpg', placeholder: 'page', value: n.cite.pages || '', title: 'Page cited', onchange: () => { fns[n.id].cite.pages = pg.value.trim(); touch(); drawNotes(); } });
         const sfx = h('input', { class: 'wsfx', placeholder: 'add a comment after the citation', value: n.cite.suffix || '', onchange: () => { fns[n.id].cite.suffix = sfx.value.trim(); touch(); drawNotes(); } });
@@ -205,11 +205,11 @@ function mountEditor(main, id) {
     const f = (label, key, ph = '') => { const inp = h('input', { class: 'field', value: meta[key] || '', placeholder: ph }); inp.dataset.key = key; return h('label', null, label, inp); };
     const chk = (label, key) => { const c = h('input', { type: 'checkbox', checked: !!meta[key] }); c.dataset.key = key; return h('label', { class: 'inline' }, c, ' ' + label); };
     const sel = (label, key, opts) => { const s = h('select', { class: 'field' }, opts.map(([v, l]) => h('option', { value: v }, l))); s.value = String(meta[key]); s.dataset.key = key; return h('label', null, label, s); };
-    const form = h('div', { class: 'form' }, chk('Include a title page', 'titlePage'), f('Subtitle (optional)', 'subtitle'), f('Your name', 'author'), f('Course', 'course', 'STh 692: Systematic Theology'), f('Professor (optional)', 'professor', 'Dr. …'), f('Date', 'date'),
+    const form = h('div', { class: 'form' }, chk('Include a title page', 'titlePage'), f('Your name (first name, middle initial, last name; no titles)', 'author', 'Charles E. Smith'), f('Degree', 'degree', 'Master of Divinity'), f('City and state', 'place', 'Greenville, South Carolina'), f('Month and year', 'monthYear', 'November 2026'),
       chk('Add a bibliography of the sources cited', 'bibliography'),
-      sel('Line spacing', 'spacing', [['2', 'Double (Turabian)'], ['1.5', 'One and a half'], ['1.15', 'Single']]), sel('Text size', 'fontSize', [['12', '12 point (Turabian)'], ['14', '14 point'], ['16', '16 point'], ['11', '11 point']]),
-      sel('Page numbers', 'pageNum', [['bottom', 'Bottom center'], ['top', 'Top right'], ['none', 'None']]),
-      h('p', { class: 'sub' }, 'Turabian papers use 1-inch margins, Times New Roman 12 point, double spacing, a half-inch first-line indent, and footnotes at the foot of each page. Check your course syllabus for anything your professor changes.'));
+      sel('Line spacing', 'spacing', [['2', 'Double (BJU papers)'], ['1.5', 'One and a half'], ['1.15', 'Single']]), sel('Text size', 'fontSize', [['12', '12 point (BJU papers)'], ['14', '14 point'], ['16', '16 point'], ['11', '11 point']]),
+      sel('Page numbers', 'pageNum', [['bottom', 'Bottom center (BJU papers)'], ['top', 'Top right'], ['none', 'None']]),
+      d0.kind === 'paper' && h('p', { class: 'sub' }, 'Papers follow the BJU Seminary Style Manual for Turabian Papers (updated 2024): Times New Roman 12 point, body at exactly 24 points, footnotes 10 point, 1-inch margins (2 inches at the top of the title page), title repeated in bold on page 1, page numbers bottom center. The manual asks for a table of contents only in papers over 25 pages; add that in Word.'));
     return h('div', null, form, h('div', { class: 'row end' }, btn('Cancel', close), btn('Save', () => {
       for (const el of form.querySelectorAll('[data-key]')) { const k = el.dataset.key; meta = { ...meta, [k]: el.type === 'checkbox' ? el.checked : (k === 'spacing' || k === 'fontSize') ? +el.value : el.value.trim() }; }
       applyLook(); drawNotes(); touch(); close();
@@ -218,7 +218,7 @@ function mountEditor(main, id) {
 
   // toolbar
   const style = h('select', { class: 'field slim wstyle', 'aria-label': 'Paragraph style', onpointerdown: keep, onchange: () => { const v = style.value; cmd('formatBlock', v); } },
-    [['P', 'Normal text'], ['H1', 'Heading 1'], ['H2', 'Heading 2'], ['H3', 'Heading 3'], ['BLOCKQUOTE', 'Block quote']].map(([v, l]) => h('option', { value: v }, l)));
+    [['P', 'Normal text'], ['H1', 'Main heading'], ['H2', 'Subheading'], ['H3', 'Sub-subheading'], ['BLOCKQUOTE', 'Block quote']].map(([v, l]) => h('option', { value: v }, l)));
   const syncStyle = () => { const n = getSelection().anchorNode; const el = (n?.nodeType === 1 ? n : n?.parentElement)?.closest?.('h1,h2,h3,blockquote,p,div'); if (el && body.contains(el)) style.value = ['H1', 'H2', 'H3', 'BLOCKQUOTE'].includes(el.tagName) ? el.tagName : 'P'; };
   const tb = (label, tip, fn, cls = '') => h('button', { type: 'button', class: 'tb ' + cls, title: tip, 'aria-label': tip, onpointerdown: e => e.preventDefault(), onclick: fn }, label);
   const toolbar = h('div', { class: 'toolbar wbar' }, iconBtn('back', 'Back to documents', () => { save(); go('#/writing'); }), style, h('span', { class: 'sep' }),
@@ -266,37 +266,38 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) mount
 export function buildPrintHtml(doc) {
   const meta = metaOf(doc), notes = computeNotes(doc), bib = meta.bibliography ? bibliographyFor(doc) : [];
   const dom = new DOMParser().parseFromString(`<body>${sanitize(doc.body || '')}</body>`, 'text/html');
-  dom.querySelectorAll('sup.fn').forEach(m => { const n = notes.find(x => x.id === m.dataset.fn); if (!n) return m.remove(); const wrap = dom.createElement('span'); wrap.innerHTML = `<sup class="call">${n.n}</sup><span class="footnote"><span class="fnum">${n.n}. </span>${n.html}</span>`; m.replaceWith(...wrap.childNodes); });
+  dom.querySelectorAll('sup.fn').forEach(m => { const n = notes.find(x => x.id === m.dataset.fn); if (!n) return m.remove(); const wrap = dom.createElement('span'); wrap.innerHTML = `<sup class="call">${n.n}</sup><span class="footnote"><span class="fnum">${n.n}</span> ${n.html}</span>`; m.replaceWith(...wrap.childNodes); });
   dom.querySelectorAll('hr.pagebreak').forEach(x => { const b = dom.createElement('div'); b.className = 'pagebreak'; x.replaceWith(b); });
   dom.querySelectorAll('[contenteditable]').forEach(x => x.removeAttribute('contenteditable'));
-  const num = meta.pageNum === 'top' ? '@top-right { content: counter(page); font: 12pt "Times New Roman", Times, serif; }' : meta.pageNum === 'none' ? '' : '@bottom-center { content: counter(page); font: 12pt "Times New Roman", Times, serif; }';
+  const fs = meta.fontSize, lh = +(fs * meta.spacing).toFixed(2), one = fs; // exact line heights, as the BJU manual requires ("exactly 24 point")
+  const num = meta.pageNum === 'top' ? `@top-right { content: counter(page); font: ${fs}pt "Times New Roman", Times, serif; }` : meta.pageNum === 'none' ? '' : `@bottom-center { content: counter(page); font: ${fs}pt "Times New Roman", Times, serif; }`;
   const css = `
 @page { size: 8.5in 11in; margin: 1in; ${num} @footnote { float: bottom; margin-top: 12pt; } }
-@page title { @bottom-center { content: none; } @top-right { content: none; } }
+@page title { margin: 2in 1in 1in 1in; @bottom-center { content: none; } @top-right { content: none; } }
 html, body { margin: 0; }
-body { font: ${meta.fontSize}pt/${meta.spacing} "Times New Roman", Times, serif; color: #000; }
+body { font: ${fs}pt/${lh}pt "Times New Roman", Times, serif; color: #000; text-align: left; hyphens: manual; }
 p, .docbody > div { margin: 0; text-indent: 0.5in; orphans: 2; widows: 2; }
-h1, h2, h3 { font-size: inherit; line-height: inherit; margin: 0; break-after: avoid; text-indent: 0; }
-h1 { text-align: center; font-weight: bold; } h2 { text-align: center; font-weight: normal; } h3 { text-align: left; font-weight: bold; }
-blockquote { margin: 12pt 0 12pt 0.5in; line-height: 1.15; text-indent: 0; } blockquote p { text-indent: 0; }
+h1, h2, h3 { font-size: inherit; line-height: inherit; font-weight: normal; margin: ${one}pt 0 0; break-after: avoid; text-indent: 0; }
+h1 { text-align: center; font-style: italic; } h2 { text-align: center; } h3 { text-align: left; font-style: italic; }
+blockquote { margin: ${one}pt 0 ${one}pt 0.5in; line-height: ${one}pt; text-indent: 0; } blockquote p { text-indent: 0; margin-bottom: ${one}pt; } blockquote p:last-child { margin-bottom: 0; }
 ul, ol { margin: 0; padding-left: 1in; } li { text-indent: 0; }
-table { border-collapse: collapse; width: 100%; line-height: 1.15; margin: 12pt 0; } td, th { border: 0.75pt solid #000; padding: 3pt 5pt; text-indent: 0; vertical-align: top; }
+table { border-collapse: collapse; width: 100%; line-height: ${one}pt; margin: ${one * 2}pt 0; } td, th { border: 0.75pt solid #000; padding: 3pt 5pt; text-indent: 0; vertical-align: top; }
 .pagebreak { break-after: page; }
 sup.call { font-size: 0.7em; line-height: 0; }
-.footnote { float: footnote; font-size: 10pt; line-height: 1.15; text-indent: 0.5in; text-align: left; font-weight: normal; font-style: normal; display: block; margin-bottom: 10pt; }
-.footnote i { font-style: italic; }
+.footnote { float: footnote; font-size: 10pt; line-height: 12pt; text-indent: 0.5in; text-align: left; font-weight: normal; font-style: normal; display: block; margin-bottom: 12pt; }
+.footnote i { font-style: italic; } .footnote .fnum { font-size: 0.7em; vertical-align: super; line-height: 0; }
 [data-footnote-call]::after { content: none !important; } .footnote::marker, [data-footnote-marker]::marker { content: none !important; } [data-footnote-marker] { list-style: none; }
-.pagedjs_footnote_inner_content::before { content: ""; display: block; width: 2in; border-top: 0.75pt solid #000; margin-bottom: 8pt; }
-.titlepage { page: title; break-after: page; text-align: center; text-indent: 0; }
-.titlepage .tp-title { padding-top: 2.4in; font-weight: bold; } .titlepage .tp-sub { font-weight: normal; } .titlepage .tp-info { padding-top: 2.2in; }
-.doctitle { text-align: center; font-weight: bold; text-indent: 0; margin-bottom: 12pt; }
+.pagedjs_footnote_inner_content::before { content: ""; display: block; width: 2in; border-top: 0.75pt solid #000; margin-bottom: 12pt; }
+.titlepage { page: title; break-after: page; text-align: center; text-indent: 0; height: 7.9in; display: flex; flex-direction: column; justify-content: space-between; line-height: 24pt; }
+.titlepage .tp-title { font-weight: bold; line-height: 12pt; } .titlepage b { font-weight: bold; }
+.doctitle { text-align: center; font-weight: bold; text-indent: 0; line-height: ${one}pt; margin-bottom: ${one * 2}pt; }
 .docbody { counter-reset: page 1; }
-.bib { break-before: page; } .bib h1 { margin-bottom: 24pt; } .bibentry { text-indent: -0.5in; margin: 0 0 12pt 0.5in; line-height: 1.15; }
+.bib { break-before: page; } .bib .doctitle { margin-bottom: ${one * 2}pt; } .bibentry { text-indent: -0.5in; margin: 0 0 ${one}pt 0.5in; line-height: ${one}pt; }
 @media screen { body { background: #8a8a8a; } .pagedjs_pages { padding: 16px 0; } .pagedjs_page { background: #fff; margin: 0 auto 16px; box-shadow: 0 2px 10px rgba(0,0,0,.4); } }
 @media print { .pagedjs_page { margin: 0; box-shadow: none; } }`;
-  const tpHtml = meta.titlePage ? `<section class="titlepage"><div class="tp-title">${esc(doc.title || 'Untitled')}${meta.subtitle ? `<div class="tp-sub">${esc(meta.subtitle)}</div>` : ''}</div><div class="tp-info">${[meta.author, meta.course, meta.professor, meta.date].filter(Boolean).map(esc).join('<br>')}</div></section>` : '';
-  const head = !meta.titlePage && doc.title ? `<div class="doctitle">${esc(doc.title)}</div>` : '';
-  const bibHtml = bib.length ? `<section class="bib"><h1>Bibliography</h1>${bib.map(b => `<p class="bibentry">${b}</p>`).join('')}</section>` : '';
+  const tpHtml = meta.titlePage ? `<section class="titlepage"><div class="tp-title">${esc(doc.title || 'Untitled')}</div><div>by<br><b>${esc(meta.author || '')}</b></div><div>A Paper Submitted to<br>the Faculty of BJU Seminary<br>in Fulfillment of the Requirements for the Degree of<br>${esc(meta.degree || '')}</div><div>${esc(meta.place || 'Greenville, South Carolina')}<br>${esc(meta.monthYear || '')}</div></section>` : '';
+  const head = doc.title ? `<div class="doctitle">${esc(doc.title)}</div>` : '';
+  const bibHtml = bib.length ? `<section class="bib"><div class="doctitle">Bibliography</div>${bib.map(b => `<p class="bibentry">${b}</p>`).join('')}</section>` : '';
   const lib = new URL('vendor/paged/paged.polyfill.min.js', document.baseURI).href;
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(doc.title || 'Document')}</title><style>${css}</style></head><body>${tpHtml}<section class="docbody">${head}${dom.body.innerHTML}</section>${bibHtml}<script src="${lib}"></scr` + `ipt></body></html>`;
 }
