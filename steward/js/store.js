@@ -4,9 +4,10 @@ import { uid } from './util.js';
 export const FILES = {
   tasks: ['projects', 'sections', 'tasks', 'comments', 'labels', 'filters'],
   notes: ['notebooks', 'notes', 'ocr'],
+  writing: ['docs', 'sources'],
 };
-export const TYPES = [...FILES.tasks, ...FILES.notes];
-const fileOf = type => (FILES.tasks.includes(type) ? 'tasks' : 'notes');
+export const TYPES = Object.values(FILES).flat();
+const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
 
 const data = Object.fromEntries(TYPES.map(t => [t, new Map()]));
 const listeners = new Set();
@@ -132,7 +133,7 @@ export const store = {
   importAll(obj) {
     let n = 0;
     for (const t of TYPES) for (const x of obj[t] || []) { if (x && x.id) { data[t].set(x.id, { ...x, updatedAt: Date.now() }); pending.add(t); n++; } }
-    localStorage.setItem('steward.dirty.tasks', '1'); localStorage.setItem('steward.dirty.notes', '1');
+    for (const f of Object.keys(FILES)) localStorage.setItem('steward.dirty.' + f, '1');
     this.flush(); this.emit({});
     return n;
   },

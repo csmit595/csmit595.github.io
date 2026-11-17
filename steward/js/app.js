@@ -7,12 +7,13 @@ import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpe
 import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from './tasks.js';
 import { renderNotes, leaveNotes, newNote, createClip, importEnex } from './notes.js';
 import { renderCalendar } from './calendar.js';
+import { renderWriting, leaveWriting, liveDocs } from './writing.js';
 import { compileFilter } from './filters.js';
 import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '1.6.0';
+const VERSION = '2.0.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -23,13 +24,16 @@ function parseRoute() {
   return { view: v, id: p[1] };
 }
 const NOTE_VIEWS = ['notes', 'note', 'trash'];
+const WRITING_VIEWS = ['writing', 'doc', 'sources'];
 
 function render(info = {}) {
   const route = parseRoute(), main = $('#main');
   const key = location.hash;
   drawSidebar(route);
   document.body.dataset.view = route.view;
-  if (NOTE_VIEWS.includes(route.view)) { renderNotes(route, main, info); lastRouteKey = key; return; }
+  if (NOTE_VIEWS.includes(route.view)) { leaveWriting(); renderNotes(route, main, info); lastRouteKey = key; return; }
+  if (WRITING_VIEWS.includes(route.view)) { leaveNotes(); if (route.view !== 'doc' && key === lastRouteKey && !info.remote && main.children.length) return; renderWriting(route, main, info); lastRouteKey = key; return; }
+  leaveWriting();
   if (route.view === 'settings' && key === lastRouteKey && !info.force && main.querySelector('.settings')) return;
   if (route.view === 'search' && key === lastRouteKey && main.querySelector('.results')) return drawResults();
   leaveNotes();
@@ -86,6 +90,9 @@ function drawSidebar(route) {
       nbs.map(nb => link('#/notes/nb/' + nb.id, 'book', nb.name, notes.filter(n => n.notebookId === nb.id).length, nbMenu(nb))),
       tags.length > 0 && h('details', { class: 'stags', open: localStorage.getItem('steward.tagsOpen') === '1', ontoggle: e => localStorage.setItem('steward.tagsOpen', e.currentTarget.open ? '1' : '0') }, h('summary', null, 'Tags'), tags.map(([t, n]) => link('#/notes/tag/' + encodeURIComponent(t), 'tag', t, n))),
       link('#/trash', 'trash', 'Trash'),
+      h('div', { class: 'shead' }, 'Writing'),
+      link('#/writing', 'edit', 'Documents', liveDocs().length),
+      link('#/sources', 'book', 'Sources', store.all('sources').length),
       h('div', { class: 'shead' }),
       link('#/settings', 'gear', 'Settings')));
   for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('on', a.getAttribute('href') === hash || !!(a.dataset.match && new RegExp(a.dataset.match).test(hash)));
@@ -102,8 +109,8 @@ const closeDrawer = () => document.body.classList.remove('drawer');
 // ---- search -------------------------------------------------------------------------------
 let searchKind = '';
 function viewSearch(main) {
-  const input = h('input', { class: 'field big', type: 'search', placeholder: 'Search tasks, notes and attachments', value: searchQ, autofocus: true, oninput: debounce(() => { searchQ = input.value; drawResults(); }, 120) });
-  const chips = h('div', { class: 'seg skinds' }, [['', 'Everything'], ['task', 'Tasks'], ['note', 'Notes']].map(([k, l]) => h('button', { type: 'button', class: k === searchKind ? 'on' : '', onclick: e => { searchKind = k; chips.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.currentTarget.classList.add('on'); drawResults(); } }, l)));
+  const input = h('input', { class: 'field big', type: 'search', placeholder: 'Search tasks, notes, writing and attachments', value: searchQ, autofocus: true, oninput: debounce(() => { searchQ = input.value; drawResults(); }, 120) });
+  const chips = h('div', { class: 'seg skinds' }, [['', 'Everything'], ['task', 'Tasks'], ['note', 'Notes'], ['doc', 'Writing']].map(([k, l]) => h('button', { type: 'button', class: k === searchKind ? 'on' : '', onclick: e => { searchKind = k; chips.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.currentTarget.classList.add('on'); drawResults(); } }, l)));
   main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Search'))), input, chips, h('div', { class: 'results' }),
     h('details', { class: 'help' }, h('summary', null, 'Search tips'), h('div', { html: 'Words can be in any order and partly typed. Small typos are forgiven when nothing else matches.<br><code>"exact phrase"</code> <code>-word</code> to leave something out<br><code>tag:receipts</code> <code>notebook:clips</code> <code>has:file</code> <code>in:notes</code><br><code>@promise</code> <code>project:hanel</code> <code>is:done</code> <code>in:tasks</code>' })));
   drawResults();
@@ -116,6 +123,7 @@ function drawResults() {
   const shown = results.slice(0, 80);
   const row = r => r.kind === 'task'
     ? h('button', { class: 'rowlink sres' + (r.item.completedAt ? ' done' : ''), onclick: () => openTask(r.item.id) }, icon(r.item.completedAt ? 'done' : 'check', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), (r.where.has('body')) && h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Task · ${M.projectName(r.item.projectId)}${r.item.due ? ' · ' + fmtDate(r.item.due.date) : ''}${r.item.completedAt ? ' · completed' : ''}${(r.item.labels || []).length ? ' · @' + r.item.labels.join(' @') : ''}`)))
+    : r.kind === 'doc' ? h('a', { class: 'rowlink sres', href: '#/doc/' + r.item.id }, icon('edit', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Writing · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`)))
     : h('a', { class: 'rowlink sres', href: '#/note/' + r.item.id }, icon('note', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Note · ${store.get('notebooks', r.item.notebookId)?.name || ''} · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}${(r.item.tags || []).length ? ' · ' + r.item.tags.join(', ') : ''}`)));
   fill(el, h('div', { class: 'sub scount' }, results.length ? `${results.length} result${results.length === 1 ? '' : 's'}${results.length > 80 ? ', showing the best 80' : ''}${fuzzy ? ' · including close spellings' : ''}` : ''),
     h('div', { class: 'rows' }, shown.map(row)),

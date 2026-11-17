@@ -4,6 +4,7 @@
 import { store } from './store.js';
 import * as M from './model.js';
 import { h, stripHtml } from './util.js';
+import { docText, liveDocs } from './writing.js';
 
 const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const bodyCache = new Map();
@@ -68,11 +69,15 @@ export function docs() {
   for (const c of store.all('comments')) comments.set(c.taskId, (comments.get(c.taskId) || '') + ' ' + c.text);
   for (const t of store.all('tasks')) out.push({ kind: 'task', item: t, title: t.content, meta: (t.labels || []).map(l => '@' + l).join(' ') + ' ' + M.projectName(t.projectId), body: (t.description || '') + (comments.get(t.id) || ''), atts: [], when: t.updatedAt });
   for (const n of M.liveNotes()) out.push({ kind: 'note', item: n, title: n.title || 'Untitled', meta: (n.tags || []).join(' ') + ' ' + (store.get('notebooks', n.notebookId)?.name || '') + ' ' + (n.attachments || []).map(a => a.name).join(' '), body: noteBody(n), atts: attText(n), when: n.updatedAt });
+  for (const w of liveDocs()) out.push({ kind: 'doc', item: w, title: w.title || 'Untitled', meta: (w.kind || '') + ' writing ' + (w.meta?.course || ''), body: docBody(w), atts: [], when: w.updatedAt });
   return out;
 }
+const docCache = new Map();
+function docBody(w) { const c = docCache.get(w.id); if (c && c.at === w.updatedAt) return c.text; const text = docText(w); docCache.set(w.id, { at: w.updatedAt, text }); return text; }
 function passesOps(d, ops) {
   const any = (list, f) => !list || list.some(f);
-  if (ops.in && !ops.in.some(v => v.startsWith(d.kind))) return false;
+  if (ops.in && !ops.in.some(v => v.startsWith(d.kind) || (d.kind === 'doc' && /^(writ|paper|sermon)/.test(v)))) return false;
+  if (d.kind === 'doc') return !(ops.tag || ops.notebook || ops.label || ops.project || ops.is || ops.has);
   if (d.kind === 'task') {
     const t = d.item;
     if (ops.tag || ops.notebook) return false;

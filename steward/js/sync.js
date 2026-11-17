@@ -7,7 +7,7 @@ const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const CAL = 'https://www.googleapis.com/calendar/v3';
-const FILE_NAMES = { tasks: 'steward-tasks.json', notes: 'steward-notes.json' };
+const FILE_NAMES = { tasks: 'steward-tasks.json', notes: 'steward-notes.json', writing: 'steward-writing.json' };
 
 const ls = {
   get(k, d) { try { return JSON.parse(localStorage.getItem('steward.' + k)) ?? d; } catch { return d; } },

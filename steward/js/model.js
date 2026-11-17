@@ -140,6 +140,14 @@ export function applyOps(ops) {
         if (it.body !== undefined) it.body = sanitize(it.body);
         if (cur) store.put('notes', { ...cur, ...it });
         else addNote(it);
+      } else if (type === 'doc' || type === 'document') {
+        const cur = it.id ? store.get('docs', it.id) : null;
+        if (it.markdown !== undefined) { it.body = mdToHtml(it.markdown).replace(/<div>/g, '<p>').replace(/<\/div>/g, '</p>'); delete it.markdown; }
+        if (it.body !== undefined) it.body = sanitize(it.body);
+        store.put('docs', cur ? { ...cur, ...it } : { kind: 'other', footnotes: {}, meta: {}, trashed: false, title: 'Untitled', body: '<p><br></p>', ...it });
+      } else if (type === 'source') {
+        const cur = it.id ? store.get('sources', it.id) : null;
+        store.put('sources', cur ? { ...cur, ...it } : { type: 'book', ...it });
       } else if (type === 'project') {
         const cur = it.id ? store.get('projects', it.id) : store.all('projects').find(p => p.name.toLowerCase() === String(it.name || '').toLowerCase());
         store.put('projects', cur ? { ...cur, ...it, id: cur.id } : { color: 'green', order: Date.now(), ...it });
@@ -171,6 +179,7 @@ export function buildSummary() {
   for (const t of none) { const k = projectName(t.projectId); if (!byProj.has(k)) byProj.set(k, []); byProj.get(k).push(t); }
   for (const [k, list] of byProj) out.push(`### ${k}`, ...list.map(line));
   out.push('', '## Projects', ...store.all('projects').map(p => `- ${p.name} [id:${p.id}]`), '', '## Notebooks', ...store.all('notebooks').map(n => `- ${n.name} (${liveNotes().filter(x => x.notebookId === n.id).length} notes) [id:${n.id}]`));
+  out.push('', '## Writing (documents)', ...store.all('docs').filter(d => !d.trashed).map(d => `- ${d.title || 'Untitled'} (${d.kind || 'document'}) [id:${d.id}]`), '', `Sources saved: ${store.all('sources').length}`);
   out.push('', '## Recent notes', ...liveNotes().sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60).map(n => `- ${n.title || 'Untitled'} — ${new Date(n.updatedAt).toISOString().slice(0, 10)}${(n.tags || []).length ? ' — tags: ' + n.tags.join(', ') : ''} [id:${n.id}]`));
   return out.join('\n');
 }
