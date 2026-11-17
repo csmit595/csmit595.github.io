@@ -1,6 +1,6 @@
 :root {
-  --bg: #ffffff; --panel: #ffffff; --side: #ffffff; --text: #1b241c; --muted: #667066; --line: #e2e7e0; --line2: #eff2ed;
-  --accent: #14401c; --on-accent: #ffffff; --soft: #e6efe4; --danger: #a82b2f; --warn: #8a5a2b; --hl: #fff3a3; --red: #a82b2f; --brown: #5a372f;
+  --bg: #f6f1e5; --panel: #fcfaf3; --side: #f0eadb; --text: #1f261d; --muted: #6a6d5c; --line: #ddd5c0; --line2: #e9e2d0;
+  --accent: #14401c; --on-accent: #fcfaf3; --soft: #dde7d3; --danger: #a82b2f; --warn: #8a5a2b; --hl: #fff3a3; --red: #a82b2f; --brown: #5a372f;
   --p1: #a82b2f; --p2: #c9762a; --p3: #2f6fb5; --shadow: 0 10px 40px rgba(20, 40, 24, .18);
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -79,7 +79,7 @@ label.inline.block { margin: 5px 0; }
 #side { background: var(--side); border-right: 1px solid var(--line); overflow-y: auto; padding: 14px 12px 30px; }
 .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .brand strong { font: 700 21px var(--serif); color: var(--accent); }
-.brand img { border-radius: 8px; }
+.brand img { margin: -6px 0 -6px -4px; }
 .syncpill { display: inline-flex; align-items: center; gap: 5px; border: 0; background: none; font-size: 11.5px; color: var(--muted); padding: 4px 6px; border-radius: 99px; }
 .syncpill:hover { background: var(--line2); }
 .syncpill.error, .syncpill.auth { color: var(--danger); }

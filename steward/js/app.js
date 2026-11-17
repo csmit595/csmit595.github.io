@@ -9,7 +9,7 @@ import { renderNotes, leaveNotes, newNote, createClip, importEnex } from './note
 import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -64,7 +64,7 @@ function drawSidebar(route) {
     icon(st === 'offline' || st === 'off' ? 'cloudoff' : 'sync', 14),
     st === 'syncing' ? 'Syncing…' : st === 'off' ? (sync.configured() && sync.connected() ? 'Sync' : 'Not syncing yet') : st === 'offline' ? 'Offline · saved here' : st === 'auth' ? 'Tap to reconnect' : st === 'error' ? 'Sync problem' : 'Synced ' + (sync.lastSync ? new Date(sync.lastSync).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : ''));
   fill(side, 
-    h('div', { class: 'brand' }, h('img', { src: 'icons/icon-192.png', alt: '', width: 34, height: 34 }), h('strong', null, 'Bearings'), h('span', { class: 'grow' }), pill),
+    h('div', { class: 'brand' }, h('img', { src: 'icons/mark.png', alt: '', width: 44, height: 44 }), h('strong', null, 'Bruin'), h('span', { class: 'grow' }), pill),
     h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task'),
     h('nav', null,
       link('#/search', 'search', 'Search'),
@@ -125,10 +125,10 @@ function viewSettings(main) {
   const g = [];
   if (!sync.configured()) {
     const id = h('input', { class: 'field mono', placeholder: '1234567890-abc…apps.googleusercontent.com' });
-    g.push(h('p', null, 'Bearings keeps everything on this device and works without a connection. To sync between your Mac and phone, back up to Google Drive, show Google Calendar and get phone reminders, connect it to your Google account once.'),
+    g.push(h('p', null, 'Bruin keeps everything on this device and works without a connection. To sync between your Mac and phone, back up to Google Drive, show Google Calendar and get phone reminders, connect it to your Google account once.'),
       h('p', null, 'Paste the Google client ID from the setup guide:'), h('div', { class: 'row gap' }, id, btn('Save', () => { const v = id.value.trim(); if (!/\.apps\.googleusercontent\.com$/.test(v)) return toast('That does not look like a client ID. It ends in apps.googleusercontent.com'); settings.set('clientId', v); again(); }, 'primary')));
   } else if (!sync.connected()) {
-    g.push(h('p', null, 'Ready to connect. Google will ask you to allow Bearings to use your Drive and Calendar.'),
+    g.push(h('p', null, 'Ready to connect. Google will ask you to allow Bruin to use your Drive and Calendar.'),
       h('div', { class: 'row gap' }, btn('Connect Google account', () => sync.connect().then(again).catch(e => toast('Google sign-in did not finish: ' + e.message)), 'primary'), btn('Change client ID', () => { settings.set('clientId', ''); again(); }, 'link')));
   } else {
     g.push(h('p', null, 'Connected', sync.email() ? ' as ' + sync.email() : '', '. Data is saved in the ', h('b', null, 'Steward'), ' folder in your Google Drive.'),
@@ -150,7 +150,7 @@ function viewSettings(main) {
   const home = h('select', { class: 'field slim', onchange: () => settings.set('home', home.value) }, [['today', 'Today'], ['inbox', 'Inbox'], ['upcoming', 'Upcoming'], ['calendar', 'Calendar'], ['notes', 'Notes']].map(([v, l]) => h('option', { value: v }, l)));
   home.value = settings.get('home');
   const bookmarklet = `javascript:(()=>{const s=getSelection();let h='';if(s&&s.rangeCount&&!s.isCollapsed){const d=document.createElement('div');d.append(s.getRangeAt(0).cloneContents());h=d.innerHTML}else{const a=document.querySelector('article,main,[role=main]')||document.body;h=a.innerHTML}open('${appUrl}#clip='+encodeURIComponent(JSON.stringify({u:location.href,t:document.title,h:h.slice(0,300000)})))})()`;
-  const clipLink = h('a', { class: 'btn', onclick: e => { e.preventDefault(); toast('Drag this button onto your bookmarks bar'); } }, 'Clip to Bearings');
+  const clipLink = h('a', { class: 'btn', onclick: e => { e.preventDefault(); toast('Drag this button onto your bookmarks bar'); } }, 'Clip to Bruin');
   clipLink.setAttribute('href', bookmarklet);
   const enex = h('input', { type: 'file', accept: '.enex', multiple: true, hidden: true, onchange: async () => {
     const prog = h('p', null, 'Reading…'); const close = modal(() => prog, { title: 'Importing from Evernote', cls: 'small' });
@@ -159,26 +159,26 @@ function viewSettings(main) {
     catch (e) { prog.textContent = 'Import stopped: ' + e.message; }
     enex.value = ''; setTimeout(close, 2500);
   } });
-  const restore = h('input', { type: 'file', accept: '.json', hidden: true, onchange: async () => { try { const n = store.importAll(JSON.parse(await restore.files[0].text())); toast(`Restored ${n} items`); } catch { toast('That file is not a Bearings backup'); } restore.value = ''; } });
+  const restore = h('input', { type: 'file', accept: '.json', hidden: true, onchange: async () => { try { const n = store.importAll(JSON.parse(await restore.files[0].text())); toast(`Restored ${n} items`); } catch { toast('That file is not a Bruin backup'); } restore.value = ''; } });
   main.append(h('div', { class: 'settings' }, h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Settings'))),
     card('Google account and sync', g),
     card('Reminders', h('label', { class: 'inline' }, auto, ' Remind me about every task that has a time, ', lead),
-      h('p', { class: 'sub' }, sync.connected() ? 'Reminders are placed on a Google calendar named "Steward Reminders", so your phone buzzes through Google Calendar even when Bearings is closed. Keep notifications on for that calendar in the Google Calendar app.' : 'Until Google is connected, reminders only show while Bearings is open.'),
-      perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Bearings in this browser’s settings.')),
+      h('p', { class: 'sub' }, sync.connected() ? 'Reminders are placed on a Google calendar named "Steward Reminders", so your phone buzzes through Google Calendar even when Bruin is closed. Keep notifications on for that calendar in the Google Calendar app.' : 'Until Google is connected, reminders only show while Bruin is open.'),
+      perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Bruin in this browser’s settings.')),
     card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
       h('label', { class: 'inline' }, 'Week starts on ', ws)),
     card('Clip from the web and other apps',
       h('p', null, h('b', null, 'On your Mac: '), 'drag this button to your browser’s bookmarks bar. On any page, select text (or nothing, for the whole article) and click it.'), clipLink,
-      h('p', null, h('b', null, 'On your phone: '), 'in any app, tap Share and choose Bearings. Links, text, photos, PDFs and recordings all become notes in the Clips notebook.')),
+      h('p', null, h('b', null, 'On your phone: '), 'in any app, tap Share and choose Bruin. Links, text, photos, PDFs and recordings all become notes in the Clips notebook.')),
     card('Bring in your old data',
       h('p', null, h('b', null, 'Evernote: '), 'in the Evernote desktop app, right-click a notebook, choose Export, pick the ENEX format, then load the file here. Notes, tags and attachments come across.'), btn('Import Evernote .enex files', () => enex.click(), '', 'note'), enex,
       h('p', null, h('b', null, 'Todoist and Google Calendar: '), 'ask Claude to copy your Todoist tasks across. Google Calendar needs no import; it shows up as soon as Google is connected.')),
     card('Backup', h('p', { class: 'sub' }, 'Google Drive keeps earlier versions of your data files for 30 days. You can also save a copy yourself.'),
       h('div', { class: 'row gap wrap' }, btn('Download a backup', async () => { const blob = new Blob([JSON.stringify(await store.exportAll())], { type: 'application/json' }); const a = h('a', { href: URL.createObjectURL(blob), download: `steward-backup-${today()}.json` }); a.click(); }), btn('Restore from a backup', () => restore.click()), restore)),
-    card('Appearance', h('label', { class: 'inline' }, 'Theme ', theme), h('label', { class: 'inline' }, 'Open Bearings on ', home)),
-    card('Install', installEvt ? btn('Install Bearings on this device', async () => { installEvt.prompt(); installEvt = null; }, 'primary') : null,
-      h('p', { class: 'sub' }, 'Mac (Chrome): click the install icon at the right of the address bar, or the three-dot menu, then "Install Bearings". Android (Chrome): three-dot menu, then "Add to Home screen" and "Install".')),
-    h('p', { class: 'sub center' }, `Bearings ${VERSION}`)));
+    card('Appearance', h('label', { class: 'inline' }, 'Theme ', theme), h('label', { class: 'inline' }, 'Open Bruin on ', home)),
+    card('Install', installEvt ? btn('Install Bruin on this device', async () => { installEvt.prompt(); installEvt = null; }, 'primary') : null,
+      h('p', { class: 'sub' }, 'Mac (Chrome): click the install icon at the right of the address bar, or the three-dot menu, then "Install Bruin". Android (Chrome): three-dot menu, then "Add to Home screen" and "Install".')),
+    h('p', { class: 'sub center' }, `Bruin ${VERSION}`)));
 }
 const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? 'Syncing…' : sync.status === 'auth' ? 'Google needs you to reconnect. Tap Sync now.' : sync.status === 'offline' ? sync.message : sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet';
 
@@ -193,7 +193,7 @@ function checkReminders() {
     if (ms > now || ms < now - 15 * 60000 || seen.includes(key)) continue;
     seen.push(key);
     toast('⏰ ' + t.content, 'Open', () => openTask(t.id), 15000);
-    if (!sync.connected() && 'Notification' in window && Notification.permission === 'granted') navigator.serviceWorker?.ready.then(r => r.showNotification(t.content, { body: 'Bearings reminder', icon: 'icons/icon-192.png', tag: key })).catch(() => {});
+    if (!sync.connected() && 'Notification' in window && Notification.permission === 'granted') navigator.serviceWorker?.ready.then(r => r.showNotification(t.content, { body: 'Bruin reminder', icon: 'icons/icon-192.png', tag: key })).catch(() => {});
   }
   localStorage.setItem('steward.notified', JSON.stringify(seen.slice(-300)));
 }
@@ -263,4 +263,4 @@ async function start() {
     else if (e.key === '/') { e.preventDefault(); location.hash = '#/search'; }
   });
 }
-start().catch(e => { console.error(e); document.body.classList.add('ready'); $('#main').textContent = 'Bearings could not start: ' + e.message; });
+start().catch(e => { console.error(e); document.body.classList.add('ready'); $('#main').textContent = 'Bruin could not start: ' + e.message; });

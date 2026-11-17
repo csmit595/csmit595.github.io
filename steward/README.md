@@ -1,4 +1,4 @@
-# Bearings
+# Bruin
 
 Tasks, notes and calendar in one installable web app. Works offline; syncs through the owner's own Google Drive and Google Calendar.
 
