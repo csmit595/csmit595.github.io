@@ -5,6 +5,7 @@ import { h, fill, uid, esc, sanitize, debounce, stripHtml } from './util.js';
 import { store } from './store.js';
 import * as C from './cite.js';
 import { icon, btn, iconBtn, modal, confirmDlg, toast, menu, isMobile } from './ui.js';
+import { installTools, importDocx } from './writing-tools.js';
 
 const go = hash => { location.hash = hash; };
 let mounted = null, listQ = '';
@@ -45,7 +46,7 @@ export function docText(doc) {
   return (body + ' ' + notes).replace(/\s+/g, ' ').trim();
 }
 
-export function leaveWriting() { mounted?.save(); mounted = null; }
+export function leaveWriting() { mounted?.save(); mounted?.destroy?.(); mounted = null; }
 export function renderWriting(route, main, info = {}) {
   if (route.view === 'doc') {
     if (mounted && mounted.id === route.id && main.querySelector('.writer')) { if (info.remote && !main.contains(document.activeElement)) mountEditor(main, route.id); return; }
@@ -65,6 +66,11 @@ function newDoc(kind) {
 function viewList(main) {
   const search = h('input', { class: 'field', type: 'search', placeholder: 'Filter documents by title', value: listQ, oninput: () => { listQ = search.value; draw(); } });
   const rows = h('div', { class: 'rows' });
+  const docxIn = h('input', { type: 'file', accept: '.docx', hidden: true, onchange: async () => {
+    const f = docxIn.files[0]; docxIn.value = ''; if (!f) return;
+    try { toast('Reading the Word file…'); const r = await importDocx(f); toast(`Imported with ${r.notes} footnote${r.notes === 1 ? '' : 's'}. Check the formatting; set the kind of document in Page setup.`, null, null, 8000); go('#/doc/' + r.doc.id); }
+    catch (e) { console.error(e); toast(navigator.onLine ? 'That file could not be read as a Word document.' : 'Opening Word files needs one online visit to download the reader.'); }
+  } });
   const draw = () => {
     const q = listQ.toLowerCase().trim();
     const docs = liveDocs().filter(d => !q || (d.title || '').toLowerCase().includes(q)).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -77,7 +83,7 @@ function viewList(main) {
     !docs.length && h('div', { class: 'empty' }, h('strong', null, q ? 'No documents match' : 'No documents yet'), h('p', null, q ? '' : 'Start a Turabian paper or a sermon manuscript.')));
   };
   main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Writing'), h('div', { class: 'sub' }, 'Papers, sermons and other long documents')),
-    h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/sources' }, icon('book', 16), 'Sources'),
+    h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/sources' }, icon('book', 16), 'Sources'), docxIn, btn('Open a Word file', () => docxIn.click(), '', 'note'),
       btn('New', e => menu(e.currentTarget, [{ label: 'Turabian paper (BJU Seminary)', icon: 'edit', onclick: () => newDoc('paper') }, { label: 'Sermon manuscript', icon: 'edit', onclick: () => newDoc('sermon') }, { label: 'Blank document', icon: 'edit', onclick: () => newDoc('other') }]), 'primary', 'plus'))),
     search, rows);
   draw();
@@ -128,10 +134,28 @@ function pickSource(onPick) {
         h('button', { class: 'rowlink', onclick: () => editSource(null, s => { if (s) { chosen = s.id; draw(); pages.focus(); } }) }, icon('plus', 16), 'Add a new source'));
     };
     const ok = () => { if (!chosen) return toast('Choose a source first'); close(); onPick({ sourceId: chosen, pages: pages.value.trim() }); };
-    input.addEventListener('input', draw); pages.addEventListener('keydown', e => { if (e.key === 'Enter') ok(); });
+    input.addEventListener('input', draw); pages.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
     draw();
     return h('div', { class: 'form' }, input, list, h('label', null, 'Page cited', pages), h('div', { class: 'row end' }, btn('Cancel', close), btn('Insert citation', ok, 'primary')));
   }, { title: 'Cite a source' });
+}
+
+/** Tidy what the browser's editor leaves behind before saving: stray inline styles, empty wrappers, lists nested in paragraphs, duplicated footnote marks. */
+export function cleanBody(html) {
+  const d = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html');
+  for (const el of d.body.querySelectorAll('[style]')) {
+    for (const prop of ['text-indent', 'font-size', 'line-height', 'text-align-last', 'caret-color', 'letter-spacing', 'word-spacing', 'white-space', 'orphans', 'widows']) el.style.removeProperty(prop);
+    if (/^(rgb\(17, 17, 17\)|rgb\(0, 0, 0\))$/.test(el.style.color)) el.style.removeProperty('color');
+    if (/^(rgb\(255, 255, 255\)|transparent|rgba\(0, 0, 0, 0\))$/.test(el.style.backgroundColor)) el.style.removeProperty('background-color');
+    if (/Times New Roman/i.test(el.style.fontFamily)) el.style.removeProperty('font-family');
+    if (!el.getAttribute('style')?.trim()) el.removeAttribute('style');
+  }
+  for (const sp of [...d.body.querySelectorAll('span')]) if (!sp.attributes.length) sp.replaceWith(...sp.childNodes);
+  const seen = new Set();
+  for (const m of d.body.querySelectorAll('sup.fn')) { if (seen.has(m.dataset.fn)) m.remove(); else seen.add(m.dataset.fn); }
+  for (const p of [...d.body.querySelectorAll('p')]) if (!p.childNodes.length) p.remove();
+  d.body.normalize();
+  return d.body.innerHTML;
 }
 
 // ---- the editor -------------------------------------------------------------------------------
@@ -140,7 +164,7 @@ function mountEditor(main, id) {
   if (!d0 || d0.trashed) { fill(main, h('div', { class: 'empty' }, h('strong', null, 'Document not found'), h('p', null, h('a', { href: '#/writing' }, 'Back to Writing')))); return; }
   const get = () => store.get('docs', id);
   const fns = structuredClone(d0.footnotes || {});
-  let meta = metaOf(d0), dirty = false, lastOrder = '';
+  let meta = metaOf(d0), dirty = false, lastOrder = '', kind = d0.kind || 'other', T = null;
   const title = h('input', { class: 'wtitle', placeholder: 'Title', value: d0.title || '' });
   const body = h('div', { class: 'wbody', contentEditable: 'true', spellcheck: true, html: sanitize(d0.body || '') || '<p><br></p>' });
   const notesEl = h('div', { class: 'wnotes' }), bibEl = h('div', { class: 'wbib' }), count = h('span', { class: 'sub wcount' }), tp = h('button', { class: 'wtp', type: 'button', onclick: () => setup() });
@@ -148,12 +172,12 @@ function mountEditor(main, id) {
   const save = () => {
     if (!dirty) return; dirty = false;
     const keep = {}; for (const k of order()) if (fns[k]) keep[k] = fns[k];
-    if (get()) store.patch('docs', id, { title: title.value.trim(), body: body.innerHTML, footnotes: keep, meta });
+    if (get()) store.patch('docs', id, { title: title.value.trim(), kind, body: cleanBody(body.innerHTML), footnotes: keep, comments: T ? T.comments() : (d0.comments || {}), meta });
   };
   const queue = debounce(save, 800);
   const touch = () => { dirty = true; queue(); };
   const sheet = h('div', { class: 'wsheet' });
-  const applyLook = () => { sheet.style.setProperty('--sp', meta.spacing); sheet.style.setProperty('--fs', meta.fontSize + 'pt'); sheet.classList.toggle('paper', d0.kind === 'paper');
+  const applyLook = () => { sheet.style.setProperty('--sp', meta.spacing); sheet.style.setProperty('--fs', meta.fontSize + 'pt'); sheet.classList.toggle('paper', kind === 'paper');
     fill(tp, meta.titlePage ? [h('b', null, title.value || 'Title'), h('span', { class: 'gap' }), h('span', null, 'by'), h('b', null, meta.author || 'Your name'), h('span', { class: 'gap' }), h('span', null, 'A Paper Submitted to the Faculty of BJU Seminary'), h('span', null, 'in Fulfillment of the Requirements for the Degree of'), h('span', null, meta.degree || '<Degree Name>'), h('span', { class: 'gap' }), h('span', null, meta.place || 'Greenville, South Carolina'), h('span', null, meta.monthYear || 'Month Year'), h('small', null, 'Title page · click to edit')] : h('small', null, 'No title page · click for page setup')); };
 
   // selection helpers
@@ -161,8 +185,8 @@ function mountEditor(main, id) {
   const keep = () => { const s = getSelection(); if (s.rangeCount && body.contains(s.anchorNode)) saved = s.getRangeAt(0).cloneRange(); };
   const restore = () => { body.focus(); if (saved) { const s = getSelection(); s.removeAllRanges(); s.addRange(saved); } };
   for (const ev of ['keyup', 'pointerup', 'blur']) body.addEventListener(ev, keep);
-  const cmd = (c, v) => { restore(); document.execCommand(c, false, v); touch(); keep(); syncStyle(); };
-  const insert = html => { restore(); document.execCommand('insertHTML', false, html); touch(); keep(); };
+  const cmd = (c, v) => { T?.mark(); restore(); document.execCommand(c, false, v); touch(); keep(); syncStyle(); T?.mark(); };
+  const insert = html => { T?.mark(); restore(); document.execCommand('insertHTML', false, html); touch(); keep(); T?.mark(); };
 
   // footnotes
   const drawNotes = () => {
@@ -188,13 +212,14 @@ function mountEditor(main, id) {
     fill(bibEl, bib.length > 0 && [h('div', { class: 'wbib-h' }, 'Bibliography'), bib.map(b => h('p', { class: 'wbib-e', html: b })), h('div', { class: 'sub' }, 'Built automatically from the sources you cite. It goes on its own page when printed.')]);
   };
   const addNote = data => {
+    T?.mark();
     const nid = uid(); fns[nid] = data;
     restore();
     const mark = h('sup', { class: 'fn', contentEditable: 'false' }); mark.dataset.fn = nid;
     const sel = getSelection(), r = sel.rangeCount && body.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
     if (r) { r.deleteContents(); r.insertNode(mark); r.setStartAfter(mark); r.collapse(true); sel.removeAllRanges(); sel.addRange(r); keep(); }
     else (body.querySelector('p:last-of-type') || body).append(mark);
-    drawNotes(); touch();
+    drawNotes(); touch(); T?.mark();
     if (!data.cite) setTimeout(() => notesEl.querySelector(`[data-fn="${nid}"] .wtext`)?.focus(), 30);
   };
   const footnote = () => { keep(); addNote({ html: '' }); };
@@ -205,14 +230,15 @@ function mountEditor(main, id) {
     const f = (label, key, ph = '') => { const inp = h('input', { class: 'field', value: meta[key] || '', placeholder: ph }); inp.dataset.key = key; return h('label', null, label, inp); };
     const chk = (label, key) => { const c = h('input', { type: 'checkbox', checked: !!meta[key] }); c.dataset.key = key; return h('label', { class: 'inline' }, c, ' ' + label); };
     const sel = (label, key, opts) => { const s = h('select', { class: 'field' }, opts.map(([v, l]) => h('option', { value: v }, l))); s.value = String(meta[key]); s.dataset.key = key; return h('label', null, label, s); };
-    const form = h('div', { class: 'form' }, chk('Include a title page', 'titlePage'), f('Your name (first name, middle initial, last name; no titles)', 'author', 'Charles E. Smith'), f('Degree', 'degree', 'Master of Divinity'), f('City and state', 'place', 'Greenville, South Carolina'), f('Month and year', 'monthYear', 'November 2026'),
+    const kindSel = h('select', { class: 'field' }, Object.entries(KINDS).map(([v, l]) => h('option', { value: v }, l))); kindSel.value = kind;
+    const form = h('div', { class: 'form' }, h('label', null, 'Kind of document', kindSel), chk('Include a title page', 'titlePage'), f('Your name (first name, middle initial, last name; no titles)', 'author', 'Charles E. Smith'), f('Degree', 'degree', 'Master of Divinity'), f('City and state', 'place', 'Greenville, South Carolina'), f('Month and year', 'monthYear', 'November 2026'),
       chk('Add a bibliography of the sources cited', 'bibliography'),
       sel('Line spacing', 'spacing', [['2', 'Double (BJU papers)'], ['1.5', 'One and a half'], ['1.15', 'Single']]), sel('Text size', 'fontSize', [['12', '12 point (BJU papers)'], ['14', '14 point'], ['16', '16 point'], ['11', '11 point']]),
       sel('Page numbers', 'pageNum', [['bottom', 'Bottom center (BJU papers)'], ['top', 'Top right'], ['none', 'None']]),
-      d0.kind === 'paper' && h('p', { class: 'sub' }, 'Papers follow the BJU Seminary Style Manual for Turabian Papers (updated 2024): Times New Roman 12 point, body at exactly 24 points, footnotes 10 point, 1-inch margins (2 inches at the top of the title page), title repeated in bold on page 1, page numbers bottom center. The manual asks for a table of contents only in papers over 25 pages; add that in Word.'));
+      kind === 'paper' && h('p', { class: 'sub' }, 'Papers follow the BJU Seminary Style Manual for Turabian Papers (updated 2024): Times New Roman 12 point, body at exactly 24 points, footnotes 10 point, 1-inch margins (2 inches at the top of the title page), title repeated in bold on page 1, page numbers bottom center. The manual asks for a table of contents only in papers over 25 pages; add that in Word.'));
     return h('div', null, form, h('div', { class: 'row end' }, btn('Cancel', close), btn('Save', () => {
       for (const el of form.querySelectorAll('[data-key]')) { const k = el.dataset.key; meta = { ...meta, [k]: el.type === 'checkbox' ? el.checked : (k === 'spacing' || k === 'fontSize') ? +el.value : el.value.trim() }; }
-      applyLook(); drawNotes(); touch(); close();
+      kind = kindSel.value; applyLook(); drawNotes(); touch(); close();
     }, 'primary')));
   }, { title: 'Page setup' });
 
@@ -224,10 +250,10 @@ function mountEditor(main, id) {
   const toolbar = h('div', { class: 'toolbar wbar' }, iconBtn('back', 'Back to documents', () => { save(); go('#/writing'); }), style, h('span', { class: 'sep' }),
     tb('B', 'Bold (Cmd+B)', () => cmd('bold'), 'b'), tb('I', 'Italic (Cmd+I)', () => cmd('italic'), 'i'), tb('U', 'Underline (Cmd+U)', () => cmd('underline'), 'u'), h('span', { class: 'sep' }),
     tb('⇤', 'Align left', () => cmd('justifyLeft')), tb('↔', 'Center', () => cmd('justifyCenter')), h('span', { class: 'sep' }),
-    tb('•', 'Bulleted list', () => cmd('insertUnorderedList')), tb('1.', 'Numbered list', () => cmd('insertOrderedList')), tb('⇥', 'Indent', () => cmd('indent')), tb('⇤⇥', 'Outdent', () => cmd('outdent')), h('span', { class: 'sep' }),
+    tb('•', 'Bulleted list', () => T.list('insertUnorderedList')), tb('1.', 'Numbered list', () => T.list('insertOrderedList')), tb('⇥', 'Indent a list item (Tab)', () => T.dent(1)), tb('⇤', 'Outdent a list item (Shift+Tab)', () => T.dent(-1)), h('span', { class: 'sep' }),
     tb('Footnote', 'Insert a footnote (Cmd+Option+F)', footnote, 'wide'), tb('Cite', 'Cite a source in a footnote (Cmd+Shift+C)', cite, 'wide'),
     tb('▦', 'Table', () => insert('<table><tbody>' + '<tr><td><br></td><td><br></td><td><br></td></tr>'.repeat(3) + '</tbody></table><p><br></p>')),
-    tb('⤓', 'Page break', () => insert('<hr class="pagebreak"><p><br></p>')), h('span', { class: 'sep' }), tb('↶', 'Undo', () => cmd('undo')), tb('↷', 'Redo', () => cmd('redo')),
+    tb('⤓', 'Page break', () => insert('<hr class="pagebreak"><p><br></p>')), h('span', { class: 'sep' }), tb('↶', 'Undo (Cmd+Z)', () => T.undo()), tb('↷', 'Redo (Cmd+Shift+Z)', () => T.redo()), h('span', { class: 'sep', id: 'wtools-slot' }),
     h('span', { class: 'grow' }), count,
     btn('Page setup', setup, 'tiny'), btn('Preview and print', () => { save(); preview(get()); }, 'tiny'), btn('Word file', () => { save(); exportWord(get()); }, 'tiny primary'));
 
@@ -238,7 +264,7 @@ function mountEditor(main, id) {
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.altKey && e.code === 'KeyF') { e.preventDefault(); footnote(); }
     else if (mod && e.shiftKey && e.code === 'KeyC') { e.preventDefault(); cite(); }
-    else if (e.key === 'Tab') { e.preventDefault(); document.execCommand(e.shiftKey ? 'outdent' : 'indent'); }
+    else if (e.key === 'Tab') { e.preventDefault(); const n = getSelection().anchorNode; if ((n?.nodeType === 1 ? n : n?.parentElement)?.closest?.('li')) { keep(); T.dent(e.shiftKey ? -1 : 1); } }
   });
   body.addEventListener('paste', e => { // paste as clean text with paragraphs, so pasted web formatting cannot break the paper's layout
     const html = e.clipboardData?.getData('text/html'), text = e.clipboardData?.getData('text/plain');
@@ -246,17 +272,20 @@ function mountEditor(main, id) {
     let out;
     if (html) { const doc = new DOMParser().parseFromString(sanitize(html), 'text/html'); doc.querySelectorAll('[style],[class],[id]').forEach(n => { n.removeAttribute('style'); n.removeAttribute('class'); n.removeAttribute('id'); }); doc.querySelectorAll('span,font').forEach(n => n.replaceWith(...n.childNodes)); doc.querySelectorAll('img,svg,button,input').forEach(n => n.remove()); out = doc.body.innerHTML; }
     else out = text.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
-    document.execCommand('insertHTML', false, out); touch();
+    T?.mark(); document.execCommand('insertHTML', false, out); touch(); T?.mark();
   });
   title.addEventListener('input', () => { touch(); applyLook(); });
   title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); body.focus(); } });
   const updateCount = () => { count.textContent = `${words(stripHtml(body.innerHTML.replace(/<(\/?(div|p|li|h\d|tr|br|td|th|blockquote))\b/gi, ' <$1')))} words`; };
 
   fill(sheet, tp, title, body, notesEl, bibEl);
-  fill(main, h('div', { class: 'writer' }, toolbar, h('div', { class: 'wscroll' }, sheet)));
+  T = installTools({ body, fns, id, doc: d0, sheet, title, meta: () => meta, touch, keep, restore, drawNotes: () => drawNotes(), updateCount: () => updateCount() });
+  const slot = toolbar.querySelector('#wtools-slot'); slot.after(T.buttons.fontSel, T.buttons.painterBtn, T.buttons.find, T.buttons.more, T.buttons.colorIn);
+  count.after(T.buttons.cmCount); count.title = 'Word count details'; count.classList.add('clicky'); count.addEventListener('click', () => T.countDlg());
+  fill(main, h('div', { class: 'writer' }, toolbar, T.bars, h('div', { class: 'wscroll' }, sheet)));
   try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch {}
   applyLook(); drawNotes(); updateCount();
-  mounted = { id, save };
+  mounted = { id, save, destroy: () => T.destroy() };
   if (!d0.title && !isMobile()) title.focus();
 }
 window.addEventListener('pagehide', () => mounted?.save());
@@ -281,6 +310,7 @@ h1, h2, h3 { font-size: inherit; line-height: inherit; font-weight: normal; marg
 h1 { text-align: center; font-style: italic; } h2 { text-align: center; } h3 { text-align: left; font-style: italic; }
 blockquote { margin: ${one}pt 0 ${one}pt 0.5in; line-height: ${one}pt; text-indent: 0; } blockquote p { text-indent: 0; margin-bottom: ${one}pt; } blockquote p:last-child { margin-bottom: 0; }
 ul, ol { margin: 0; padding-left: 1in; } li { text-indent: 0; }
+ol.outline { list-style: upper-roman; } ol.outline ol { list-style: upper-alpha; padding-left: 0.5in; } ol.outline ol ol { list-style: decimal; } ol.outline ol ol ol { list-style: lower-alpha; }
 table { border-collapse: collapse; width: 100%; line-height: ${one}pt; margin: ${one * 2}pt 0; } td, th { border: 0.75pt solid #000; padding: 3pt 5pt; text-indent: 0; vertical-align: top; }
 .pagebreak { break-after: page; }
 sup.call { font-size: 0.7em; line-height: 0; }

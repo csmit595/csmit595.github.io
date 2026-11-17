@@ -14,7 +14,7 @@ export async function toDocx(doc, { meta, notes, bib }) {
   const runs = (node, f = {}) => {
     const out = [];
     for (const c of node.childNodes) {
-      if (c.nodeType === 3) { if (c.data) out.push(new D.TextRun({ text: c.data.replace(/\s+/g, ' '), font: FONT, size: f.size || size, bold: f.bold, italics: f.italics, underline: f.underline ? {} : undefined, superScript: f.sup, subScript: f.sub, strike: f.strike })); continue; }
+      if (c.nodeType === 3) { if (c.data) out.push(new D.TextRun({ text: c.data.replace(/\s+/g, ' '), font: f.font || FONT, size: f.size || size, bold: f.bold, italics: f.italics, underline: f.underline ? {} : undefined, superScript: f.sup, subScript: f.sub, strike: f.strike, smallCaps: f.caps, color: f.color, shading: f.fill ? { type: 'clear', color: 'auto', fill: f.fill } : undefined })); continue; }
       if (c.nodeType !== 1) continue;
       const t = c.tagName;
       if (t === 'SUP' && c.classList.contains('fn')) { const n = numOf.get(c.dataset.fn); if (n) out.push(new D.FootnoteReferenceRun(n)); continue; }
@@ -24,10 +24,16 @@ export async function toDocx(doc, { meta, notes, bib }) {
       else if (t === 'SUP') g.sup = true; else if (t === 'SUB') g.sub = true; else if (t === 'S' || t === 'STRIKE') g.strike = true;
       const st = c.getAttribute('style') || '';
       if (/font-weight:\s*(bold|[6-9]00)/.test(st)) g.bold = true; if (/font-style:\s*italic/.test(st)) g.italics = true; if (/text-decoration[^;]*underline/.test(st)) g.underline = true;
+      if (/text-decoration[^;]*line-through/.test(st)) g.strike = true; if (/font-variant[^;]*small-caps/.test(st)) g.caps = true;
+      if (/vertical-align:\s*super/.test(st)) g.sup = true; if (/vertical-align:\s*sub/.test(st)) g.sub = true;
+      const fam = st.match(/font-family:\s*([^;]+)/)?.[1] || (t === 'FONT' && c.getAttribute('face')); if (fam) g.font = fam.split(',')[0].replace(/["']/g, '').trim();
+      const col = hex(st.match(/(?:^|;)\s*color:\s*([^;]+)/)?.[1] || (t === 'FONT' && c.getAttribute('color'))); if (col) g.color = col;
+      const bg = hex(st.match(/background(?:-color)?:\s*([^;]+)/)?.[1]); if (bg) g.fill = bg;
       out.push(...runs(c, g));
     }
     return out;
   };
+  const hex = v => { if (!v) return null; v = String(v).trim(); let m = v.match(/^#([0-9a-f]{6})$/i); if (m) return m[1].toUpperCase(); m = v.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i); if (m) return (m[1] + m[1] + m[2] + m[2] + m[3] + m[3]).toUpperCase(); m = v.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/); return m ? [m[1], m[2], m[3]].map(x => (+x).toString(16).padStart(2, '0')).join('').toUpperCase() : null; };
   const fromHtml = (html, f) => { const d = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html'); return runs(d.body, f); };
   const align = el => { const a = (el.getAttribute?.('style') || '').match(/text-align:\s*(\w+)/)?.[1] || el.getAttribute?.('align'); return a === 'center' ? D.AlignmentType.CENTER : a === 'right' ? D.AlignmentType.RIGHT : undefined; };
   const BLOCK = /^(P|DIV|H1|H2|H3|H4|BLOCKQUOTE|UL|OL|TABLE|HR|LI|SECTION)$/;
@@ -47,12 +53,13 @@ export async function toDocx(doc, { meta, notes, bib }) {
       else if (t === 'H3' || t === 'H4') out.push(para(c, { indent: {}, keepNext: true, before: one, fmt: { italics: true } }));
       else if (t === 'BLOCKQUOTE') { if (hasBlocks(c)) out.push(...blocks(c, { quote: true })); else out.push(para(c, { line: one, indent: { left: 720 }, before: one, after: one })); }
       else if (t === 'UL' || t === 'OL') {
-        const inst = ++listSeq, level = ctx.level || 0;
+        const inst = ctx.inst || ++listSeq, level = ctx.level || 0, outline = ctx.outline || c.classList.contains('outline');
         for (const li of c.children) {
+          if (li.tagName === 'UL' || li.tagName === 'OL') { const holder = parent.ownerDocument.createElement('div'); holder.append(li.cloneNode(true)); out.push(...blocks(holder, { level: level + 1, outline, inst: outline ? inst : undefined })); continue; } // browsers nest lists beside, not inside, the item
           if (li.tagName !== 'LI') continue;
           const inline = li.cloneNode(true); inline.querySelectorAll('ul,ol').forEach(x => x.remove());
-          out.push(para(inline, { indent: { left: 720 * (level + 2) - 360, hanging: 360 }, ...(t === 'UL' ? { bullet: { level } } : { numbering: { reference: 'numbers', level, instance: inst } }) }));
-          for (const sub of li.children) if (sub.tagName === 'UL' || sub.tagName === 'OL') { const holder = parent.ownerDocument.createElement('div'); holder.append(sub.cloneNode(true)); out.push(...blocks(holder, { level: level + 1 })); }
+          out.push(para(inline, { indent: { left: 720 * (level + 2) - 360, hanging: 360 }, ...(t === 'UL' ? { bullet: { level } } : { numbering: { reference: outline ? 'outline' : 'numbers', level, instance: inst } }) }));
+          for (const sub of li.children) if (sub.tagName === 'UL' || sub.tagName === 'OL') { const holder = parent.ownerDocument.createElement('div'); holder.append(sub.cloneNode(true)); out.push(...blocks(holder, { level: level + 1, outline, inst: outline ? inst : undefined })); }
         }
       }
       else if (t === 'TABLE') {
@@ -100,7 +107,8 @@ export async function toDocx(doc, { meta, notes, bib }) {
   const file = new D.Document({
     creator: meta.author || 'Steward', title: doc.title || 'Document',
     styles: { default: { document: { run: { font: FONT, size }, paragraph: { spacing: { line, lineRule: EX } } } } },
-    numbering: { config: [{ reference: 'numbers', levels: [0, 1, 2, 3].map(level => ({ level, format: D.LevelFormat.DECIMAL, text: `%${level + 1}.`, alignment: D.AlignmentType.START })) }] },
+    numbering: { config: [{ reference: 'numbers', levels: [0, 1, 2, 3].map(level => ({ level, format: D.LevelFormat.DECIMAL, text: `%${level + 1}.`, alignment: D.AlignmentType.START })) },
+      { reference: 'outline', levels: [D.LevelFormat.UPPER_ROMAN, D.LevelFormat.UPPER_LETTER, D.LevelFormat.DECIMAL, D.LevelFormat.LOWER_LETTER].map((format, level) => ({ level, format, text: `%${level + 1}.`, alignment: D.AlignmentType.START })) }] },
     footnotes, sections,
   });
   const blob = await D.Packer.toBlob(file);

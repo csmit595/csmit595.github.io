@@ -254,7 +254,7 @@ function pickNote(selfId, onPick) {
         q && h('button', { class: 'rowlink', onclick: () => { const n = M.addNote({ title: input.value.trim(), notebookId: store.get('notes', selfId)?.notebookId }); close(); onPick(n); } }, icon('plus', 16), `Create a new note called "${input.value.trim()}"`));
     };
     input.addEventListener('input', draw);
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') list.querySelector('button')?.click(); });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); list.querySelector('button')?.click(); } });
     draw();
     return h('div', { class: 'form' }, input, list);
   }, { title: 'Link to a note', cls: 'small' });

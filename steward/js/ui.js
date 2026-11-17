@@ -82,7 +82,7 @@ export function promptDlg(title, value = '', placeholder = '') {
     modal(close => {
       const input = h('input', { class: 'field', value, placeholder, autofocus: true });
       const ok = () => { answered = true; res(input.value.trim()); close(); };
-      input.addEventListener('keydown', e => { if (e.key === 'Enter') ok(); });
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
       return h('div', null, input, h('div', { class: 'row end' }, btn('Cancel', close), btn('Save', ok, 'primary')));
     }, { title, cls: 'small', onClose: () => { if (!answered) res(null); } });
   });
