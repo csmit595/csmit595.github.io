@@ -118,6 +118,7 @@ export async function filesToAttachments(files) {
 // ---- editor ------------------------------------------------------------------------
 function mountEditor(pane, id) {
   leaveNotes();
+  if (String(id).startsWith('en:')) { openEvernoteLink(id.slice(3)); return; }
   const n0 = store.get('notes', id);
   if (!n0) { fill(pane, h('div', { class: 'empty' }, h('strong', null, 'Note not found'), h('p', null, 'It may have been deleted on another device.'))); return; }
   const urls = [];
@@ -195,6 +196,7 @@ function mountEditor(pane, id) {
     const li = e.target.closest?.('ul.todo > li');
     if (li && e.target === li && e.offsetX < 26) { li.toggleAttribute('data-checked'); if (li.hasAttribute('data-checked')) li.setAttribute('data-checked', '1'); touch(); }
     const a = e.target.closest?.('a[href]');
+    if (a && (a.getAttribute('href') || '').startsWith('#/note/en:')) { e.preventDefault(); save(true); openEvernoteLink(a.getAttribute('href').slice(10)); return; }
     if (a && (a.getAttribute('href') || '').startsWith('#/note/')) { e.preventDefault(); save(true); location.hash = a.getAttribute('href'); return; }
     if (a && !a.classList.contains('att') && (e.metaKey || e.ctrlKey || trashed || isMobile())) { e.preventDefault(); window.open(a.href, '_blank', 'noopener'); }
   });
@@ -262,13 +264,28 @@ function pickNote(selfId, onPick) {
 
 // ---- clipping -----------------------------------------------------------------------
 /** Create a note from something shared into Steward (Android share sheet, Mac bookmark button). */
-export async function createClip({ title, text, url, html, files }) {
+export async function createClip({ title, text, url, html, files, images }) {
   const atts = files?.length ? await filesToAttachments(files) : [];
+  const shared = [...atts]; // files shared in go at the end; pictures from the page stay where they were
   let body = '';
   if (html) body += sanitize(html);
+  // pictures the page handed over: keep copies in the note, in place of links to the website
+  if (body && images?.length) {
+    const doc = new DOMParser().parseFromString(`<body>${body}</body>`, 'text/html');
+    const pics = new Map();
+    for (const im of images) {
+      if (!(im?.blob instanceof Blob) || !/^image\//.test(im.blob.type) || pics.has(im.src)) continue;
+      const ext = (im.blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg').replace(/\W.*/, '');
+      const base = decodeURIComponent(String(im.src).split(/[?#]/)[0].split('/').pop() || '').replace(/[^\w.-]+/g, '-').slice(0, 60);
+      const a = { id: uid(), name: base && /\.\w{2,4}$/.test(base) ? base : `picture-${pics.size + 1}.${ext}`, mime: im.blob.type, size: im.blob.size };
+      await store.putBlob(a.id, im.blob); pics.set(im.src, a); atts.push(a);
+    }
+    for (const img of doc.body.querySelectorAll('img[src]')) { const a = pics.get(img.getAttribute('src')); if (a) { img.removeAttribute('src'); img.setAttribute('data-att', a.id); if (!img.getAttribute('alt')) img.setAttribute('alt', a.name); } }
+    body = doc.body.innerHTML;
+  }
   else if (text) body += mdToHtml(text);
   if (url && !html && !(text || '').includes(url)) body += `<div><a href="${esc(url)}">${esc(url)}</a></div>`;
-  body += atts.map(attHtml).join('<div><br></div>');
+  body += shared.map(attHtml).join('<div><br></div>');
   const n = M.addNote({ title: (title || (text || '').split('\n')[0] || (atts[0]?.name) || 'Clip').slice(0, 140), body, notebook: 'Clips', sourceUrl: url || '', attachments: atts });
   toast('Saved to the Clips notebook');
   ocr.kick(1500);
@@ -299,21 +316,75 @@ export async function importEnex(file, onProgress) {
         atts.push(a); byHash.set(md5(bytes), a);
       } catch (e) { console.warn('attachment skipped', e); }
     }
-    const doc = new DOMParser().parseFromString(kid('content'), 'text/html');
+    // ENML writes <en-todo/> and <en-media .../> as self-closing tags, which an HTML reader does not honor: it would
+    // swallow the rest of the line into them. Close them explicitly first.
+    const enml = kid('content').replace(/<(en-todo|en-media)\b([^>]*?)\/\s*>/gi, '<$1$2></$1>');
+    const doc = new DOMParser().parseFromString(enml, 'text/html');
     const used = new Set();
     doc.querySelectorAll('en-media').forEach(m => { const a = byHash.get((m.getAttribute('hash') || '').toLowerCase()); if (a) { used.add(a.id); m.outerHTML = attHtml(a); } else m.remove(); });
-    doc.querySelectorAll('en-todo').forEach(t => t.replaceWith(doc.createTextNode(t.getAttribute('checked') === 'true' ? '☑ ' : '☐ ')));
+    enChecklists(doc);
+    enNoteLinks(doc);
     const root = doc.querySelector('en-note') || doc.body;
     let body = sanitize(root.innerHTML);
     for (const a of atts) if (!used.has(a.id)) body += attHtml(a);
     const created = enDate(kid('created')), updated = enDate(kid('updated') || kid('created'));
     const src = el.querySelector('note-attributes > source-url')?.textContent || '';
-    const n = M.addNote({ title: kid('title'), body, notebookId, tags: [...el.children].filter(c => c.tagName === 'tag').map(c => c.textContent), sourceUrl: src, attachments: atts });
-    store.put('notes', { ...n, createdAt: created, editedAt: updated }, { silent: true });
-    onProgress?.(++count, notes.length);
+    // keep Evernote's own created and last-edited dates, so "Last edited" sorting still means something
+    store.put('notes', { title: kid('title'), body, notebookId, tags: [...el.children].filter(c => c.tagName === 'tag').map(c => c.textContent), pinned: false, sourceUrl: src, attachments: atts, trashed: false, createdAt: created, updatedAt: updated }, { silent: true, keepTimes: true });
+    count++; onProgress?.(count, notes.length);
     if (count % 20 === 0) await new Promise(r => setTimeout(r));
   }
+  resolveEvernoteLinks();
   store.emit({});
   ocr.kick(3000);
   return count;
+}
+
+/** Evernote checkboxes become real Steward checklists. Older notes use <en-todo> inside a line; newer ones mark lists with a style. */
+function enChecklists(doc) {
+  doc.querySelectorAll('ul, ol').forEach(l => { if (/--en-todo\s*:\s*true/i.test(l.getAttribute('style') || '')) { l.classList.add('todo'); l.removeAttribute('style'); l.querySelectorAll(':scope > li').forEach(li => { if (/--en-checked\s*:\s*true/i.test(li.getAttribute('style') || '')) li.setAttribute('data-checked', '1'); li.removeAttribute('style'); }); } });
+  for (const t of [...doc.querySelectorAll('en-todo')]) {
+    const checked = t.getAttribute('checked') === 'true';
+    const li0 = t.closest('li');
+    if (li0) { li0.parentElement?.classList.add('todo'); if (checked) li0.setAttribute('data-checked', '1'); t.remove(); continue; }
+    const block = t.closest('div, p') ;
+    t.remove();
+    if (!block || block.tagName === 'EN-NOTE' || block.querySelector('div, p, ul, ol, table')) { // no line of its own: leave a plain mark
+      continue;
+    }
+    const li = doc.createElement('li'); li.append(...block.childNodes); if (!li.textContent.trim()) li.append(doc.createElement('br'));
+    if (checked) li.setAttribute('data-checked', '1');
+    const prev = block.previousElementSibling;
+    if (prev && prev.tagName === 'UL' && prev.classList.contains('todo') && prev.dataset.en) { prev.append(li); block.remove(); }
+    else { const ul = doc.createElement('ul'); ul.className = 'todo'; ul.dataset.en = '1'; ul.append(li); block.replaceWith(ul); }
+  }
+  doc.querySelectorAll('ul[data-en]').forEach(u => u.removeAttribute('data-en'));
+}
+/** Links to other Evernote notes: Evernote's export does not say which note they point to, only the link's words,
+ *  which are normally the note's title. They become note links that find the note by title. */
+const EN_LINK = /^evernote:|evernote\.com\/(?:shard|client|l\/|nl\/|view)|share\.evernote\.com/i;
+function enNoteLinks(doc) {
+  doc.querySelectorAll('a[href]').forEach(a => {
+    if (!EN_LINK.test(a.getAttribute('href') || '')) return;
+    const title = a.textContent.trim();
+    if (!title) { a.replaceWith(...a.childNodes); return; }
+    a.setAttribute('href', '#/note/en:' + encodeURIComponent(title)); a.className = 'nlink';
+  });
+}
+const byTitle = title => { const t = title.trim().toLowerCase(); return M.liveNotes().filter(n => (n.title || '').trim().toLowerCase() === t).sort((a, b) => b.updatedAt - a.updatedAt)[0] || null; };
+/** Point Evernote links at the notes they name, now that those notes are here. Runs after each import. */
+export function resolveEvernoteLinks() {
+  for (const n of M.liveNotes()) {
+    if (!(n.body || '').includes('#/note/en:')) continue;
+    let changed = false;
+    const body = n.body.replace(/href="#\/note\/en:([^"]*)"/g, (all, enc) => { let t; try { t = decodeURIComponent(enc); } catch { return all; } const hit = byTitle(t); if (!hit || hit.id === n.id) return all; changed = true; return `href="#/note/${hit.id}"`; });
+    if (changed) store.put('notes', { ...n, body, updatedAt: n.updatedAt + 1 }, { silent: true, keepTimes: true });
+  }
+}
+/** Follow a link to an Evernote note that was not matched at import time. */
+export function openEvernoteLink(enc) {
+  let t = ''; try { t = decodeURIComponent(enc); } catch {}
+  const hit = t && byTitle(t);
+  if (hit) { resolveEvernoteLinks(); go('#/note/' + hit.id); }
+  else toast(`The note "${t}" has not been brought over from Evernote yet.`);
 }

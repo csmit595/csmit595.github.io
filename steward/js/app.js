@@ -12,8 +12,9 @@ import { compileFilter } from './filters.js';
 import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
+import { importTodoist, describeImport } from './import-todoist.js';
 
-const VERSION = '2.8.0';
+const VERSION = '2.9.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -200,7 +201,10 @@ function viewSettings(main) {
   const home = h('select', { class: 'field slim', onchange: () => settings.set('home', home.value) }, [['today', 'Today'], ['inbox', 'Inbox'], ['upcoming', 'Upcoming'], ['calendar', 'Calendar'], ['notes', 'Notes']].map(([v, l]) => h('option', { value: v }, l)));
   home.value = settings.get('home');
   const semBox = h('input', { type: 'checkbox', checked: semanticOn(), onchange: () => { settings.set('semantic', semBox.checked); if (semBox.checked) semantic.kick(500); const l = $('#sem-line'); if (l) l.textContent = semLine(); } });
-  const bookmarklet = `javascript:(()=>{const s=getSelection();let h='';if(s&&s.rangeCount&&!s.isCollapsed){const d=document.createElement('div');d.append(s.getRangeAt(0).cloneContents());h=d.innerHTML}else{const a=document.querySelector('article,main,[role=main]')||document.body;h=a.innerHTML}open('${appUrl}#clip='+encodeURIComponent(JSON.stringify({u:location.href,t:document.title,h:h.slice(0,300000)})))})()`;
+  // The "Clip to Steward" bookmark. It opens Steward, waits for Steward to say it is ready, then hands over the whole
+  // article and copies of its pictures (fetched by the page itself, which is allowed to read them), so a clip keeps its
+  // images even if the website changes. If the hand-over cannot happen, the text still arrives in the address.
+  const bookmarklet = `javascript:(()=>{const A=${JSON.stringify(appUrl)},O=${JSON.stringify(location.origin)};const s=getSelection();let r;if(s&&s.rangeCount&&!s.isCollapsed){r=document.createElement('div');r.append(s.getRangeAt(0).cloneContents())}else{r=(document.querySelector('article,main,[role=main]')||document.body).cloneNode(true)}r.querySelectorAll('script,style,noscript,iframe,svg,form,button,nav').forEach(x=>x.remove());r.querySelectorAll('img').forEach(i=>{const u=i.getAttribute('data-src')||i.getAttribute('data-lazy-src')||i.getAttribute('data-original')||i.src;if(u){try{i.setAttribute('src',new URL(u,location.href).href)}catch(_){}}i.removeAttribute('srcset');i.removeAttribute('loading')});const h=r.innerHTML,im=[...new Set([...r.querySelectorAll('img')].map(i=>i.getAttribute('src')).filter(u=>/^https?:/.test(u||'')))].slice(0,40);const w=open(A+'#clip='+encodeURIComponent(JSON.stringify({u:location.href,t:document.title,h:h.slice(0,200000),w:1})));const f=async e=>{if(e.source!==w||e.data!=='steward-ready')return;removeEventListener('message',f);const fs=[];for(const u of im){try{const b=await(await fetch(u)).blob();if(b.size>1500&&b.size<15e6&&/^image\\//.test(b.type))fs.push({src:u,blob:b})}catch(_){}}w.postMessage({steward:'clip',u:location.href,t:document.title,h,files:fs},O)};addEventListener('message',f)})()`;
   const clipLink = h('a', { class: 'btn', onclick: e => { e.preventDefault(); toast('Drag this button onto your bookmarks bar'); } }, 'Clip to Steward');
   clipLink.setAttribute('href', bookmarklet);
   const enex = h('input', { type: 'file', accept: '.enex', multiple: true, hidden: true, onchange: async () => {
@@ -213,7 +217,9 @@ function viewSettings(main) {
   const restore = h('input', { type: 'file', accept: '.json', hidden: true, onchange: async () => { try { const n = store.importAll(JSON.parse(await restore.files[0].text())); toast(`Restored ${n} items`); } catch { toast('That file is not a Steward backup'); } restore.value = ''; } });
   main.append(h('div', { class: 'settings' }, h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Settings'))),
     card('Google account and sync', g),
-    card('Reminders', h('p', { class: 'sub' }, 'These apply on all your devices.'), h('label', { class: 'inline' }, auto, ' Remind me about every task that has a time, ', lead),
+    card('Reminders', h('p', { class: 'sub' }, 'These apply on all your devices.'),
+      settings.get('remindersPaused') && h('div', { class: 'banner' }, 'Steward’s reminders are on hold so they do not double up with Todoist. ', btn('Turn reminders on', () => { settings.set('remindersPaused', false); if (sync.connected()) sync.run(); again(); }, 'tiny primary')),
+      h('label', { class: 'inline' }, auto, ' Remind me about every task that has a time, ', lead),
       h('p', { class: 'sub' }, sync.connected() ? 'Reminders are placed on a Google calendar named "Steward Reminders", so your phone buzzes through Google Calendar even when Steward is closed. Keep notifications on for that calendar in the Google Calendar app.' : 'Until Google is connected, reminders only show while Steward is open.'),
       perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Steward in this browser’s settings.')),
     card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
@@ -230,7 +236,8 @@ function viewSettings(main) {
       h('p', null, h('b', null, 'One-tap “Add task” on your phone: '), 'press and hold the Steward icon, then drag “Add task” onto your home screen. Tapping it opens Steward straight to a new task.')),
     card('Bring in your old data',
       h('p', null, h('b', null, 'Evernote: '), 'in the Evernote desktop app, right-click a notebook, choose Export, pick the ENEX format, then load the file here. Notes, tags and attachments come across.'), btn('Import Evernote .enex files', () => enex.click(), '', 'note'), enex,
-      h('p', null, h('b', null, 'Todoist and Google Calendar: '), 'ask Claude to copy your Todoist tasks across. Google Calendar needs no import; it shows up as soon as Google is connected.')),
+      h('p', null, h('b', null, 'Todoist: '), 'brings over every open task with its project, section, sub-tasks, dates, repeats, priority, labels, deadlines, comments and reminders, plus your projects and filters. Doing it again later updates what came over instead of making copies, and finishes here whatever you finished in Todoist.'), btn('Import from Todoist', () => todoistDialog(again), '', 'check'),
+      h('p', null, h('b', null, 'Google Calendar: '), 'needs no import; it shows up as soon as Google is connected.')),
     card('Backup', h('p', { class: 'sub' }, 'Google Drive keeps earlier versions of your data files for 30 days. You can also save a copy yourself.'),
       h('div', { class: 'row gap wrap' }, btn('Download a backup', async () => { const blob = new Blob([JSON.stringify(await store.exportAll())], { type: 'application/json' }); const a = h('a', { href: URL.createObjectURL(blob), download: `steward-backup-${today()}.json` }); a.click(); }), btn('Restore from a backup', () => restore.click()), restore)),
     card('Appearance', h('label', { class: 'inline' }, 'Theme ', theme), h('label', { class: 'inline' }, 'Open Steward on ', home)),
@@ -238,6 +245,34 @@ function viewSettings(main) {
       h('p', { class: 'sub' }, 'Mac (Chrome): click the install icon at the right of the address bar, or the three-dot menu, then "Install Steward". Android (Chrome): three-dot menu, then "Add to Home screen" and "Install".')),
     h('p', { class: 'sub center' }, `Steward ${VERSION}`)));
 }
+// ---- Todoist import ----------------------------------------------------------------------------------
+function todoistDialog(again) {
+  modal(close => {
+    const tok = h('input', { class: 'field mono', placeholder: 'Todoist API token', autocomplete: 'off', autofocus: true });
+    const hold = h('input', { type: 'checkbox', checked: true });
+    const out = h('div', { class: 'sub' });
+    let busy = false;
+    const go = async () => {
+      if (busy) return;
+      const t = tok.value.trim();
+      if (!/^[0-9a-f]{30,}$/i.test(t)) return toast('That does not look like a Todoist API token (a long string of letters and numbers).');
+      busy = true; out.textContent = 'Starting…';
+      try {
+        const r = describeImport(await importTodoist(t, { pauseReminders: hold.checked, onStep: m => { out.textContent = m; } }));
+        fill(out, h('p', null, h('b', null, r.line)), r.problems.length > 0 && h('div', null, h('p', null, 'Worth a look:'), h('ul', null, r.problems.map(p => h('li', null, p)))),
+          hold.checked && h('p', null, 'Steward’s reminders are on hold until you switch. When you stop using Todoist, turn them on in Settings → Reminders.'));
+        tok.value = '';
+        if (sync.connected()) sync.run();
+      } catch (e) { out.textContent = e.message || 'The import stopped.'; }
+      busy = false; again();
+    };
+    return h('div', { class: 'form' },
+      h('p', null, 'In Todoist, open ', h('b', null, 'Settings → Integrations → Developer'), ' and copy your ', h('b', null, 'API token'), '. Paste it here. Steward uses it once for this import and does not keep it.'),
+      tok, h('label', { class: 'inline' }, hold, ' Hold Steward’s phone reminders until I stop using Todoist (so you are not reminded twice)'),
+      out, h('div', { class: 'row end' }, btn('Close', close), btn('Import', go, 'primary')));
+  }, { title: 'Import from Todoist', cls: 'small' });
+}
+
 // ---- shared settings: planning hours and fixed blocks ------------------------------------------
 const DAYNAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 function hoursEditor(again) {
@@ -277,7 +312,7 @@ function blocksEditor(again) {
 }
 
 const semLine = () => !semanticOn() ? 'Off on this device.' : semStatus.error ? (semStatus.error === 'offline' ? 'Waiting for a connection to download the model.' : 'Problem: ' + semStatus.error) : !semStatus.total ? 'Starts a few seconds after Steward opens.' : semStatus.done < semStatus.total ? `Reading your notes and tasks: ${semStatus.done} of ${semStatus.total}` : `Up to date: ${semStatus.total} notes and tasks indexed.`;
-const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? 'Google needs you to reconnect. Tap Sync now.' : sync.status === 'offline' ? sync.message : sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet';
+const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? 'Google needs you to reconnect. Tap Sync now.' : sync.status === 'offline' ? sync.message : (sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet') + (sync.attWaiting ? ` · ${sync.attWaiting} attachment${sync.attWaiting === 1 ? '' : 's'} waiting to upload (Steward keeps trying; tasks and notes still sync)` : '');
 
 function applyTheme() { const t = settings.get('theme'); if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t; }
 
@@ -299,7 +334,19 @@ function checkReminders() {
 async function intake() {
   const hsh = location.hash;
   if (hsh.startsWith('#clip=')) {
-    try { const j = JSON.parse(decodeURIComponent(hsh.slice(6))); history.replaceState(null, '', location.pathname); await createClip({ title: j.t, url: j.u, html: j.h, text: j.x }); }
+    try {
+      const j = JSON.parse(decodeURIComponent(hsh.slice(6))); history.replaceState(null, '', location.pathname);
+      // Newer clip button: ask the page for the full article and its pictures; fall back to what came in the address.
+      const full = j.w && window.opener ? await new Promise(res => {
+        const t = setTimeout(() => { removeEventListener('message', on); res(null); }, 25000);
+        const on = e => { if (e.source !== window.opener || e.data?.steward !== 'clip') return; clearTimeout(t); removeEventListener('message', on); res(e.data); };
+        addEventListener('message', on);
+        toast('Saving the page and its pictures…', null, null, 4000);
+        try { window.opener.postMessage('steward-ready', '*'); } catch { clearTimeout(t); res(null); }
+      }) : null;
+      if (full && typeof full.h === 'string') await createClip({ title: full.t || j.t, url: full.u || j.u, html: full.h, images: Array.isArray(full.files) ? full.files : [] });
+      else await createClip({ title: j.t, url: j.u, html: j.h, text: j.x });
+    }
     catch { history.replaceState(null, '', location.pathname + '#/notes'); toast('That clip could not be read'); }
     return true;
   }

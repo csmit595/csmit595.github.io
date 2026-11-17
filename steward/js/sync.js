@@ -172,11 +172,22 @@ export const sync = {
     return d;
   },
   async upload(id, name, parent, mime, body) {
+    // Google's one-step upload is meant for files of 5 MB or less; photos, long recordings and big PDFs use a resumable upload.
+    if (!id && body instanceof Blob && body.size > 4e6) return this.uploadLarge(name, parent, mime, body);
     if (id) return this.api(`${UPLOAD}/files/${id}?uploadType=media&fields=id,version,md5Checksum`, { method: 'PATCH', headers: { 'Content-Type': mime }, body });
     const form = new FormData();
     form.append('metadata', new Blob([JSON.stringify({ name, parents: [parent], mimeType: mime })], { type: 'application/json' }));
     form.append('file', body instanceof Blob ? body : new Blob([body], { type: mime }));
     return this.api(`${UPLOAD}/files?uploadType=multipart&fields=id,version,md5Checksum`, { method: 'POST', body: form });
+  },
+
+  async uploadLarge(name, parent, mime, blob) {
+    const start = await this.api(`${UPLOAD}/files?uploadType=resumable&fields=id,version,md5Checksum`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Upload-Content-Type': mime, 'X-Upload-Content-Length': String(blob.size) },
+      body: JSON.stringify({ name, parents: [parent], mimeType: mime }) }, true);
+    const where = start.headers.get('Location');
+    if (!where) throw new Error('Google did not start the upload');
+    return this.api(where, { method: 'PUT', headers: { 'Content-Type': mime }, body: blob });
   },
 
   // ---- the sync cycle ------------------------------------------------------------
@@ -188,11 +199,18 @@ export const sync = {
     try {
       await this.token(interactive);
       const d = await this.layout();
-      await this.inbox(d);
-      await this.pushAttachments(d);
+      // 1. Bring this device up to date FIRST. Claude's change files refer to tasks and notes by id as they stand in
+      //    Drive; applying them to an out-of-date copy would build blank items that then overwrite the real ones.
       let wrote = false;
-      for (const file of Object.keys(BUNDLES)) wrote = (await this.syncFile(d, file)) || wrote;
-      wrote = (await this.syncLibrary(d)) || wrote;
+      const syncAll = async () => {
+        for (const file of Object.keys(BUNDLES)) wrote = (await this.syncFile(d, file)) || wrote;
+        wrote = (await this.syncLibrary(d)) || wrote;
+      };
+      await syncAll();
+      // 2. Now apply Claude's changes, and send them straight back up so the other device sees them.
+      if (await this.inbox(d)) await syncAll();
+      // 3. Photos, PDFs and recordings last, one at a time: a file that will not upload never holds up tasks and notes.
+      if (await this.pushAttachments(d)) wrote = (await this.syncLibrary(d)) || wrote;
       if (wrote || !d.files.summary) await this.writeSummary(d);
       ls.set('drive', d);
       await this.syncReminders().catch(e => console.warn('reminders', e));
@@ -358,6 +376,7 @@ export const sync = {
       const body = [`Steward ${new Date().toString()}`, `Changes from ${name}:`, ...lines].join('\n');
       await this.upload(null, `report-${name.replace(/\.json$/i, '')}.txt`, d.inbox, 'text/plain', body).catch(e => console.warn('report', e));
     };
+    let applied = 0;
     for (const f of r.files) {
       if (/^(failed-|report-)/.test(f.name) || f.mimeType === 'application/vnd.google-apps.folder') continue;
       try {
@@ -368,6 +387,7 @@ export const sync = {
         const ops = Array.isArray(j) ? j : j?.ops;
         if (!Array.isArray(ops)) throw new Error('not a list of changes');
         const results = applyOps(ops);
+        applied++;
         const problems = results.filter(x => x.startsWith('problem'));
         if (problems.length) await report(f.name, [`${results.length - problems.length} applied, ${problems.length} with problems:`, ...problems]);
         await this.api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
@@ -377,20 +397,41 @@ export const sync = {
         await report(f.name, ['Nothing was applied: ' + (e.message || 'the file could not be read')]);
       }
     }
+    return applied;
   },
+  /**
+   * Upload photos, PDFs and recordings added on this device. Each file is tried on its own: one that fails (too big, a
+   * hiccup at Google) is skipped and retried later with a growing wait, so it never stops tasks and notes from syncing.
+   * Returns how many files went up.
+   */
+  attWaiting: 0,
   async pushAttachments(d) {
+    const fails = ls.get('attFails', {}), now = Date.now();
+    let sent = 0, waiting = 0;
     for (const n of store.all('notes')) {
-      let changed = false;
-      const atts = [];
+      const done = new Map();
       for (const a of n.attachments || []) {
-        if (!a.driveId) {
-          const blob = await store.getBlob(a.id);
-          if (blob) { const r = await this.upload(null, `${a.id}-${a.name}`, d.att, a.mime || 'application/octet-stream', blob); atts.push({ ...a, driveId: r.id }); changed = true; continue; }
+        if (a.driveId) continue;
+        const f = fails[a.id];
+        if (f && now - f.at < Math.min(6 * 3600e3, 5 * 60e3 * 2 ** (f.n - 1))) { waiting++; continue; }
+        const blob = await store.getBlob(a.id);
+        if (!blob) continue; // another device holds the file and uploads it
+        try {
+          const r = await this.upload(null, `${a.id}-${a.name}`, d.att, a.mime || 'application/octet-stream', blob);
+          done.set(a.id, r.id); delete fails[a.id]; sent++;
+        } catch (e) {
+          if (e.message === 'auth') { ls.set('attFails', fails); throw e; }
+          if (e instanceof TypeError || !navigator.onLine) { waiting++; break; } // connection dropped: try next time
+          console.warn('attachment upload', a.name, e);
+          fails[a.id] = { n: (f?.n || 0) + 1, at: now, why: e.detail || e.message }; waiting++;
         }
-        atts.push(a);
       }
-      if (changed) { const cur = store.get('notes', n.id); if (cur) store.put('notes', { ...cur, attachments: (cur.attachments || []).map(a => atts.find(x => x.id === a.id) || a) }, { silent: true }); }
+      if (done.size) { const cur = store.get('notes', n.id); if (cur) store.put('notes', { ...cur, attachments: (cur.attachments || []).map(a => done.has(a.id) ? { ...a, driveId: done.get(a.id) } : a) }, { silent: true }); }
     }
+    for (const id of Object.keys(fails)) if (now - fails[id].at > 30 * 864e5) delete fails[id];
+    ls.set('attFails', fails);
+    this.attWaiting = waiting;
+    return sent;
   },
   /** Get an attachment's contents, downloading from Drive if this device has not seen it yet. */
   async blob(att) {

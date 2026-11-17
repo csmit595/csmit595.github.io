@@ -71,7 +71,7 @@ export function deleteProject(id) {
 /** All moments a task should alert, as Date objects. */
 export function reminderTimes(t) {
   const out = [];
-  if (t.completedAt) return out;
+  if (t.completedAt || settings.get('remindersPaused')) return out;
   const dueAt = t.due?.date ? new Date(`${t.due.date}T${t.due.time || '09:00'}:00`) : null;
   for (const r of t.reminders || []) {
     if (r.at) out.push(new Date(r.at));
@@ -115,6 +115,7 @@ export function applyOps(ops) {
         else if (type === 'project') deleteProject(o.id);
         else if (type === 'note') store.patch('notes', o.id, { trashed: true });
         else store.remove(type + 's', o.id);
+        results.push('ok ' + where);
         continue;
       }
       const it = { ...(o.item || {}) };
@@ -131,10 +132,20 @@ export function applyOps(ops) {
         if (it.deadline !== undefined) { const d = dateOnly(it.deadline); if (d === undefined) { results.push(`problem ${where}: could not read the deadline`); delete it.deadline; } else it.deadline = d; }
         if (it.labels) ensureLabels(it.labels);
         if (it.id && !cur && store.rawGet('tasks', it.id)?.deleted) throw new Error('that task was deleted; use {"op":"restore"} first');
+        // A change to a task this device does not have (yet) must never create a blank copy under that id: the copy's
+        // empty name, project and labels would be newer than the real task's and overwrite it everywhere.
+        if (it.id && !cur && !String(it.content || '').trim()) throw new Error('no task with that id on this device yet; nothing was changed (to create a new task, include its content)');
         if (cur) store.put('tasks', { ...cur, ...it, remindedFor: it.due ? null : cur.remindedFor }, BY);
         else addTask({ content: 'Untitled', ...it }, BY);
       } else if (type === 'note') {
         const cur = it.id ? store.get('notes', it.id) : null;
+        // Same rule as tasks: adding to, or patching, a note this device does not hold would build a blank note that
+        // overwrites the real one. Only a full new note (title or text) may be created under a new id.
+        if (it.id && !cur) {
+          if (store.rawGet('notes', it.id)?.deleted) throw new Error('that note was deleted for good');
+          if (it.appendMarkdown !== undefined) throw new Error('no note with that id on this device yet; nothing was added');
+          if (![it.title, it.markdown, it.body, it.text].some(v => String(v || '').trim()) && !it.files?.length) throw new Error('no note with that id on this device yet; nothing was changed');
+        }
         if (it.notebook !== undefined) { it.notebookId = ensureNotebook(it.notebook); delete it.notebook; }
         if (it.markdown !== undefined) { it.body = mdToHtml(it.markdown); delete it.markdown; }
         if (it.appendMarkdown !== undefined) { it.body = (cur?.body || '') + mdToHtml(it.appendMarkdown); delete it.appendMarkdown; }

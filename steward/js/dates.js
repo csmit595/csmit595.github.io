@@ -64,7 +64,7 @@ export function nextOccurrence(due, now = today()) {
   return next;
 }
 
-function parseTime(text) {
+function parseTime(text, partOk = false) {
   let m;
   const cut = (m) => text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length);
   if ((m = text.match(/\b(?:at\s+)?(noon|midnight)\b/i))) return { time: m[1].toLowerCase() === 'noon' ? '12:00' : '00:00', rest: cut(m) };
@@ -77,8 +77,24 @@ function parseTime(text) {
     let H = +m[1]; if (H >= 1 && H <= 6) H += 12; // "at 3" means 3 PM for working hours
     return { time: `${pad(H)}:00`, rest: cut(m) };
   }
-  if ((m = text.match(/\b(?:in the\s+|this\s+)?(morning|afternoon|evening)\b/i))) return { time: { morning: '09:00', afternoon: '13:00', evening: '19:00' }[m[1].toLowerCase()], rest: cut(m) };
+  // "morning/afternoon/evening" only count as a time when they clearly mean one ("in the morning", "this evening",
+  // "tomorrow morning", or last word) so "evening primrose" and "morning glory" stay plant names.
+  const PART = { morning: '09:00', afternoon: '13:00', evening: '19:00' };
+  if ((m = text.match(/\b(?:in the|this)\s+(morning|afternoon|evening)\b/i))) return { time: PART[m[1].toLowerCase()], rest: cut(m) };
+  if ((m = text.match(/\b(morning|afternoon|evening)\s*$/i)) || (partOk && (m = text.match(/\b(morning|afternoon|evening)\b/i)))) return { time: PART[m[1].toLowerCase()], rest: cut(m) };
   return null;
+}
+/** Short day names that are also everyday words ("full sun", "sat down", "wed") only count as days when nothing else follows them, or a time does. */
+const WORD_DAYS = new Set(['sun', 'sat', 'wed']);
+const TIME_NEXT = /^\s*(?:$|[,.;!)]|at\b|@|noon|midnight|morning|afternoon|evening|night|\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b|by\b|for\b)/i;
+/** "1/2", "3/4", "5/8" read as fractions (pipe sizes, gravel), not dates, unless written "on 3/4" or with a year. */
+function isFraction(text, m) {
+  const a = +m[1], b = +m[2];
+  if (m[3]) return false;
+  const before = text.slice(0, m.index);
+  if (/\b(on|due|by|before|until|till|from)\s*$/i.test(before)) return false;
+  if (/\d\s*$/.test(before) || /^\s*-?\s*(?:"|'|in\b|inch|ft\b|foot|feet|yd|yard|ton|cu|gal|lb|hp|mm|cm|-)/i.test(text.slice(m.index + m[0].length))) return true;
+  return a < b && [2, 3, 4, 8, 16, 32].includes(b);
 }
 
 /** Words that mean a task repeats. Used to warn when a repeat was asked for but not understood. */
@@ -157,12 +173,16 @@ function parseDay(text, now) {
   if ((m = text.match(/\bend\s+of\s+(?:the\s+)?month\b/i))) return { date: addMonths(now, 0, 31), rest: cut(m) };
   if ((m = text.match(new RegExp(`\\b(${MON_RE})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`, 'i')))) { const date = future(monIdx(m[1]), +m[2], m[3] && +m[3]); if (date) return { date, rest: cut(m) }; }
   if ((m = text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MON_RE})\\b(?:,?\\s+(\\d{4}))?`, 'i')))) { const date = future(monIdx(m[2]), +m[1], m[3] && +m[3]); if (date) return { date, rest: cut(m) }; }
-  if ((m = text.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/)) && +m[1] <= 12 && +m[2] <= 31) {
-    const yr = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : null;
-    const date = future(+m[1] - 1, +m[2], yr); if (date) return { date, rest: cut(m) };
+  for (const s of text.matchAll(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/g)) {
+    if (+s[1] > 12 || +s[2] > 31 || isFraction(text, s)) continue;
+    const yr = s[3] ? (+s[3] < 100 ? 2000 + +s[3] : +s[3]) : null;
+    const date = future(+s[1] - 1, +s[2], yr); if (date) return { date, rest: cut(s) };
   }
   if ((m = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/)) && real(+m[1], +m[2] - 1, +m[3])) return { date: m[0], rest: cut(m) };
-  if ((m = text.match(new RegExp(`\\b(next\\s+|this\\s+|on\\s+)?(${DAY_RE})\\b`, 'i')))) {
+  for (const s of text.matchAll(new RegExp(`\\b(next\\s+|this\\s+|on\\s+|by\\s+|due\\s+)?(${DAY_RE})\\b`, 'gi'))) {
+    // "full sun shrubs": a bare "sun", "sat" or "wed" followed by more words is not a day
+    if (!s[1] && WORD_DAYS.has(s[2].toLowerCase()) && !TIME_NEXT.test(text.slice(s.index + s[0].length))) continue;
+    m = s;
     let date = nextDow(now, dayIdx(m[2]), !/this/i.test(m[1] || ''));
     if (/next/i.test(m[1] || '') && fromYmd(date).getDay() > fromYmd(now).getDay() && fromYmd(now).getDay() !== 0) date = addDays(date, 7);
     return { date, rest: cut(m) };
@@ -177,7 +197,8 @@ export function parseDue(text, now = today()) {
   if (rr) { recur = rr.recur; rest = rr.rest.replace(/\b(starting|from)\s+(?=\S)/i, ' '); }
   const dd = parseDay(rest, now);
   if (dd) { date = dd.date; rest = dd.rest; if (dd.time) time = dd.time; }
-  const tt = parseTime(rest);
+  const partOk = new RegExp(`\\b(?:today|tod|tomorrow|tom|tmrw|tmr|${DAY_RE}|\\d{1,2}(?:st|nd|rd|th)?)\\s+(?:morning|afternoon|evening)\\b`, 'i').test(text);
+  const tt = parseTime(rest, partOk);
   if (tt) { time = tt.time; rest = tt.rest; }
   if (!recur && !date && !time) return null;
   if (!date) {
@@ -192,8 +213,8 @@ export function parseDue(text, now = today()) {
 }
 
 /** Quick add: "Mulch at Hanel fri 8am p1 #Projects @promise for 2h" */
-export function parseQuickAdd(text, ctx) {
-  const out = { content: text, priority: 4, labels: [], projectId: null, sectionId: null, due: null, deadline: null, duration: null, chips: [] };
+export function parseQuickAdd(text, ctx, opts = {}) {
+  const out = { content: text, priority: 4, labels: [], projectId: null, sectionId: null, due: null, deadline: null, duration: null, chips: [], dueChip: null };
   let s = ' ' + text + ' ';
   let m;
   // {nov 20} sets a deadline, as in Todoist
@@ -219,9 +240,10 @@ export function parseQuickAdd(text, ctx) {
   if ((m = s.match(/\sfor\s+(\d+(?:\.\d+)?)\s*(m|min|mins|minutes|h|hr|hrs|hours?)(?=\s)/i))) {
     out.duration = Math.round(+m[1] * (/^h/i.test(m[2]) ? 60 : 1)); s = s.replace(m[0], ' '); out.chips.push(out.duration + ' min');
   }
-  const d = parseDue(s.trim());
-  if (d && d.rest.trim()) { out.due = d.due; s = d.rest; out.chips.unshift(describeDue(d.due)); }
-  if (looksRepeating(text.replace(/\{[^}]*\}/g, '')) && !out.due?.recur) { out.repeatProblem = true; out.chips.push('⚠ repeat not understood'); }
+  // opts.keepDate: the person tapped the date chip to say "those words are part of the name, not a date"
+  const d = opts.keepDate ? null : parseDue(s.trim());
+  if (d && d.rest.trim()) { out.due = d.due; s = d.rest; out.dueChip = describeDue(d.due); }
+  if (!opts.keepDate && looksRepeating(text.replace(/\{[^}]*\}/g, '')) && !out.due?.recur) { out.repeatProblem = true; out.chips.push('⚠ repeat not understood'); }
   out.content = s.replace(/\s{2,}/g, ' ').trim();
   return out;
 }

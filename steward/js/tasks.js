@@ -321,13 +321,19 @@ export function openQuickAdd(defaults = {}) {
     const chips = h('div', { class: 'chips' });
     let picked = defaults.projectId || 'inbox';
     const proj = projectSelect(picked, v => { picked = v; });
-    const parse = () => parseQuickAdd(input.value, M.ctx());
+    // Like Todoist: tap the date chip when Steward mistook words in the name for a date ("full sun", "3/4 gravel").
+    let keepDate = false;
+    const parse = () => parseQuickAdd(input.value, M.ctx(), { keepDate });
     const refresh = () => {
+      if (!input.value.trim()) keepDate = false;
       const p = parse();
-      const list = [...p.chips];
-      if (!p.due && defaults.due) list.unshift(describeDue(defaults.due));
-      for (const l of defaults.labels || []) list.push('@' + l);
-      fill(chips, list.map(c => h('span', { class: 'chip' }, c)));
+      const would = keepDate && parseQuickAdd(input.value, M.ctx()).dueChip;
+      const list = p.chips.map(c => h('span', { class: 'chip' }, c));
+      if (p.dueChip) list.unshift(h('button', { type: 'button', class: 'chip chip-due', title: 'Not a date? Tap to keep these words in the name', onclick: () => { keepDate = true; refresh(); input.focus(); } }, icon('upcoming', 12), p.dueChip, h('span', { class: 'chip-x', 'aria-label': 'Not a date' }, '×')));
+      else if (would) list.unshift(h('button', { type: 'button', class: 'chip chip-off', title: 'Tap to read it as a date again', onclick: () => { keepDate = false; refresh(); input.focus(); } }, 'Kept as words, not a date · undo'));
+      else if (defaults.due) list.unshift(h('span', { class: 'chip' }, describeDue(defaults.due)));
+      for (const l of defaults.labels || []) list.push(h('span', { class: 'chip' }, '@' + l));
+      fill(chips, list);
       if (p.projectId) proj.value = picked = p.projectId;
     };
     const add = () => {
@@ -338,14 +344,14 @@ export function openQuickAdd(defaults = {}) {
       const projectId = p.projectId || picked;
       M.addTask({ ...p, projectId, sectionId: p.sectionId || (projectId === (defaults.projectId || 'inbox') ? defaults.sectionId : null), due: p.due || defaults.due || null,
         deadline: p.deadline || defaults.deadline || null, parentId: defaults.parentId || null, labels: [...new Set([...(defaults.labels || []), ...p.labels])], description: desc.value.trim(), noteId: defaults.noteId || null });
-      input.value = ''; desc.value = ''; refresh(); toast('Task added'); input.focus();
+      input.value = ''; desc.value = ''; keepDate = false; refresh(); toast('Task added'); input.focus();
     };
     input.addEventListener('input', refresh);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
     refresh();
     return h('div', { class: 'form' }, input, chips, desc,
       h('div', { class: 'row between' }, h('label', { class: 'inline' }, 'Project', proj), h('div', { class: 'row' }, btn('Done', close), btn('Add task', add, 'primary'))),
-      h('p', { class: 'hint' }, 'Type dates and details in plain words: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@label'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline'));
+      h('p', { class: 'hint' }, 'Type dates and details in plain words: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@label'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline. If a word is mistaken for a date, tap the date chip to keep it in the name.'));
   }, { title: defaults.parentId ? 'Add sub-task' : 'Add task', cls: 'qa' });
 }
 

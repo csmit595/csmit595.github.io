@@ -104,6 +104,9 @@ export const store = {
       const was = cur && !cur.deleted ? cur[k] : undefined;
       if (!cur || cur.deleted || !same(was, item[k])) { f[k] = now; if (cur && !cur.deleted && !HIST_SKIP.has(k)) old[k] = was === undefined ? null : was; }
     }
+    // opts.keepTimes (imports): keep the item's own edit time, so a note last edited in 2019 still says 2019
+    const at = opts.keepTimes && item.updatedAt ? Math.min(item.updatedAt, now) : now;
+    if (at !== now) for (const k in f) if (f[k] === now) f[k] = at;
     item._f = f;
     if (type === 'tasks' && Object.keys(old).length && !opts.noHistory) {
       const hist = [...(cur.hist || [])];
@@ -113,7 +116,7 @@ export const store = {
       else hist.push({ at: now, by: opts.by || null, old });
       item.hist = hist.slice(-15);
     } else if (cur && cur.hist && !item.hist) item.hist = cur.hist;
-    item.updatedAt = now;
+    item.updatedAt = at;
     data[type].set(item.id, item);
     this._changed(type, opts, item.id);
     return item;
@@ -243,7 +246,7 @@ export const store = {
 // hours: per weekday (0 = Sunday) the window tasks may be planned in, or null for no planning that day.
 const WEEK_HOURS = [null, ...Array(5).fill({ start: '07:00', end: '22:30' }), { start: '07:00', end: '22:30' }];
 const defaults = { theme: 'light', weekStart: 0, home: 'today', autoRemind: true, remindLead: 0, clientId: '953176719624-701gj43chqpp040biv5qvvr628o8rflo.apps.googleusercontent.com', calView: 'week', hidden: [], workStart: '07:00', workEnd: '18:00', restDay: 0, hours: WEEK_HOURS };
-export const SHARED = ['autoRemind', 'remindLead', 'workStart', 'workEnd', 'restDay', 'hours'];
+export const SHARED = ['autoRemind', 'remindLead', 'remindersPaused', 'workStart', 'workEnd', 'restDay', 'hours'];
 const local = {
   get(k) { try { return JSON.parse(localStorage.getItem('steward.set.' + k)); } catch { return null; } },
   set(k, v) { localStorage.setItem('steward.set.' + k, JSON.stringify(v)); },
