@@ -84,7 +84,7 @@ function timeGrid(from, n) {
     data.map((x, i) => {
       const col = h('div', { class: 'cg-col' + (days[i] === now ? ' now' : ''), onclick: e => { if (e.target !== col) return; const m = Math.floor((e.offsetY / HOUR) * 2) * 30; editEvent({ date: days[i], time: `${pad(Math.floor(m / 60))}:${pad(m % 60)}` }); } },
         layout(x.timed).map(it => h('button', { class: 'cblock ' + it.kind + ((it.end - it.start) / 60 * HOUR < 44 ? ' short' : '') + (it.kind === 'task' ? ` pri${it.t.priority || 4}` : ''), title: it.title,
-          style: { top: (it.start / 60) * HOUR + 'px', height: Math.max(22, ((it.end - it.start) / 60) * HOUR - 2) + 'px', left: `calc(${(it.col / it.cols) * 100}% + 1px)`, width: `calc(${100 / it.cols}% - 3px)`, ...(it.kind === 'event' ? { background: it.color } : {}) },
+          style: { top: (it.start / 60) * HOUR + 'px', height: Math.max(22, ((it.end - it.start) / 60) * HOUR - 2) + 'px', left: `calc(${(it.col / it.cols) * 100}% + 1px)`, width: `calc(${100 / it.cols}% - 3px)`, ...(it.kind === 'event' ? { background: it.color } : it.kind === 'task' ? { borderLeftColor: M.COLORS[store.get('projects', it.t.projectId)?.color] || '' } : {}) },
           onclick: e => { e.stopPropagation(); open(it); } }, h('b', null, it.title), h('span', null, fmtTime(`${pad(Math.floor(it.start / 60))}:${pad(it.start % 60)}`)))));
       if (days[i] === now) col.append(h('div', { class: 'nowline', style: { top: (minsOf(new Date()) / 60) * HOUR + 'px' } }));
       return col;

@@ -14,7 +14,7 @@ import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 import { importTodoist, describeImport } from './import-todoist.js';
 
-const VERSION = '2.9.0';
+const VERSION = '3.0.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -44,7 +44,7 @@ function render(info = {}) {
   else if (route.view === 'search') viewSearch(main);
   else if (route.view === 'settings') { viewSettings(main); if (route.id === 'blocks') setTimeout(() => document.getElementById('blocks-card')?.scrollIntoView({ block: 'start' }), 30); }
   else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
-  else if (['today', 'upcoming', 'inbox', 'project', 'label', 'filter', 'filters', 'completed'].includes(route.view)) renderTasks(route, main);
+  else if (['today', 'upcoming', 'inbox', 'project', 'label', 'filter', 'filters', 'completed'].includes(route.view)) { renderTasks(route, main); const acts = main.querySelector('.vhead > .row'); if (acts && isMobile()) acts.prepend(iconBtn('search', 'Search', () => { location.hash = '#/search'; }, 'hsearch')); }
   else { location.hash = '#/today'; return; }
   main.scrollTop = y; lastRouteKey = key;
 }
@@ -58,7 +58,7 @@ function schedule(info = {}) {
 // ---- sidebar ---------------------------------------------------------------------------
 function drawSidebar(route) {
   const side = $('#side'), now = today(), open = M.openTasks(), hash = location.hash || '#/' + settings.get('home');
-  const link = (href, ic, label, count, extra) => h('a', { class: 'slink' + (hash === href ? ' on' : ''), href, onclick: closeDrawer }, typeof ic === 'string' ? icon(ic, 17) : ic, h('span', { class: 'grow' }, label), count ? h('span', { class: 'count' }, count) : null, extra);
+  const link = (href, ic, label, count, extra) => h('a', { class: 'slink' + (hash === href ? ' on' : ''), href, onclick: closeDrawer }, typeof ic === 'string' ? icon(ic, 17) : ic, h('span', { class: 'grow' }, label), count instanceof Node ? count : count ? h('span', { class: 'count' }, count) : null, extra);
   const dot = c => h('span', { class: 'pdot', style: { background: M.COLORS[c] || M.COLORS.stone } });
   const projects = projectTree(), c = M.ctx();
   const favs = [...projects.filter(p => p.favorite).map(p => link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => t.projectId === p.id).length)),
@@ -74,31 +74,39 @@ function drawSidebar(route) {
   const [long, short] = st === 'syncing' ? ['Syncing…', 'Syncing…'] : st === 'off' ? (sync.configured() && sync.connected() ? ['Sync', 'Sync'] : ['Not syncing yet', 'Set up']) : st === 'offline' ? ['Offline · saved here', 'Offline'] : st === 'auth' ? (/^Tap once/.test(sync.message) ? ['Tap to stay signed in', 'Tap once'] : ['Tap to reconnect', 'Reconnect']) : st === 'error' ? ['Sync problem', 'Problem'] : ['Synced ' + time, time || 'Synced'];
   const pill = h('button', { class: 'syncpill ' + st, title: sync.message || long, onclick: () => { if (!sync.configured()) location.hash = '#/settings'; else sync.run(true); } },
     icon(st === 'offline' || st === 'off' ? 'cloudoff' : 'sync', 14), h('span', { class: 'pl-long' }, long), h('span', { class: 'pl-short' }, short));
-  fill(side, 
-    h('div', { class: 'brand' }, h('img', { src: 'icons/mark.png', alt: '', width: 44, height: 44 }), h('strong', null, 'Steward'), h('span', { class: 'grow' }), pill),
-    h('div', { class: 'addline' }, h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task'), iconBtn('sidebar', 'Hide sidebar (⌘\\)', toggleSide, 'only-desktop')),
+  // Sections fold (remembered per device) so a long list of projects or notebooks doesn't bury the rest.
+  const folded = k => { try { return localStorage.getItem('steward.fold.' + k) === '1'; } catch { return false; } };
+  const sec = (key, title, add, ...body) => {
+    const shut = folded(key);
+    return h('div', { class: 'ssec' + (shut ? ' shut' : '') },
+      h('div', { class: 'shead' }, h('button', { class: 'sfold', type: 'button', 'aria-expanded': String(!shut), onclick: e => { const s = e.currentTarget.closest('.ssec'); const now2 = !s.classList.toggle('shut'); e.currentTarget.setAttribute('aria-expanded', String(now2)); try { localStorage.setItem('steward.fold.' + key, now2 ? '' : '1'); } catch {} } }, icon('down', 12), title), add),
+      h('div', { class: 'sbody' }, body));
+  };
+  const todayCount = open.filter(t => t.due && t.due.date <= now && !t.parentId).length;
+  fill(side,
+    h('div', { class: 'brand' }, h('img', { src: 'icons/mark.png', alt: '', width: 40, height: 40 }), h('strong', null, 'Steward'), h('span', { class: 'grow' }), pill),
+    h('div', { class: 'addline' }, h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task', h('kbd', { class: 'only-desktop' }, 'Q')), iconBtn('sidebar', 'Hide sidebar (⌘\\)', toggleSide, 'only-desktop')),
+    h('button', { class: 'sside-search', type: 'button', onclick: () => { closeDrawer(); location.hash = '#/search'; } }, icon('search', 16), h('span', { class: 'grow' }, 'Search everything'), h('kbd', { class: 'only-desktop' }, '⌘K')),
     h('nav', null,
-      link('#/search', 'search', 'Search'),
       link('#/inbox', 'inbox', 'Inbox', open.filter(t => (t.projectId || 'inbox') === 'inbox' && !t.parentId).length),
-      link('#/today', 'today', 'Today', open.filter(t => t.due && t.due.date <= now).length),
+      link('#/today', 'today', 'Today', todayCount ? h('span', { class: 'badge' + (open.some(t => t.due && t.due.date < now) ? ' late' : '') }, todayCount) : 0),
       link('#/upcoming', 'upcoming', 'Upcoming'),
       link('#/calendar', 'cal', 'Calendar'),
       link('#/filters', 'filter', 'Filters & labels'),
       link('#/completed', 'done', 'Completed'),
-      favs.length > 0 && h('div', { class: 'shead' }, 'Favorites'), favs,
-      h('div', { class: 'shead' }, 'Projects', iconBtn('plus', 'New project', () => editProject(), 'mini')),
-      projects.map(p => h('div', { style: { paddingLeft: p.depth * 14 + 'px' } }, link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => t.projectId === p.id).length))),
-      !projects.length && h('div', { class: 'snote' }, 'No projects yet'),
-      h('div', { class: 'shead' }, 'Notes', iconBtn('plus', 'New notebook', async () => { const n = await promptDlg('New notebook', '', 'Notebook name'); if (n) { location.hash = '#/notes/nb/' + M.ensureNotebook(n); } }, 'mini')),
-      link('#/notes', 'note', 'All notes', notes.length),
-      nbs.map(nb => link('#/notes/nb/' + nb.id, 'book', nb.name, notes.filter(n => n.notebookId === nb.id).length, nbMenu(nb))),
-      tags.length > 0 && h('details', { class: 'stags', open: localStorage.getItem('steward.tagsOpen') === '1', ontoggle: e => localStorage.setItem('steward.tagsOpen', e.currentTarget.open ? '1' : '0') }, h('summary', null, 'Tags'), tags.map(([t, n]) => link('#/notes/tag/' + encodeURIComponent(t), 'tag', t, n))),
-      link('#/trash', 'trash', 'Trash'),
-      h('div', { class: 'shead' }, 'Writing'),
-      link('#/writing', 'edit', 'Documents', liveDocs().length),
-      link('#/sources', 'book', 'Sources', store.all('sources').length),
-      h('div', { class: 'shead' }),
-      link('#/settings', 'gear', 'Settings')));
+      favs.length > 0 && sec('favs', 'Favorites', null, favs),
+      sec('projects', 'Projects', iconBtn('plus', 'New project', () => editProject(), 'mini'),
+        projects.map(p => h('div', { style: { paddingLeft: p.depth * 14 + 'px' } }, link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => t.projectId === p.id).length))),
+        !projects.length && h('div', { class: 'snote' }, 'No projects yet')),
+      sec('notes', 'Notes', iconBtn('plus', 'New notebook', async () => { const n = await promptDlg('New notebook', '', 'Notebook name'); if (n) { location.hash = '#/notes/nb/' + M.ensureNotebook(n); } }, 'mini'),
+        link('#/notes', 'note', 'All notes', notes.length),
+        nbs.map(nb => link('#/notes/nb/' + nb.id, 'book', nb.name, notes.filter(n => n.notebookId === nb.id).length, nbMenu(nb))),
+        tags.length > 0 && h('details', { class: 'stags', open: localStorage.getItem('steward.tagsOpen') === '1', ontoggle: e => localStorage.setItem('steward.tagsOpen', e.currentTarget.open ? '1' : '0') }, h('summary', null, icon('tag', 17), h('span', { class: 'grow' }, 'Tags'), h('span', { class: 'count' }, tags.length)), tags.map(([t, n]) => link('#/notes/tag/' + encodeURIComponent(t), 'tag', t, n))),
+        link('#/trash', 'trash', 'Trash')),
+      sec('writing', 'Writing', null,
+        link('#/writing', 'edit', 'Documents', liveDocs().length),
+        link('#/sources', 'book', 'Sources', store.all('sources').length)),
+      h('div', { class: 'sfoot' }, link('#/settings', 'gear', 'Settings'))));
   for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('on', a.getAttribute('href') === hash || !!(a.dataset.match && new RegExp(a.dataset.match).test(hash)));
 }
 function defaultsForRoute() {
@@ -109,6 +117,13 @@ function defaultsForRoute() {
   return {};
 }
 const closeDrawer = () => document.body.classList.remove('drawer');
+// Keyboard: "g" then a letter jumps to a screen; "?" shows every shortcut.
+let goPending = 0;
+const GO = { t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', w: '#/writing', s: '#/settings' };
+function shortcuts() {
+  const rows = [['Q', 'Add a task'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then W', 'Writing'], ['Esc', 'Close a window'], ['?', 'This list']];
+  modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
+}
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
 const setSideHidden = on => { document.body.classList.toggle('side-hidden', on); try { localStorage.setItem('steward.sideHidden', on ? '1' : ''); } catch {} };
 const toggleSide = () => { setSideHidden(!document.body.classList.contains('side-hidden')); if (parseRoute().view === 'calendar') schedule({ force: true }); };
@@ -423,10 +438,14 @@ async function start() {
   setInterval(() => { if (today() !== day) { day = today(); schedule(); } }, 60000);
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === '\\' && !isMobile()) { e.preventDefault(); toggleSide(); return; }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !e.shiftKey) { e.preventDefault(); while (modalOpen()) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); if (location.hash === '#/search') document.querySelector('.field.big')?.select(); else location.hash = '#/search'; return; }
     if (modalOpen() || e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.target.isContentEditable) return;
+    if (Date.now() - goPending < 900 && GO[e.key]) { e.preventDefault(); goPending = 0; location.hash = GO[e.key]; return; }
     if (e.key === 'q') { e.preventDefault(); openQuickAdd(defaultsForRoute()); }
     else if (e.key === 'n') { e.preventDefault(); newNote(); }
     else if (e.key === '/') { e.preventDefault(); location.hash = '#/search'; }
+    else if (e.key === '?') { e.preventDefault(); shortcuts(); }
+    else if (e.key === 'g') { goPending = Date.now(); }
   });
 }
 start().catch(e => { console.error(e); document.body.classList.add('ready'); $('#main').textContent = 'Steward could not start: ' + e.message; });

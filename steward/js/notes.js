@@ -42,7 +42,7 @@ export function renderNotes(route, main, info = {}) {
     const focused = pane.contains(document.activeElement);
     if (!mounted || mounted.id !== route.id || (info.remote && !focused)) mountEditor(pane, route.id);
     else mounted.refreshTasks?.();
-  } else { leaveNotes(); fill(pane, h('div', { class: 'empty' }, h('strong', null, 'Select a note'), h('p', null, 'or start a new one.'))); }
+  } else { leaveNotes(); fill(pane, h('div', { class: 'empty pane-empty' }, icon('note', 40), h('strong', null, 'Pick a note to read'), h('p', null, 'Or start a new one with ', h('kbd', null, 'N'), '. Everything here is searchable, even the words inside photos and PDFs.'), btn('New note', () => newNote(), 'primary', 'plus'))); }
 }
 
 function scopeNotes() {

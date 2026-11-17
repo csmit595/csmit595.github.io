@@ -80,7 +80,8 @@ function viewList(main) {
         { label: 'Duplicate', icon: 'note', onclick: () => { const { id, createdAt, updatedAt, ...rest } = d; store.put('docs', { ...structuredClone(rest), title: (d.title || 'Untitled') + ' (copy)' }); draw(); } },
         { label: 'Delete', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete "${d.title || 'Untitled'}"?`)) { store.patch('docs', d.id, { trashed: true }); toast('Document deleted', 'Undo', () => { store.patch('docs', d.id, { trashed: false }); draw(); }, 8000); draw(); } } },
       ])))),
-    !docs.length && h('div', { class: 'empty' }, h('strong', null, q ? 'No documents match' : 'No documents yet'), h('p', null, q ? '' : 'Start a Turabian paper or a sermon manuscript.')));
+    !docs.length && h('div', { class: 'empty' }, h('strong', null, q ? 'No documents match' : 'No documents yet'), h('p', null, q ? '' : 'Start a Turabian paper or a sermon manuscript.'),
+      !q && h('div', { class: 'starters' }, h('button', { class: 'starter', type: 'button', onclick: () => newDoc('paper') }, icon('edit', 22), h('b', null, 'Turabian paper'), h('small', null, 'Title page, footnotes, bibliography')), h('button', { class: 'starter', type: 'button', onclick: () => newDoc('sermon') }, icon('book', 22), h('b', null, 'Sermon manuscript'), h('small', null, 'Text, outline, illustrations')), h('button', { class: 'starter', type: 'button', onclick: () => newDoc('other') }, icon('note', 22), h('b', null, 'Blank document'), h('small', null, 'Anything long-form')))));
   };
   main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Writing'), h('div', { class: 'sub' }, 'Papers, sermons and other long documents')),
     h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/sources' }, icon('book', 16), 'Sources'), docxIn, btn('Open a Word file', () => docxIn.click(), '', 'note'),

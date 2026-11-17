@@ -54,6 +54,59 @@ function toggle(t, row) {
   }, 160);
 }
 
+// ---- quick rescheduling (hover buttons on a Mac, swipe on a phone) ----------------------------
+const nextDow = (dow, from = today()) => { const d = fromYmd(from).getDay(); return addDays(from, ((dow - d + 7) % 7) || 7); };
+function setDate(t, date) {
+  const before = t.due;
+  store.patch('tasks', t.id, { due: date ? { time: null, recur: null, ...(t.due || {}), date } : null });
+  toast(date ? `Moved to ${fmtDate(date, true)}` : 'Date removed', 'Undo', () => store.patch('tasks', t.id, { due: before }));
+}
+export function scheduleMenu(anchor, t) {
+  const now = today();
+  menu(anchor, [
+    { label: 'Today', icon: 'today', onclick: () => setDate(t, now) },
+    { label: 'Tomorrow', icon: 'upcoming', onclick: () => setDate(t, addDays(now, 1)) },
+    { label: 'Saturday', icon: 'upcoming', onclick: () => setDate(t, nextDow(6)) },
+    { label: 'Next Monday', icon: 'upcoming', onclick: () => setDate(t, nextDow(1)) },
+    '-',
+    { label: 'Pick a date…', icon: 'cal', onclick: () => openTask(t.id) },
+    t.due && { label: 'No date', icon: 'x', onclick: () => setDate(t, null) },
+  ]);
+}
+function moreMenu(anchor, t) {
+  menu(anchor, [
+    ...[1, 2, 3, 4].map(n => ({ label: n === 4 ? 'No priority' : `Priority ${n}`, icon: 'flag', onclick: () => store.patch('tasks', t.id, { priority: n }) })),
+    '-',
+    { label: 'Open details', icon: 'edit', onclick: () => openTask(t.id) },
+    { label: 'Delete', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete "${t.content}"?`)) M.deleteTask(t.id); } },
+  ]);
+}
+/** Phones: swipe a task right to complete it, left to give it a new day. */
+function swipe(row, t) {
+  row.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1 || e.target.closest('.check, a')) return;
+    const s = e.touches[0]; let dx = 0, on = false, dead = false;
+    const move = ev => {
+      const p = ev.touches[0], x = p.clientX - s.clientX, y = p.clientY - s.clientY;
+      if (dead || row.classList.contains('dragging')) { dead = true; return; }
+      if (!on) { if (Math.abs(y) > 10 && Math.abs(y) > Math.abs(x)) { dead = true; return; } if (Math.abs(x) < 14) return; on = true; row.classList.add('swiping'); }
+      dx = Math.max(-140, Math.min(140, x));
+      row.style.transform = `translateX(${dx}px)`;
+      row.dataset.swipe = dx > 70 ? 'done' : dx < -70 ? 'later' : dx > 0 ? 'done-pre' : 'later-pre';
+    };
+    const end = () => {
+      document.removeEventListener('touchmove', move); document.removeEventListener('touchend', end); document.removeEventListener('touchcancel', end);
+      if (!on) return;
+      row.classList.remove('swiping'); row.style.transform = ''; delete row.dataset.swipe;
+      const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+      row.addEventListener('click', swallow, { capture: true, once: true }); setTimeout(() => row.removeEventListener('click', swallow, true), 400);
+      if (dx > 70) { navigator.vibrate?.(10); toggle(t, row); }
+      else if (dx < -70) { navigator.vibrate?.(10); scheduleMenu(row.querySelector('.tbody') || row, t); }
+    };
+    document.addEventListener('touchmove', move, { passive: true }); document.addEventListener('touchend', end); document.addEventListener('touchcancel', end);
+  }, { passive: true });
+}
+
 let dragId = null;
 const finePointer = () => window.matchMedia('(pointer: fine)').matches;
 function orderFor(tasks, id, targetId, before) {
@@ -120,8 +173,12 @@ function taskRow(t, o = {}) {
         nComments > 0 && h('span', { class: 'meta' }, icon('comment', 12), nComments),
         (t.reminders || []).length > 0 && h('span', { class: 'meta' }, icon('bell', 12)),
         t.noteId && store.get('notes', t.noteId) && h('span', { class: 'meta' }, icon('note', 12)),
-        (t.labels || []).map(l => h('span', { class: 'meta label' }, '@' + l)),
-        o.showProject && h('span', { class: 'meta proj' }, M.projectName(t.projectId)))));
+        (t.labels || []).map(l => h('span', { class: 'meta label' + (l === 'promise' ? ' promise' : '') }, '@' + l)),
+        o.showProject && h('span', { class: 'meta proj' }, h('span', { class: 'pdot', style: { background: M.COLORS[store.get('projects', t.projectId)?.color] || 'var(--line)' } }), M.projectName(t.projectId)))),
+    !done && finePointer() && h('div', { class: 'tacts' },
+      iconBtn('upcoming', 'New date', e => { e.stopPropagation(); scheduleMenu(e.currentTarget, t); }, 'mini'),
+      iconBtn('more', 'More', e => { e.stopPropagation(); moreMenu(e.currentTarget, t); }, 'mini')));
+  if (!done && !finePointer()) swipe(row, t);
   if (o.drag && !finePointer()) touchDrag(row, t);
   if (o.drag && finePointer()) {
     row.addEventListener('dragstart', e => { dragId = t.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', t.content); row.classList.add('dragging'); });
@@ -179,9 +236,8 @@ function viewToday(main) {
   const now = today(), tasks = M.openTasks();
   const overdue = tasks.filter(t => t.due && t.due.date < now).sort(byDue);
   const todays = tasks.filter(t => t.due?.date === now).sort((a, b) => (a.due.time || '99').localeCompare(b.due.time || '99') || byPri(a, b));
-  const planned = todays.reduce((n, t) => n + (t.duration || 0), 0);
-  const d = new Date();
-  main.append(header('Today', `${d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${todays.length} task${todays.length === 1 ? '' : 's'}${planned ? ' · ' + mins(planned) + ' planned' : ''}`));
+  const d = new Date(), n = todays.length + overdue.length;
+  main.append(header('Today', `${d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}${n ? ` · ${n} task${n === 1 ? '' : 's'}` : ''}`));
   main.append(planCard(now, { openTask, editHours: () => go('#/settings') }));
   if (overdue.length) main.append(group(`Overdue (${overdue.length})`, taskList(overdue, { showProject: true, flat: true }),
     btn('Move all to today', () => { for (const t of overdue) store.patch('tasks', t.id, { due: { ...t.due, date: now } }, { silent: true }); store.emit({ local: true }); }, 'link')));
@@ -316,11 +372,25 @@ export function editProject(p = {}) {
 // ---- quick add ------------------------------------------------------------------
 export function openQuickAdd(defaults = {}) {
   modal(close => {
-    const input = h('input', { class: 'qa-input', placeholder: 'Call Linda about the patio fri 8am p1', autofocus: true, autocomplete: 'off' });
-    const desc = h('textarea', { class: 'field', placeholder: 'Details (optional)', rows: 2 });
+    const input = h('input', { class: 'qa-input', placeholder: 'Call Linda about the patio fri 8am p1', autofocus: true, autocomplete: 'off', 'aria-label': 'Task name' });
+    const desc = h('textarea', { class: 'field', placeholder: 'Details (optional)', rows: 2, hidden: true });
     const chips = h('div', { class: 'chips' });
     let picked = defaults.projectId || 'inbox';
     const proj = projectSelect(picked, v => { picked = v; });
+    proj.classList.add('slim', 'qa-proj'); proj.setAttribute('aria-label', 'Project');
+    // One-tap pickers. Words typed in the name still win; these fill in what the words leave out.
+    let pick = { due: defaults.due || null, priority: null, duration: null };
+    const now0 = today();
+    const tool = (ic, label, onclick, cls = '') => h('button', { type: 'button', class: 'qa-tool ' + cls, onclick }, icon(ic, 14), h('span', null, label));
+    const toolbar = h('div', { class: 'qa-tools' });
+    const drawTools = () => fill(toolbar,
+      tool('today', 'Today', () => { pick.due = pick.due?.date === now0 ? null : { date: now0, time: null, recur: null }; drawTools(); refresh(); input.focus(); }, pick.due?.date === now0 ? 'on' : ''),
+      tool('upcoming', 'Tomorrow', () => { const d = addDays(now0, 1); pick.due = pick.due?.date === d ? null : { date: d, time: null, recur: null }; drawTools(); refresh(); input.focus(); }, pick.due?.date === addDays(now0, 1) ? 'on' : ''),
+      tool('flag', pick.priority ? 'P' + pick.priority : 'Priority', e => menu(e.currentTarget, [1, 2, 3, 4].map(n => ({ label: n === 4 ? 'No priority' : 'Priority ' + n, icon: 'flag', onclick: () => { pick.priority = n === 4 ? null : n; drawTools(); refresh(); input.focus(); } }))), pick.priority ? 'on pri' + pick.priority : ''),
+      tool('clock', pick.duration ? mins(pick.duration) : 'Time', e => menu(e.currentTarget, [15, 30, 45, 60, 90, 120, 180, 240].map(m => ({ label: mins(m), onclick: () => { pick.duration = m; drawTools(); refresh(); input.focus(); } })).concat(pick.duration ? ['-', { label: 'No estimate', icon: 'x', onclick: () => { pick.duration = null; drawTools(); refresh(); } }] : [])), pick.duration ? 'on' : ''),
+      tool('note', 'Details', () => { desc.hidden = !desc.hidden; if (!desc.hidden) desc.focus(); }, ''),
+      h('span', { class: 'grow' }), proj);
+    drawTools();
     // Like Todoist: tap the date chip when Steward mistook words in the name for a date ("full sun", "3/4 gravel").
     let keepDate = false;
     const parse = () => parseQuickAdd(input.value, M.ctx(), { keepDate });
@@ -331,7 +401,9 @@ export function openQuickAdd(defaults = {}) {
       const list = p.chips.map(c => h('span', { class: 'chip' }, c));
       if (p.dueChip) list.unshift(h('button', { type: 'button', class: 'chip chip-due', title: 'Not a date? Tap to keep these words in the name', onclick: () => { keepDate = true; refresh(); input.focus(); } }, icon('upcoming', 12), p.dueChip, h('span', { class: 'chip-x', 'aria-label': 'Not a date' }, '×')));
       else if (would) list.unshift(h('button', { type: 'button', class: 'chip chip-off', title: 'Tap to read it as a date again', onclick: () => { keepDate = false; refresh(); input.focus(); } }, 'Kept as words, not a date · undo'));
-      else if (defaults.due) list.unshift(h('span', { class: 'chip' }, describeDue(defaults.due)));
+      else if (pick.due) list.unshift(h('span', { class: 'chip' }, icon('upcoming', 12), describeDue(pick.due)));
+      if (pick.priority && p.priority === 4) list.push(h('span', { class: 'chip' }, 'Priority ' + pick.priority));
+      if (pick.duration && !p.duration) list.push(h('span', { class: 'chip' }, mins(pick.duration)));
       for (const l of defaults.labels || []) list.push(h('span', { class: 'chip' }, '@' + l));
       fill(chips, list);
       if (p.projectId) proj.value = picked = p.projectId;
@@ -342,16 +414,19 @@ export function openQuickAdd(defaults = {}) {
       if (p.repeatProblem && !input.dataset.warned) { input.dataset.warned = '1'; toast('Steward could not read that repeat. Press Add again to save it without repeating, or reword it (e.g. "every first mon").', null, null, 7000); return; }
       delete input.dataset.warned;
       const projectId = p.projectId || picked;
-      M.addTask({ ...p, projectId, sectionId: p.sectionId || (projectId === (defaults.projectId || 'inbox') ? defaults.sectionId : null), due: p.due || defaults.due || null,
+      M.addTask({ ...p, projectId, sectionId: p.sectionId || (projectId === (defaults.projectId || 'inbox') ? defaults.sectionId : null), due: p.due || pick.due || null,
+        priority: p.priority !== 4 ? p.priority : (pick.priority || 4), duration: p.duration || pick.duration || null,
         deadline: p.deadline || defaults.deadline || null, parentId: defaults.parentId || null, labels: [...new Set([...(defaults.labels || []), ...p.labels])], description: desc.value.trim(), noteId: defaults.noteId || null });
-      input.value = ''; desc.value = ''; keepDate = false; refresh(); toast('Task added'); input.focus();
+      input.value = ''; desc.value = ''; keepDate = false; pick = { due: defaults.due || null, priority: null, duration: null }; drawTools(); refresh(); toast('Task added'); input.focus();
     };
     input.addEventListener('input', refresh);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
     refresh();
-    return h('div', { class: 'form' }, input, chips, desc,
-      h('div', { class: 'row between' }, h('label', { class: 'inline' }, 'Project', proj), h('div', { class: 'row' }, btn('Done', close), btn('Add task', add, 'primary'))),
-      h('p', { class: 'hint' }, 'Type dates and details in plain words: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@label'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline. If a word is mistaken for a date, tap the date chip to keep it in the name.'));
+    return h('div', { class: 'form qa-form' }, input, chips, toolbar, desc,
+      h('div', { class: 'row between qa-foot' },
+        h('details', { class: 'qa-help' }, h('summary', null, 'Typing shortcuts'),
+          h('p', { class: 'hint' }, 'Write it the way you would say it: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@promise'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline. If a word is mistaken for a date, tap the date chip to keep it in the name.')),
+        h('div', { class: 'row' }, btn('Close', close), btn('Add task', add, 'primary'))));
   }, { title: defaults.parentId ? 'Add sub-task' : 'Add task', cls: 'qa' });
 }
 
@@ -385,7 +460,8 @@ export function openTask(id) {
       const histRows = [...(t.hist || [])].reverse().slice(0, 10).map(e => h('div', { class: 'hrow' },
         h('span', null, new Date(e.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), e.by ? ' · ' + e.by : '', ' — changed ', Object.keys(e.old).map(k => FIELD_NAMES[k] || k).join(', ')),
         btn('Undo', () => { set({ ...e.old }); toast('Put back how it was'); draw(); }, 'tiny')));
-      const dur = h('input', { type: 'number', class: 'field', min: 0, step: 5, placeholder: 'minutes', value: t.duration || '', onchange: () => set({ duration: +dur.value || null }) });
+      const dur = h('input', { type: 'number', class: 'field slim dur-in', min: 0, step: 5, placeholder: 'min', value: t.duration || '', 'aria-label': 'Minutes needed', onchange: () => { set({ duration: +dur.value || null }); draw(); } });
+      const durPick = h('div', { class: 'row wrap seg-chips' }, [15, 30, 60, 120, 240].map(m => h('button', { type: 'button', class: 'schip' + (t.duration === m ? ' on' : ''), onclick: () => { set({ duration: t.duration === m ? null : m }); draw(); } }, mins(m))), dur);
       const remList = h('div', { class: 'chips' }, (t.reminders || []).map((r, i) => h('span', { class: 'chip' }, icon('bell', 12), r.at ? new Date(r.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : (REM_OPTS.find(o => o[0] === r.before)?.[1] || `${r.before} min before`),
         h('button', { 'aria-label': 'Remove reminder', onclick: () => { set({ reminders: t.reminders.filter((_, j) => j !== i) }); draw(); } }, '×'))),
       !(t.reminders || []).length && t.due?.time && settings.get('autoRemind') && h('span', { class: 'sub' }, 'Automatic reminder at the due time'));
@@ -398,19 +474,23 @@ export function openTask(id) {
       const comments = store.all('comments').filter(c => c.taskId === id).sort((a, b) => a.createdAt - b.createdAt);
       const cIn = h('textarea', { class: 'field', rows: 2, placeholder: 'Add a comment' });
       const parent = t.parentId && store.get('tasks', t.parentId);
-      fill(body, 
+      const prop = (ic, label, ...kids) => h('div', { class: 'tprop' }, h('div', { class: 'tprop-l' }, icon(ic, 14), label), h('div', { class: 'tprop-v' }, kids));
+      const side = h('aside', { class: 'td-side' },
+        prop('inbox', 'Project', projectSelect(t.projectId, v => { set({ projectId: v, sectionId: null }); for (const k of M.childrenOf(id)) store.patch('tasks', k.id, { projectId: v, sectionId: null }, { silent: true }); draw(); }), sections.length > 0 && secSel),
+        prop('upcoming', 'Date', dueText, h('div', { class: 'row wrap seg-chips' }, quick('Today', today()), quick('Tomorrow', addDays(today(), 1)), quick('Next week', nextDow(1)), t.due && btn('None', () => { set({ due: null }); draw(); }, 'tiny')), h('div', { class: 'row gap dt-row' }, dateIn, timeIn)),
+        prop('flag', 'Deadline', h('div', { class: 'row gap' }, deadlineIn, t.deadline && btn('Clear', () => { set({ deadline: null }); draw(); }, 'tiny'))),
+        prop('flag', 'Priority', pri),
+        prop('clock', 'Time needed', durPick),
+        prop('tag', 'Labels', labels),
+        prop('bell', 'Reminders', remList, remAdd),
+        prop('note', 'Linked note', note ? h('a', { class: 'rowlink', href: '#/note/' + note.id, onclick: close }, icon('note', 16), note.title || 'Untitled note') : btn('Create a linked note', () => { const n = M.addNote({ title: t.content, notebook: 'Notes' }); set({ noteId: n.id }); close(); go('#/note/' + n.id); }, 'tiny', 'note')));
+      fill(body, h('div', { class: 'td-layout' },
+        h('div', { class: 'td-head' },
         parent && h('button', { class: 'crumb', onclick: () => { close(); openTask(parent.id); } }, icon('back', 14), parent.content),
         h('div', { class: 'td-top' }, h('button', { class: `check big pri${t.priority || 4}${t.completedAt ? ' on' : ''}`, 'aria-label': 'Complete', onclick: () => { if (t.completedAt) { M.uncompleteTask(id); draw(); } else { toggle(t); close(); } } }, icon('check', 15)), content),
-        descr,
-        h('div', { class: 'td-grid' },
-          h('label', null, 'Project'), h('div', { class: 'row wrap' }, projectSelect(t.projectId, v => { set({ projectId: v, sectionId: null }); for (const k of M.childrenOf(id)) store.patch('tasks', k.id, { projectId: v, sectionId: null }, { silent: true }); draw(); }), sections.length > 0 && secSel),
-          h('label', null, 'Due'), h('div', null, dueText, h('div', { class: 'row wrap gap' }, quick('Today', today()), quick('Tomorrow', addDays(today(), 1)), quick('Next week', addDays(today(), 7)), t.due && btn('No date', () => { set({ due: null }); draw(); }, 'tiny')), h('div', { class: 'row gap' }, dateIn, timeIn)),
-          h('label', null, 'Deadline'), h('div', { class: 'row gap' }, deadlineIn, t.deadline && btn('Clear', () => { set({ deadline: null }); draw(); }, 'tiny')),
-          h('label', null, 'Priority'), pri,
-          h('label', null, 'Labels'), labels,
-          h('label', null, 'Time needed'), dur,
-          h('label', null, 'Reminders'), h('div', null, remList, remAdd),
-          h('label', null, 'Note'), note ? h('a', { class: 'rowlink', href: '#/note/' + note.id, onclick: close }, icon('note', 16), note.title || 'Untitled note') : btn('Create a linked note', () => { const n = M.addNote({ title: t.content, notebook: 'Notes' }); set({ noteId: n.id }); close(); go('#/note/' + n.id); }, 'tiny', 'note')),
+        descr),
+        side,
+        h('div', { class: 'td-rest' },
         h('h4', null, `Sub-tasks${kids.length ? ` (${kids.filter(k => k.completedAt).length}/${kids.length})` : ''}`),
         h('div', { class: 'tlist' }, kids.map(k => h('div', { class: `task pri${k.priority || 4}${k.completedAt ? ' done' : ''}` },
           h('button', { class: 'check', 'aria-label': 'Complete', onclick: () => { k.completedAt ? M.uncompleteTask(k.id) : M.completeTask(k.id); draw(); } }, icon('check', 13)),
@@ -418,7 +498,7 @@ export function openTask(id) {
         h('h4', null, 'Comments'),
         h('div', { class: 'comments' }, comments.map(c => h('div', { class: 'comment' }, h('div', { class: 'sub' }, (c.author ? c.author + ' · ' : '') + new Date(c.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), h('button', { class: 'linkbtn', onclick: () => { store.remove('comments', c.id); draw(); } }, 'Delete')), h('div', null, linkify(c.text))))),
         cIn, h('div', { class: 'row end' }, btn('Comment', () => { if (cIn.value.trim()) { store.put('comments', { taskId: id, text: cIn.value.trim() }); draw(); } }, 'tiny')),
-        histRows.length > 0 && h('details', null, h('summary', null, h('h4', { style: { display: 'inline' } }, 'History')), h('div', { class: 'hist' }, histRows)),
+        histRows.length > 0 && h('details', null, h('summary', null, h('h4', { style: { display: 'inline' } }, 'History')), h('div', { class: 'hist' }, histRows)))),
         h('div', { class: 'td-foot' }, h('span', { class: 'sub' }, 'Added ' + new Date(t.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })),
           h('div', { class: 'row' }, btn('Duplicate', () => { const { id: _i, createdAt: _c, ...rest } = t; M.addTask({ ...rest, content: t.content + ' (copy)' }); close(); }, 'tiny'),
             btn('Delete', async () => { if (await confirmDlg(`Delete "${t.content}"?`)) { M.deleteTask(id); close(); } }, 'tiny danger'))));
