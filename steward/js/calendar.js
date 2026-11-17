@@ -12,7 +12,7 @@ let savedScroll = null;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const minsOf = d => d.getHours() * 60 + d.getMinutes();
 
-function itemsFor(day) {
+function itemsFor(day, withBlocks = false) {
   const dayStart = fromYmd(day), dayEnd = fromYmd(addDays(day, 1));
   const allDay = [], timed = [];
   for (const e of sync.events) {
@@ -28,6 +28,8 @@ function itemsFor(day) {
     if (t.due.time) { const [H, Mi] = t.due.time.split(':').map(Number); timed.push({ kind: 'task', t, title: t.content, start: H * 60 + Mi, end: Math.min(1440, H * 60 + Mi + (t.duration || 30)) }); }
     else allDay.push({ kind: 'task', t, title: t.content });
   }
+  // fixed blocks (devotions, classes, dinner, church) show faintly on the day and week grids
+  if (withBlocks) for (const x of M.blocksOn(day)) timed.push({ kind: 'block', b: x.b, title: x.b.name, start: x.start, end: x.end });
   timed.sort((a, b) => a.start - b.start || b.end - a.end);
   return { allDay, timed };
 }
@@ -43,7 +45,7 @@ function layout(timed) {
   flush();
   return timed;
 }
-const open = it => (it.kind === 'task' ? openTask(it.t.id) : editEvent(it.e));
+const open = it => (it.kind === 'task' ? openTask(it.t.id) : it.kind === 'block' ? (location.hash = '#/settings/blocks') : editEvent(it.e));
 const chip = it => h('button', { class: 'cchip ' + it.kind, style: it.kind === 'event' ? { background: it.color } : null, title: it.title, onclick: e => { e.stopPropagation(); open(it); } }, it.kind === 'task' && h('span', { class: `dot pri${it.t.priority || 4}` }), it.start != null && h('span', { class: 'ct' }, fmtTime(`${pad(Math.floor(it.start / 60))}:${pad(it.start % 60)}`)), it.title);
 
 export function renderCalendar(route, main) {
@@ -74,7 +76,7 @@ export function renderCalendar(route, main) {
 
 function timeGrid(from, n) {
   const days = Array.from({ length: n }, (_, i) => addDays(from, i)), now = today();
-  const data = days.map(itemsFor);
+  const data = days.map(d => itemsFor(d, true));
   const head = h('div', { class: 'cg-head' }, h('div', { class: 'gut' }), days.map(d => h('button', { class: 'cg-day' + (d === now ? ' now' : ''), onclick: () => { anchor = d; settings.set('calView', 'day'); store.emit({}); } }, h('span', null, DOW[fromYmd(d).getDay()]), h('b', null, fromYmd(d).getDate()))));
   const allday = h('div', { class: 'cg-allday' }, h('div', { class: 'gut' }, 'all day'), data.map((x, i) => h('div', { class: 'cg-cell', onclick: () => editEvent({ date: days[i], allDay: true }) }, x.allDay.map(chip))));
   const body = h('div', { class: 'cg-body', style: { height: 24 * HOUR + 'px' } },

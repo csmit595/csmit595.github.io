@@ -1,6 +1,6 @@
 // Google sign-in, Google Drive sync, Google Calendar, and phone reminders (through a "Steward Reminders" calendar).
 import { store, settings, BUNDLES, ITEMWISE } from './store.js';
-import { applyOps, buildSummary, reminderTimes, openTasks } from './model.js';
+import { applyOps, buildSummary, reminderTimes, openTasks, reminderKey } from './model.js';
 import { pad } from './util.js';
 
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar';
@@ -354,8 +354,12 @@ export const sync = {
   async inbox(d) {
     const q = `'${d.inbox}' in parents and trashed=false`;
     const r = await this.api(`${DRIVE}/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType)&orderBy=createdTime&pageSize=100`);
+    const report = async (name, lines) => {
+      const body = [`Steward ${new Date().toString()}`, `Changes from ${name}:`, ...lines].join('\n');
+      await this.upload(null, `report-${name.replace(/\.json$/i, '')}.txt`, d.inbox, 'text/plain', body).catch(e => console.warn('report', e));
+    };
     for (const f of r.files) {
-      if (f.name.startsWith('failed-') || f.mimeType === 'application/vnd.google-apps.folder') continue;
+      if (/^(failed-|report-)/.test(f.name) || f.mimeType === 'application/vnd.google-apps.folder') continue;
       try {
         const url = f.mimeType === 'application/vnd.google-apps.document' ? `${DRIVE}/files/${f.id}/export?mimeType=text/plain` : `${DRIVE}/files/${f.id}?alt=media`;
         let text = await (await this.api(url, {}, true)).text();
@@ -363,11 +367,14 @@ export const sync = {
         const j = JSON.parse(text);
         const ops = Array.isArray(j) ? j : j?.ops;
         if (!Array.isArray(ops)) throw new Error('not a list of changes');
-        applyOps(ops);
+        const results = applyOps(ops);
+        const problems = results.filter(x => x.startsWith('problem'));
+        if (problems.length) await report(f.name, [`${results.length - problems.length} applied, ${problems.length} with problems:`, ...problems]);
         await this.api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
       } catch (e) {
         if (e.message === 'auth' || e instanceof TypeError) throw e;
         await this.api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'failed-' + f.name }) }).catch(() => {});
+        await report(f.name, ['Nothing was applied: ' + (e.message || 'the file could not be read')]);
       }
     }
   },
@@ -474,16 +481,25 @@ export const sync = {
     }
     const now = Date.now(), horizon = now + 60 * 864e5;
     const want = new Map();
-    const enc = s => Array.from(s, c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
     for (const t of openTasks()) for (const at of reminderTimes(t)) {
       const ms = at.getTime();
       if (ms < now - 60000 || ms > horizon) continue;
-      want.set(`st${enc(t.id)}t${Math.floor(ms / 60000).toString(32)}`, { summary: '⏰ ' + t.content, at });
+      want.set(reminderKey(t.id, at), { summary: '⏰ ' + t.content, at });
     }
     const base = `${CAL}/calendars/${encodeURIComponent(calId)}/events`;
     const r = await this.api(`${base}?singleEvents=true&maxResults=2500&timeMin=${encodeURIComponent(new Date(now).toISOString())}`);
     const have = new Map((r.items || []).filter(e => e.status !== 'cancelled').map(e => [e.id, e]));
     const json = { 'Content-Type': 'application/json' };
+    // Reminders Claude made while Steward was closed carry "steward-task:<id>" in their description.
+    // Keep the ones that still match a task's reminder (so the phone does not buzz twice); remove the rest.
+    for (const [id, e] of have) {
+      if (id.startsWith('st')) continue;
+      const m = /steward-task:([\w-]+)/.exec(e.description || '');
+      if (!m || !e.start?.dateTime) continue;
+      const key = reminderKey(m[1], new Date(e.start.dateTime));
+      if (want.has(key) && !have.has(key)) want.delete(key);
+      else await this.api(`${base}/${id}`, { method: 'DELETE' }).catch(() => {});
+    }
     const body = (id, w) => JSON.stringify({ id, summary: w.summary, description: 'Reminder from Steward', status: 'confirmed', start: { dateTime: w.at.toISOString() }, end: { dateTime: new Date(w.at.getTime() + 5 * 60000).toISOString() }, reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 0 }] } });
     for (const [id, e] of have) if (id.startsWith('st') && !want.has(id)) await this.api(`${base}/${id}`, { method: 'DELETE' }).catch(() => {});
     for (const [id, w] of want) {

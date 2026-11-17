@@ -2,7 +2,7 @@
 import { uid } from './util.js';
 
 export const FILES = {
-  tasks: ['projects', 'sections', 'tasks', 'comments', 'labels', 'filters'],
+  tasks: ['projects', 'sections', 'tasks', 'comments', 'labels', 'filters', 'prefs', 'blocks'],
   notes: ['notebooks', 'notes', 'ocr'],
   writing: ['docs', 'sources'],
 };
@@ -14,6 +14,37 @@ export const BUNDLES = { tasks: FILES.tasks };
 const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
 
 const data = Object.fromEntries(TYPES.map(t => [t, new Map()]));
+
+// ---- field-by-field change times, so edits made on two devices before they sync both survive ----
+const META = new Set(['id', 'updatedAt', 'createdAt', '_f', 'hist']);
+// key order must not matter: two devices can build the same item with fields in a different order
+const canon = v => (Array.isArray(v) ? '[' + v.map(canon).join(',') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().filter(k => v[k] !== undefined).map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}' : JSON.stringify(v ?? null));
+const same = (a, b) => a === b || canon(a) === canon(b);
+/** When a field of an item was last changed. Items saved before field stamps existed count every field as changed at updatedAt. */
+const fieldTime = (x, k) => (x._f ? (x._f[k] ?? (k in x ? x.createdAt || 0 : 0)) : (k in x ? x.updatedAt || 0 : 0));
+/** Combine two copies of one item: for each field, the copy that changed it most recently wins. */
+export function mergeFields(l, r) {
+  if (l.deleted || r.deleted) { // a delete is all or nothing
+    if ((r.updatedAt || 0) !== (l.updatedAt || 0)) return (r.updatedAt || 0) > (l.updatedAt || 0) ? r : l;
+    return l.deleted ? l : r;
+  }
+  const out = { ...l }, f = { ...(l._f || {}) };
+  for (const k of new Set([...Object.keys(l), ...Object.keys(r)])) {
+    if (META.has(k)) continue;
+    const rt = fieldTime(r, k), lt = fieldTime(l, k);
+    // equal times with different values: both devices must pick the same one, or they would trade it back and forth
+    const rWins = rt > lt || (rt === lt && !same(l[k], r[k]) && canon(r[k]) > canon(l[k]));
+    if (rWins) { if (k in r) out[k] = r[k]; else delete out[k]; }
+    f[k] = Math.max(rt, lt);
+  }
+  out._f = f;
+  out.updatedAt = Math.max(l.updatedAt || 0, r.updatedAt || 0);
+  out.createdAt = Math.min(l.createdAt || out.updatedAt, r.createdAt || out.updatedAt);
+  // history: keep every entry from both copies, newest 15
+  if (l.hist || r.hist) { const seen = new Map(); for (const e of [...(l.hist || []), ...(r.hist || [])]) seen.set(e.at + '|' + Object.keys(e.old || {}).join(','), e); out.hist = [...seen.values()].sort((a, b) => a.at - b.at).slice(-15); }
+  return out;
+}
+const HIST_SKIP = new Set(['order', 'remindedFor', 'lastDoneAt', 'doneCount']);
 const listeners = new Set();
 let db = null;
 const pending = new Map(); // "type|id" -> [type, id]: only changed items are written to disk
@@ -63,8 +94,26 @@ export const store = {
   get(type, id) { const x = data[type].get(id); return x && !x.deleted ? x : null; },
   put(type, item, opts = {}) {
     if (!item.id) item.id = uid();
-    if (!item.createdAt) item.createdAt = Date.now();
-    item.updatedAt = Date.now();
+    const now = Date.now();
+    if (!item.createdAt) item.createdAt = now;
+    const cur = data[type].get(item.id);
+    const f = { ...((cur && !cur.deleted && cur._f) || item._f || {}) };
+    const old = {};
+    for (const k of new Set([...Object.keys(item), ...(cur && !cur.deleted ? Object.keys(cur) : [])])) {
+      if (META.has(k)) continue;
+      const was = cur && !cur.deleted ? cur[k] : undefined;
+      if (!cur || cur.deleted || !same(was, item[k])) { f[k] = now; if (cur && !cur.deleted && !HIST_SKIP.has(k)) old[k] = was === undefined ? null : was; }
+    }
+    item._f = f;
+    if (type === 'tasks' && Object.keys(old).length && !opts.noHistory) {
+      const hist = [...(cur.hist || [])];
+      const last = hist[hist.length - 1];
+      // typing in a field saves often: fold changes made within a minute into one entry
+      if (last && now - last.at < 60000 && !opts.by) { last.at = now; for (const k in old) if (!(k in last.old)) last.old[k] = old[k]; }
+      else hist.push({ at: now, by: opts.by || null, old });
+      item.hist = hist.slice(-15);
+    } else if (cur && cur.hist && !item.hist) item.hist = cur.hist;
+    item.updatedAt = now;
     data[type].set(item.id, item);
     this._changed(type, opts, item.id);
     return item;
@@ -76,7 +125,9 @@ export const store = {
   },
   remove(type, id, opts = {}) {
     if (!data[type].has(id)) return;
-    data[type].set(id, { id, deleted: true, updatedAt: Date.now() });
+    const cur = data[type].get(id);
+    // a deleted task keeps a copy for 90 days so it can be brought back
+    data[type].set(id, { id, deleted: true, updatedAt: Date.now(), ...(type === 'tasks' && cur && !cur.deleted ? { was: cur } : {}) });
     this._changed(type, opts, id);
   },
   _changed(type, opts, id) {
@@ -119,8 +170,11 @@ export const store = {
         if ((r.updatedAt || 0) > soon) r.updatedAt = Date.now(); // a device with a wrong clock must not win forever
         seen.add(r.id);
         const l = map.get(r.id);
-        if (!l || (r.updatedAt || 0) > (l.updatedAt || 0)) { map.set(r.id, r); changed = true; touchItem(t, r.id); }
-        else if ((l.updatedAt || 0) > (r.updatedAt || 0)) localNewer = true;
+        if (!l) { map.set(r.id, r); changed = true; touchItem(t, r.id); continue; }
+        if (same(l, r)) continue;
+        const m = mergeFields(l, r);
+        if (!same(m, l)) { map.set(r.id, m); changed = true; touchItem(t, r.id); }
+        if (!same(m, r)) localNewer = true;
       }
       for (const [id, l] of map) {
         if (!seen.has(id)) localNewer = true;
@@ -136,8 +190,15 @@ export const store = {
     if (!data[type] || !r || !r.id) return 'same';
     if ((r.updatedAt || 0) > Date.now() + 5 * 60000) r.updatedAt = Date.now(); // a device with a wrong clock must not win forever
     const l = data[type].get(r.id);
-    if (!l || (r.updatedAt || 0) > (l.updatedAt || 0)) { data[type].set(r.id, r); touchItem(type, r.id); this._merged = true; return 'took'; }
-    return (l.updatedAt || 0) > (r.updatedAt || 0) ? 'mine' : 'same';
+    if (!l) { data[type].set(r.id, r); touchItem(type, r.id); this._merged = true; return 'took'; }
+    if (same(l, r)) return 'same';
+    const m = mergeFields(l, r);
+    // holding a change Drive lacks: give it a fresh time so the upload step (which compares times) sends it
+    if (!same(m, r)) m.updatedAt = Math.max(m.updatedAt, Date.now());
+    const took = !same(m, l);
+    if (took) { data[type].set(r.id, m); touchItem(type, r.id); this._merged = true; }
+    // 'mine' means this device holds something Drive lacks, so it is uploaded
+    return !same(m, r) ? 'mine' : took ? 'took' : 'same';
   },
   /** After a batch of mergeItem calls: save and tell the screens once. */
   settle() { if (this._merged) { this._merged = false; this.flush().catch(() => {}); this.emit({ remote: true }); } },
@@ -176,9 +237,33 @@ export const store = {
   },
 };
 
-// ---- settings (per device, not synced) -------------------------------------
-const defaults = { theme: 'light', weekStart: 0, home: 'today', autoRemind: true, remindLead: 0, clientId: '953176719624-701gj43chqpp040biv5qvvr628o8rflo.apps.googleusercontent.com', calView: 'week', hidden: [], workStart: '07:00', workEnd: '18:00', restDay: 0 };
-export const settings = {
-  get(k) { try { const v = JSON.parse(localStorage.getItem('steward.set.' + k)); return v ?? defaults[k]; } catch { return defaults[k]; } },
+// ---- settings ------------------------------------------------------------------
+// Most settings belong to one device (theme, home screen). Settings that change what Steward does with your
+// data (reminders, work hours, rest day) are SHARED: kept in the synced "prefs" item so the Mac and phone agree.
+// hours: per weekday (0 = Sunday) the window tasks may be planned in, or null for no planning that day.
+const WEEK_HOURS = [null, ...Array(5).fill({ start: '07:00', end: '22:30' }), { start: '07:00', end: '22:30' }];
+const defaults = { theme: 'light', weekStart: 0, home: 'today', autoRemind: true, remindLead: 0, clientId: '953176719624-701gj43chqpp040biv5qvvr628o8rflo.apps.googleusercontent.com', calView: 'week', hidden: [], workStart: '07:00', workEnd: '18:00', restDay: 0, hours: WEEK_HOURS };
+export const SHARED = ['autoRemind', 'remindLead', 'workStart', 'workEnd', 'restDay', 'hours'];
+const local = {
+  get(k) { try { return JSON.parse(localStorage.getItem('steward.set.' + k)); } catch { return null; } },
   set(k, v) { localStorage.setItem('steward.set.' + k, JSON.stringify(v)); },
+};
+export const settings = {
+  get(k) {
+    if (SHARED.includes(k)) { const p = data.prefs.get('shared'); if (p && !p.deleted && p[k] !== undefined) return p[k]; }
+    return local.get(k) ?? defaults[k];
+  },
+  set(k, v) {
+    if (SHARED.includes(k)) { const p = data.prefs.get('shared'); store.put('prefs', { ...(p && !p.deleted ? p : {}), id: 'shared', [k]: v }); return; }
+    local.set(k, v);
+  },
+  /** First run after updating: copy this device's own values into the shared settings, if none exist yet. */
+  adoptLocal() {
+    const p = data.prefs.get('shared');
+    if (p && !p.deleted) return;
+    const v = {};
+    for (const k of SHARED) { const x = local.get(k); if (x != null) v[k] = x; }
+    if (local.get('workStart') && local.get('workEnd') && !v.hours) v.hours = WEEK_HOURS.map((h, i) => (i === (local.get('restDay') ?? 0) ? null : { start: local.get('workStart'), end: local.get('workEnd') }));
+    if (Object.keys(v).length) store.put('prefs', { id: 'shared', ...v });
+  },
 };

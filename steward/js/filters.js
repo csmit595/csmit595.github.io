@@ -35,16 +35,18 @@ function term(raw, ctx) {
   if (v === 'no labels' || v === 'no label') return t => !(t.labels || []).length;
   if (v === 'no section') return t => !t.sectionId;
   if (v === 'recurring') return t => !!t.due?.recur;
+  if (v === 'deadline' || v === 'has deadline') return t => !!t.deadline;
+  if (v === 'no deadline') return t => !t.deadline;
   if (v === 'subtask') return t => !!t.parentId;
   if (v === 'reminder' || v === 'has reminder') return t => !!(t.reminders || []).length;
   if (v === 'has note') return t => !!t.noteId;
   if (v === 'view all' || v === 'all') return () => true;
   if ((m = v.match(/^(?:p|priority )([1-4])$/))) return t => (t.priority || 4) === +m[1];
   if ((m = v.match(/^(?:next )?(\d+) days?$/))) { const end = addDays(now, +m[1] - 1); return t => !!t.due && t.due.date >= now && t.due.date <= end; }
-  if ((m = v.match(/^(due|date|created) ?(before|after)?: ?(.+)$/))) {
+  if ((m = v.match(/^(due|date|created|deadline) ?(before|after)?: ?(.+)$/))) {
     const d = parseDue(m[3], now)?.due.date;
     if (!d) return () => false;
-    const get = m[1] === 'created' ? t => (t.createdAt ? new Date(t.createdAt).toLocaleDateString('en-CA') : null) : t => t.due?.date;
+    const get = m[1] === 'created' ? t => (t.createdAt ? new Date(t.createdAt).toLocaleDateString('en-CA') : null) : m[1] === 'deadline' ? t => t.deadline : t => t.due?.date;
     if (m[2] === 'before') return t => { const x = get(t); return !!x && x < d; };
     if (m[2] === 'after') return t => { const x = get(t); return !!x && x > d; };
     return t => get(t) === d;

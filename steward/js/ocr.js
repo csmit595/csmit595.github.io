@@ -15,7 +15,11 @@ async function reader() {
   tess = await window.Tesseract.createWorker('eng', 1, { workerPath: url('vendor/tess/worker.min.js'), corePath: url('vendor/tess/core'), langPath: url('vendor/tess/lang'), gzip: true });
   return tess;
 }
-async function readImage(source) { const r = await (await reader()).recognize(source); return r.data.text || ''; }
+// The built-in reader handles printed English. Below this confidence (or with almost no words found in a photo),
+// the page is most likely handwriting or a poor photo, so it is marked for Claude to read instead.
+const LOW = 70;
+let lastConf = 100;
+async function readImage(source) { const r = await (await reader()).recognize(source); lastConf = Math.min(lastConf, r.data.confidence ?? 0); return r.data.text || ''; }
 async function readPdf(blob) {
   if (!pdfjs) { pdfjs = await import(url('vendor/pdf/pdf.min.mjs')); pdfjs.GlobalWorkerOptions.workerSrc = url('vendor/pdf/pdf.worker.min.mjs'); }
   const doc = await pdfjs.getDocument({ data: await blob.arrayBuffer(), isEvalSupported: false }).promise;
@@ -51,6 +55,7 @@ async function run() {
         const blob = await store.getBlob(a.id);
         if (!blob) continue; // another device holds the file and will read it
         let text = '', failed = false;
+        lastConf = 100;
         try {
           if (blob.size > MAX_BYTES) failed = true;
           else text = (a.mime || '').startsWith('image/') ? await readImage(blob) : await readPdf(blob);
@@ -58,7 +63,10 @@ async function run() {
           if (e.message === 'offline' || !navigator.onLine) return; // reader not downloaded yet; try again later
           console.warn('could not read', a.name, e); failed = true;
         }
-        store.put('ocr', { id: a.id, noteId: n.id, name: a.name, text: text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_CHARS), ...(failed ? { failed: true } : {}) }, { silent: true });
+        const clean = text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_CHARS);
+        const words = (clean.match(/[A-Za-z]{3,}/g) || []).length;
+        const needsReading = !failed && (lastConf < LOW || ((a.mime || '').startsWith('image/') && words < 8 && blob.size > 150e3));
+        store.put('ocr', { id: a.id, noteId: n.id, name: a.name, text: clean, conf: Math.round(lastConf), ...(failed ? { failed: true } : {}), ...(needsReading ? { needsReading: true } : {}) }, { silent: true });
         store.emit({ ocr: true });
         await new Promise(r => setTimeout(r, 50));
       }

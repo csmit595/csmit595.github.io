@@ -1,7 +1,7 @@
 // Business rules shared by the screens and by sync (completing, repeating, reminders, changes sent by Claude).
 import { store, settings } from './store.js';
 import { today, uid, mdToHtml, sanitize, esc } from './util.js';
-import { nextOccurrence, parseDue } from './dates.js';
+import { nextOccurrence, parseDue, looksRepeating } from './dates.js';
 
 export const COLORS = { green: '#3f7d4e', moss: '#7a8f3c', teal: '#2f8f8a', blue: '#3b74c4', indigo: '#5b5fc7', plum: '#8e4fa8', rose: '#c2527a', red: '#c8473b', orange: '#d17a2a', gold: '#b8962e', stone: '#7b756a', slate: '#55606e' };
 export const PRI_COLORS = { 1: '#c8473b', 2: '#d17a2a', 3: '#3b74c4', 4: 'var(--muted)' };
@@ -32,13 +32,13 @@ export function ensureLabels(names) {
   for (const n of names || []) if (n && !have.has(n.toLowerCase())) { store.put('labels', { id: 'lb-' + slug(n), name: n, color: 'stone' }); have.add(n.toLowerCase()); }
 }
 
-export function addTask(f) {
+export function addTask(f, opts) {
   ensureLabels(f.labels);
   return store.put('tasks', {
     ...(f.id ? { id: f.id } : {}), content: f.content, description: f.description || '', projectId: f.projectId || 'inbox', sectionId: f.sectionId || null,
-    parentId: f.parentId || null, priority: f.priority || 4, labels: f.labels || [], due: f.due || null,
+    parentId: f.parentId || null, priority: f.priority || 4, labels: f.labels || [], due: f.due || null, deadline: f.deadline || null,
     duration: f.duration || null, reminders: f.reminders || [], noteId: f.noteId || null, order: Date.now(), completedAt: null,
-  });
+  }, opts);
 }
 export function childrenOf(id) { return store.all('tasks').filter(t => t.parentId === id); }
 
@@ -98,13 +98,18 @@ function dueFrom(v) {
   if (v && v.date) return { date: v.date, time: v.time || null, recur: v.recur ? (typeof v.recur === 'string' ? parseDue(v.recur)?.due.recur || null : v.recur) : null };
   return undefined;
 }
+const dateOnly = v => (v === null ? null : typeof v === 'string' ? (/^\d{4}-\d{2}-\d{2}$/.test(v) ? v : parseDue(v)?.due.date || undefined) : v?.date || undefined);
+/** Apply a list of changes. Returns one line per change; lines starting with "problem" need attention. */
 export function applyOps(ops) {
   const results = [];
-  for (const o of ops || []) {
+  const BY = { by: 'Claude' };
+  for (const [i, o] of (ops || []).entries()) {
+    const where = `#${i + 1} (${o.op || '?'} ${o.type || 'task'}${o.item?.content ? ' "' + String(o.item.content).slice(0, 60) + '"' : o.id ? ' ' + o.id : ''})`;
     try {
       const type = (o.type || 'task').toLowerCase();
-      if (o.op === 'complete') { completeTask(o.id); results.push('completed ' + o.id); continue; }
-      if (o.op === 'uncomplete') { uncompleteTask(o.id); continue; }
+      if (o.op === 'complete') { if (!store.get('tasks', o.id)) throw new Error('no task with that id'); completeTask(o.id); results.push('ok ' + where); continue; }
+      if (o.op === 'uncomplete') { if (!store.rawGet('tasks', o.id)) throw new Error('no task with that id'); uncompleteTask(o.id); results.push('ok ' + where); continue; }
+      if (o.op === 'restore') { const x = store.rawGet('tasks', o.id); if (!x?.was) throw new Error('nothing to restore'); store.put('tasks', { ...x.was }, BY); results.push('ok ' + where); continue; }
       if (o.op === 'delete') {
         if (type === 'task') deleteTask(o.id);
         else if (type === 'project') deleteProject(o.id);
@@ -117,10 +122,17 @@ export function applyOps(ops) {
         const cur = it.id ? store.get('tasks', it.id) : null;
         if (it.project !== undefined) { it.projectId = ensureProject(it.project); delete it.project; }
         if (it.section !== undefined) { it.sectionId = ensureSection(it.projectId || cur?.projectId || 'inbox', it.section); delete it.section; }
-        if (it.due !== undefined) { const d = dueFrom(it.due); if (d !== undefined) it.due = d; else delete it.due; }
+        if (it.due !== undefined) {
+          const raw = typeof it.due === 'string' ? it.due : it.due?.recur && typeof it.due.recur === 'string' ? it.due.recur : '';
+          const d = dueFrom(it.due);
+          if (d === undefined) { results.push(`problem ${where}: could not read the date "${typeof it.due === 'string' ? it.due : JSON.stringify(it.due)}"; date left unchanged`); delete it.due; }
+          else { it.due = d; if (raw && looksRepeating(raw) && !d?.recur) results.push(`problem ${where}: the repeat in "${raw}" was not understood, so it was saved as a one-time date`); }
+        }
+        if (it.deadline !== undefined) { const d = dateOnly(it.deadline); if (d === undefined) { results.push(`problem ${where}: could not read the deadline`); delete it.deadline; } else it.deadline = d; }
         if (it.labels) ensureLabels(it.labels);
-        if (cur) store.put('tasks', { ...cur, ...it, remindedFor: it.due ? null : cur.remindedFor });
-        else addTask({ content: 'Untitled', ...it });
+        if (it.id && !cur && store.rawGet('tasks', it.id)?.deleted) throw new Error('that task was deleted; use {"op":"restore"} first');
+        if (cur) store.put('tasks', { ...cur, ...it, remindedFor: it.due ? null : cur.remindedFor }, BY);
+        else addTask({ content: 'Untitled', ...it }, BY);
       } else if (type === 'note') {
         const cur = it.id ? store.get('notes', it.id) : null;
         if (it.notebook !== undefined) { it.notebookId = ensureNotebook(it.notebook); delete it.notebook; }
@@ -151,23 +163,59 @@ export function applyOps(ops) {
       } else if (type === 'project') {
         const cur = it.id ? store.get('projects', it.id) : store.all('projects').find(p => p.name.toLowerCase() === String(it.name || '').toLowerCase());
         store.put('projects', cur ? { ...cur, ...it, id: cur.id } : { color: 'green', order: Date.now(), ...it });
+      } else if (type === 'block') {
+        // a fixed block: {name, days:[0-6], start:"HH:MM", end:"HH:MM", every:1|2, anchor:"YYYY-MM-DD", until:"YYYY-MM-DD"}
+        const cur = it.id ? store.get('blocks', it.id) : store.all('blocks').find(b => b.name.toLowerCase() === String(it.name || '').toLowerCase());
+        const b = { every: 1, ...(cur || {}), ...it, id: cur?.id || it.id || undefined };
+        if (!b.name || !Array.isArray(b.days) || !/^\d\d:\d\d$/.test(b.start || '') || !/^\d\d:\d\d$/.test(b.end || '')) throw new Error('a block needs name, days, start and end');
+        store.put('blocks', b);
+      } else if (type === 'prefs' || type === 'settings') {
+        const cur = store.get('prefs', 'shared');
+        store.put('prefs', { ...(cur || {}), ...it, id: 'shared' });
+      } else if (type === 'ocr') {
+        // text Claude read from a photo or PDF already attached to a note: {id: attachment id, text}
+        if (!it.id || typeof it.text !== 'string') throw new Error('ocr needs id and text');
+        const cur = store.rawGet('ocr', it.id);
+        store.put('ocr', { ...(cur && !cur.deleted ? cur : {}), id: it.id, text: it.text.slice(0, 30000), by: 'claude', failed: false, needsReading: false });
       } else if (type === 'comment') {
         store.put('comments', { taskId: it.taskId, text: it.text || '', author: it.author || 'Claude', ...it });
       } else if (['section', 'label', 'filter', 'notebook'].includes(type)) {
         const cur = it.id ? store.get(type + 's', it.id) : null;
         store.put(type + 's', cur ? { ...cur, ...it } : it);
       }
-      results.push('ok');
-    } catch (e) { results.push('error: ' + e.message); }
+      results.push('ok ' + where);
+    } catch (e) { results.push(`problem ${where}: ${e.message}`); }
   }
   return results;
 }
+
+// ---- fixed blocks (devotions, classes, dinner, church): synced, used by the day plan and calendar ----
+/** Blocks that happen on a day, as {b, start, end} in minutes after midnight. */
+export function blocksOn(day) {
+  const [y, mo, d] = day.split('-').map(Number), dow = new Date(y, mo - 1, d).getDay();
+  const toMin = s => { const [a, c] = s.split(':').map(Number); return a * 60 + c; };
+  const out = [];
+  for (const b of store.all('blocks')) {
+    if (b.paused || !(b.days || []).includes(dow)) continue;
+    if (b.from && day < b.from) continue;
+    if (b.until && day > b.until) continue;
+    if ((b.every || 1) > 1 && b.anchor) {
+      const weeks = Math.round((new Date(y, mo - 1, d - dow) - (() => { const [ay, am, ad] = b.anchor.split('-').map(Number); const a = new Date(ay, am - 1, ad); return new Date(ay, am - 1, ad - a.getDay()); })()) / (7 * 864e5));
+      if (((weeks % b.every) + b.every) % b.every !== 0) continue;
+    }
+    out.push({ b, start: toMin(b.start), end: toMin(b.end) });
+  }
+  return out.sort((a, c) => a.start - c.start);
+}
+
+/** The id Steward gives the reminder event for a task at a moment. Claude uses the same rule (see the Steward skill). */
+export const reminderKey = (taskId, at) => `st${Array.from(String(taskId), c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('')}t${Math.floor(at.getTime() / 60000).toString(32)}`;
 
 /** Plain-text digest written to Drive on every save so Claude can read the plan quickly. */
 export function buildSummary() {
   const now = today();
   const tasks = openTasks().filter(t => !t.parentId);
-  const line = t => `- ${t.content}${t.due ? ` — due ${t.due.date}${t.due.time ? ' ' + t.due.time : ''}${t.due.recur ? ' (repeats ' + t.due.recur.text + ')' : ''}` : ''} — p${t.priority || 4} — ${projectName(t.projectId)}${(t.labels || []).length ? ' — @' + t.labels.join(' @') : ''} [id:${t.id}]`;
+  const line = t => `- ${t.content}${t.due ? ` — due ${t.due.date}${t.due.time ? ' ' + t.due.time : ''}${t.due.recur ? ' (repeats ' + t.due.recur.text + ')' : ''}` : ''}${t.deadline ? ' — deadline ' + t.deadline : ''}${t.duration ? ' — ' + t.duration + 'm' : ''} — p${t.priority || 4} — ${projectName(t.projectId)}${(t.labels || []).length ? ' — @' + t.labels.join(' @') : ''} [id:${t.id}]`;
   const sortDue = (a, b) => (a.due.date + (a.due.time || '')).localeCompare(b.due.date + (b.due.time || ''));
   const overdue = tasks.filter(t => t.due && t.due.date < now).sort(sortDue);
   const tod = tasks.filter(t => t.due?.date === now).sort(sortDue);
@@ -180,6 +228,11 @@ export function buildSummary() {
   for (const [k, list] of byProj) out.push(`### ${k}`, ...list.map(line));
   out.push('', '## Projects', ...store.all('projects').map(p => `- ${p.name} [id:${p.id}]`), '', '## Notebooks', ...store.all('notebooks').map(n => `- ${n.name} (${liveNotes().filter(x => x.notebookId === n.id).length} notes) [id:${n.id}]`));
   out.push('', '## Writing (documents)', ...store.all('docs').filter(d => !d.trashed).map(d => `- ${d.title || 'Untitled'} (${d.kind || 'document'}) [id:${d.id}]`), '', `Sources saved: ${store.all('sources').length}`);
+  const DAYN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  out.push('', '## Fixed blocks (never schedule over these)', ...store.all('blocks').filter(b => !b.paused).map(b => `- ${b.name}: ${(b.days || []).map(d => DAYN[d]).join(' ')} ${b.start}–${b.end}${(b.every || 1) > 1 ? ` every ${b.every} weeks from ${b.anchor}` : ''}${b.until ? ' until ' + b.until : ''} [id:${b.id}]`));
+  const toRead = [];
+  for (const n of liveNotes()) for (const a of n.attachments || []) { const o = store.get('ocr', a.id); if (o?.needsReading && a.driveId) toRead.push(`- "${a.name}" in note "${n.title || 'Untitled'}" — Drive file ${a.driveId} [attachment:${a.id}]`); }
+  if (toRead.length) out.push('', `## Pages for Claude to read (${toRead.length})`, 'Steward could not read these well (handwriting or a poor photo). Transcribe each and send {"op":"upsert","type":"ocr","item":{"id":"<attachment>","text":"..."}}.', ...toRead);
   out.push('', '## Recent notes', ...liveNotes().sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60).map(n => `- ${n.title || 'Untitled'} — ${new Date(n.updatedAt).toISOString().slice(0, 10)}${(n.tags || []).length ? ' — tags: ' + n.tags.join(', ') : ''} [id:${n.id}]`));
   return out.join('\n');
 }

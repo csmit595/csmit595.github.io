@@ -293,6 +293,13 @@ sup.fn.flash, .wnote.flash { background: #fff3a3; }
 .cblock.short { align-content: center; } .cblock.short b { white-space: nowrap; } .cblock.short span { display: none; } .cblock span { opacity: .85; font-size: 11px; }
 .cblock.task { background: var(--panel); color: var(--text); border: 1.5px dashed var(--muted); }
 .cblock.task.pri1 { border-color: var(--p1); } .cblock.task.pri2 { border-color: var(--p2); } .cblock.task.pri3 { border-color: var(--p3); }
+.cblock.block { background: repeating-linear-gradient(135deg, var(--line) 0 6px, transparent 6px 12px); color: var(--muted); border: 1px solid var(--line); }
+.pl-block { color: var(--muted); }
+.meta.deadline { color: var(--p2); } .meta.deadline.late { color: var(--p1); font-weight: 600; }
+.hist { display: grid; gap: 6px; } .hist .hrow { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; font-size: 13px; }
+.blocks-list .brow { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.days-pick { display: flex; gap: 4px; flex-wrap: wrap; } .days-pick button { min-width: 38px; } .days-pick button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hours-grid { display: grid; grid-template-columns: 7em auto auto auto; gap: 6px 10px; align-items: center; }
 .nowline { position: absolute; left: 0; right: 0; border-top: 2px solid var(--p1); pointer-events: none; }
 .cchip { display: flex; align-items: center; gap: 4px; border: 0; border-radius: 5px; padding: 2px 6px; font-size: 12px; text-align: left; color: #fff; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; width: 100%; min-width: 0; }
 .cchip.task { background: var(--bg); color: var(--text); border: 1px solid var(--line); }

@@ -1,5 +1,5 @@
 // App shell: start-up, navigation, sidebar, search, settings, clipping intake, reminders.
-import { h, fill, today, debounce, fmtDate } from './util.js';
+import { h, fill, today, debounce, fmtDate, fmtTime } from './util.js';
 import { store, settings } from './store.js';
 import * as M from './model.js';
 import { sync } from './sync.js';
@@ -13,7 +13,7 @@ import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '2.7.0';
+const VERSION = '2.8.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -41,7 +41,8 @@ function render(info = {}) {
   main.className = ''; fill(main, );
   if (route.view === 'calendar') renderCalendar(route, main);
   else if (route.view === 'search') viewSearch(main);
-  else if (route.view === 'settings') viewSettings(main);
+  else if (route.view === 'settings') { viewSettings(main); if (route.id === 'blocks') setTimeout(() => document.getElementById('blocks-card')?.scrollIntoView({ block: 'start' }), 30); }
+  else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
   else if (['today', 'upcoming', 'inbox', 'project', 'label', 'filter', 'filters', 'completed'].includes(route.view)) renderTasks(route, main);
   else { location.hash = '#/today'; return; }
   main.scrollTop = y; lastRouteKey = key;
@@ -212,20 +213,21 @@ function viewSettings(main) {
   const restore = h('input', { type: 'file', accept: '.json', hidden: true, onchange: async () => { try { const n = store.importAll(JSON.parse(await restore.files[0].text())); toast(`Restored ${n} items`); } catch { toast('That file is not a Steward backup'); } restore.value = ''; } });
   main.append(h('div', { class: 'settings' }, h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Settings'))),
     card('Google account and sync', g),
-    card('Reminders', h('label', { class: 'inline' }, auto, ' Remind me about every task that has a time, ', lead),
+    card('Reminders', h('p', { class: 'sub' }, 'These apply on all your devices.'), h('label', { class: 'inline' }, auto, ' Remind me about every task that has a time, ', lead),
       h('p', { class: 'sub' }, sync.connected() ? 'Reminders are placed on a Google calendar named "Steward Reminders", so your phone buzzes through Google Calendar even when Steward is closed. Keep notifications on for that calendar in the Google Calendar app.' : 'Until Google is connected, reminders only show while Steward is open.'),
       perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Steward in this browser’s settings.')),
     card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
       h('label', { class: 'inline' }, 'Week starts on ', ws)),
-    card('Day plan', h('p', { class: 'sub' }, 'Today and Upcoming compare the minutes on each day’s tasks with the work hours left after your calendar blocks, so you can see whether the day fits.'),
-      h('label', { class: 'inline' }, 'Work hours from ', timeIn('workStart'), ' to ', timeIn('workEnd')),
-      h('label', { class: 'inline block' }, 'Rest day ', restSel)),
+    card('Day plan', h('p', { class: 'sub' }, 'Today and Upcoming add up the time on each day’s tasks (and, on Today, anything overdue) and compare it with the hours you can plan in, after your fixed blocks and calendar events. These settings apply on all your devices.'),
+      hoursEditor(again), h('label', { class: 'inline block' }, 'Rest day ', restSel)),
+    h('section', { class: 'card', id: 'blocks-card' }, h('h3', null, 'Fixed blocks'), blocksEditor(again)),
     card('Search by meaning', h('label', { class: 'inline' }, semBox, h('span', { class: 'grow' }, 'Find notes and tasks by what they are about, not only the exact words')),
       h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
       h('p', { class: 'sub', id: 'sem-line' }, semLine())),
     card('Clip from the web and other apps',
       h('p', null, h('b', null, 'On your Mac: '), 'drag this button to your browser’s bookmarks bar. On any page, select text (or nothing, for the whole article) and click it.'), clipLink,
-      h('p', null, h('b', null, 'On your phone: '), 'in any app, tap Share and choose Steward. Links, text, photos, PDFs and recordings all become notes in the Clips notebook.')),
+      h('p', null, h('b', null, 'On your phone: '), 'in any app, tap Share and choose Steward. Shared text asks whether to make a task or a note; links, photos, PDFs and recordings become notes in the Clips notebook.'),
+      h('p', null, h('b', null, 'One-tap “Add task” on your phone: '), 'press and hold the Steward icon, then drag “Add task” onto your home screen. Tapping it opens Steward straight to a new task.')),
     card('Bring in your old data',
       h('p', null, h('b', null, 'Evernote: '), 'in the Evernote desktop app, right-click a notebook, choose Export, pick the ENEX format, then load the file here. Notes, tags and attachments come across.'), btn('Import Evernote .enex files', () => enex.click(), '', 'note'), enex,
       h('p', null, h('b', null, 'Todoist and Google Calendar: '), 'ask Claude to copy your Todoist tasks across. Google Calendar needs no import; it shows up as soon as Google is connected.')),
@@ -236,6 +238,44 @@ function viewSettings(main) {
       h('p', { class: 'sub' }, 'Mac (Chrome): click the install icon at the right of the address bar, or the three-dot menu, then "Install Steward". Android (Chrome): three-dot menu, then "Add to Home screen" and "Install".')),
     h('p', { class: 'sub center' }, `Steward ${VERSION}`)));
 }
+// ---- shared settings: planning hours and fixed blocks ------------------------------------------
+const DAYNAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function hoursEditor(again) {
+  const hours = [...(settings.get('hours') || [])];
+  const save = () => settings.set('hours', hours);
+  return h('div', { class: 'hours-grid' }, DAYNAMES.map((name, i) => {
+    const w = hours[i];
+    const on = h('input', { type: 'checkbox', checked: !!w, onchange: () => { hours[i] = on.checked ? { start: '07:00', end: '22:30' } : null; save(); again(); } });
+    const t = k => h('input', { type: 'time', class: 'field slim', value: w?.[k] || '', disabled: !w, onchange: e => { if (e.target.value) { hours[i] = { ...hours[i], [k]: e.target.value }; save(); } } });
+    return [h('span', null, name), h('label', { class: 'inline' }, on, ' plan'), t('start'), t('end')];
+  }));
+}
+function blocksEditor(again) {
+  const DN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const list = store.all('blocks').sort((a, b) => (a.days[0] ?? 9) - (b.days[0] ?? 9) || a.start.localeCompare(b.start));
+  const edit = (b = { name: '', days: [1, 2, 3, 4, 5], start: '18:00', end: '19:00', every: 1 }) => modal(close => {
+    const name = h('input', { class: 'field', value: b.name, placeholder: 'e.g. Family dinner', autofocus: true });
+    let days = [...b.days];
+    const pick = h('div', { class: 'days-pick' }, DN.map((d, i) => h('button', { type: 'button', class: 'btn tiny' + (days.includes(i) ? ' on' : ''), onclick: e => { days = days.includes(i) ? days.filter(x => x !== i) : [...days, i].sort(); e.currentTarget.classList.toggle('on'); } }, d)));
+    const st = h('input', { type: 'time', class: 'field slim', value: b.start }), en = h('input', { type: 'time', class: 'field slim', value: b.end });
+    const every = h('select', { class: 'field slim' }, h('option', { value: 1 }, 'every week'), h('option', { value: 2 }, 'every other week'));
+    every.value = b.every || 1;
+    const anchor = h('input', { type: 'date', class: 'field slim', value: b.anchor || today() });
+    const until = h('input', { type: 'date', class: 'field slim', value: b.until || '' });
+    const save = () => {
+      if (!name.value.trim() || !days.length || !st.value || !en.value) return toast('Give it a name, at least one day, and times');
+      store.put('blocks', { ...b, name: name.value.trim(), days, start: st.value, end: en.value, every: +every.value, anchor: +every.value > 1 ? anchor.value : null, until: until.value || null });
+      close(); again();
+    };
+    return h('div', { class: 'form' }, h('label', null, 'Name', name), h('label', null, 'Days', pick), h('div', { class: 'row gap' }, h('label', null, 'From', st), h('label', null, 'To', en)),
+      h('div', { class: 'row gap wrap' }, h('label', null, 'Repeats', every), h('label', null, 'Counting from the week of', anchor), h('label', null, 'Ends (optional)', until)),
+      h('div', { class: 'row between' }, b.id ? btn('Delete', async () => { if (await confirmDlg(`Delete "${b.name}"?`)) { store.remove('blocks', b.id); close(); again(); } }, 'tiny danger') : h('span'), h('div', { class: 'row' }, btn('Cancel', close), btn('Save', save, 'primary'))));
+  }, { title: b.id ? 'Edit fixed block' : 'New fixed block', cls: 'small' });
+  return h('div', null, h('p', { class: 'sub' }, 'Times that are always taken: devotions, classes, family dinner, church, date night. The day plan never counts them as open, and they show faintly on the calendar.'),
+    h('div', { class: 'blocks-list' }, list.map(b => h('div', { class: 'brow' }, h('span', null, h('b', null, b.name), h('br'), h('small', { class: 'sub' }, `${b.days.map(d => DN[d]).join(' ')} · ${fmtTime(b.start)}–${fmtTime(b.end)}${(b.every || 1) > 1 ? ' · every other week' : ''}${b.until ? ' · until ' + fmtDate(b.until) : ''}`)), btn('Edit', () => edit(b), 'tiny')))),
+    !list.length && h('p', { class: 'sub' }, 'None yet.'), btn('Add a fixed block', () => edit(), 'link', 'plus'));
+}
+
 const semLine = () => !semanticOn() ? 'Off on this device.' : semStatus.error ? (semStatus.error === 'offline' ? 'Waiting for a connection to download the model.' : 'Problem: ' + semStatus.error) : !semStatus.total ? 'Starts a few seconds after Steward opens.' : semStatus.done < semStatus.total ? `Reading your notes and tasks: ${semStatus.done} of ${semStatus.total}` : `Up to date: ${semStatus.total} notes and tasks indexed.`;
 const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? 'Google needs you to reconnect. Tap Sync now.' : sync.status === 'offline' ? sync.message : sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet';
 
@@ -272,6 +312,15 @@ async function intake() {
         for (const k of meta.files || []) { const r = await cache.match(k); if (r) files.push(new File([await r.blob()], decodeURIComponent(r.headers.get('X-Name') || 'file'), { type: r.headers.get('Content-Type') || '' })); }
         await caches.delete('steward-share');
         const urlInText = (meta.text || '').match(/https?:\/\/\S+/)?.[0];
+        const plain = [meta.title, meta.text].filter(Boolean).join(' ').trim();
+        if (!files.length && plain && plain.length <= 500) {
+          render();
+          modal(close => h('div', { class: 'form' }, h('p', null, plain.length > 140 ? plain.slice(0, 140) + '…' : plain),
+            h('div', { class: 'row end' }, btn('Save as a note', () => { close(); createClip({ title: meta.title, text: meta.text, url: meta.url || urlInText, files }); }),
+              btn('Make it a task', () => { close(); M.addTask({ content: (meta.text || meta.title || '').split('\n')[0].slice(0, 300), description: [meta.url, plain.length > 300 ? plain : ''].filter(Boolean).join('\n') }); toast('Task added to Inbox'); location.hash = '#/inbox'; }, 'primary'))),
+            { title: 'Shared to Steward', cls: 'small' });
+          return true;
+        }
         await createClip({ title: meta.title, text: meta.text, url: meta.url || urlInText, files });
         return true;
       }
@@ -293,6 +342,7 @@ function seed() {
 async function start() {
   applyTheme();
   await store.init();
+  settings.adoptLocal();
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }
   await sync.loadCachedEvents();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));

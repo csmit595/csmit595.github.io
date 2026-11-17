@@ -23,6 +23,14 @@ function addMonths(s, n, dom) {
   return ymd(t);
 }
 const weekStart = s => addDays(s, -fromYmd(s).getDay());
+/** The nth (1-4, or -1 for last) given weekday of a month, as YYYY-MM-DD. */
+export function nthWeekday(year, month, nth, dow) {
+  if (nth === -1) { const d = new Date(year, month + 1, 0); while (d.getDay() !== dow) d.setDate(d.getDate() - 1); return ymd(d); }
+  const d = new Date(year, month, 1); while (d.getDay() !== dow) d.setDate(d.getDate() + 1);
+  d.setDate(d.getDate() + 7 * (nth - 1));
+  return d.getMonth() === month ? ymd(d) : nthWeekday(year, month, -1, dow);
+}
+const NTH = { first: 1, '1st': 1, second: 2, '2nd': 2, third: 3, '3rd': 3, fourth: 4, '4th': 4, last: -1 };
 
 /** Next due date for a repeating rule, given the current due date. */
 export function nextOccurrence(due, now = today()) {
@@ -45,6 +53,7 @@ export function nextOccurrence(due, now = today()) {
       }
       return addDays(base, 7 * n);
     }
+    if (r.unit === 'month' && r.nth) { const d = fromYmd(base); const t = new Date(d.getFullYear(), d.getMonth() + n, 1); return nthWeekday(t.getFullYear(), t.getMonth(), r.nth, r.dow); }
     if (r.unit === 'month') return addMonths(base, n, r.dom);
     if (r.unit === 'year') { const d = fromYmd(base); d.setFullYear(d.getFullYear() + n); return ymd(d); }
     return addDays(base, 1);
@@ -72,7 +81,24 @@ function parseTime(text) {
   return null;
 }
 
+/** Words that mean a task repeats. Used to warn when a repeat was asked for but not understood. */
+export const looksRepeating = text => /\b(every|ev|daily|weekly|monthly|yearly|annually|biweekly|fortnightly|quarterly)\b/i.test(text || '');
+
 function parseRecur(text) {
+  let m0;
+  // "every first monday", "every last fri", "every month on the 2nd tuesday"
+  if ((m0 = text.match(new RegExp(`\\b(?:every|ev)\\s+(?:(other)\\s+)?(?:month\\s+on\\s+the\\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|last)\\s+(${DAY_RE})\\b(?:\\s+of\\s+(?:the|every)\\s+month)?`, 'i')))) {
+    const r = { n: m0[1] ? 2 : 1, unit: 'month', nth: NTH[m0[2].toLowerCase()], dow: dayIdx(m0[3]), text: m0[0].trim().replace(/\s+/g, ' ') };
+    return { recur: r, rest: text.slice(0, m0.index) + ' ' + text.slice(m0.index + m0[0].length) };
+  }
+  // "every last day", "every last day of the month", "every month on the last day"
+  if ((m0 = text.match(/\b(?:every|ev)\s+(?:month\s+on\s+the\s+)?last\s+day(?:\s+of\s+(?:the|every)\s+month)?\b/i))) {
+    return { recur: { n: 1, unit: 'month', dom: 31, text: m0[0].trim().replace(/\s+/g, ' ') }, rest: text.slice(0, m0.index) + ' ' + text.slice(m0.index + m0[0].length) };
+  }
+  // "every month on the 15th", "monthly on the 1st"
+  if ((m0 = text.match(/\b(?:(?:every|ev)\s+month|monthly)\s+on\s+the\s+(\d{1,2})(?:st|nd|rd|th)?\b/i))) {
+    return { recur: { n: 1, unit: 'month', dom: Math.min(31, +m0[1]), text: m0[0].trim().replace(/\s+/g, ' ') }, rest: text.slice(0, m0.index) + ' ' + text.slice(m0.index + m0[0].length) };
+  }
   const re = new RegExp(`\\b(?:(?<ev>every!?|ev)\\s+(?:(?<other>other)\\s+|(?<num>\\d+)(?<ord>st|nd|rd|th)?(?:\\s+|$))?(?<unit>days?|weeks?|months?|years?|weekdays?|workdays?|weekends?|${DAY_RE}(?:\\s*(?:,|and|&)\\s*${DAY_RE})*)?|(?<word>daily|weekly|biweekly|fortnightly|monthly|quarterly|yearly|annually))(?![\\w])`, 'i');
   const m = text.match(re);
   if (!m) return null;
@@ -99,7 +125,7 @@ function parseRecur(text) {
   if (g.num) r.n = +g.num;
   if (/^day/.test(unit)) r.unit = 'day';
   else if (/^weekday|^workday/.test(unit)) { r.unit = 'day'; r.days = [1, 2, 3, 4, 5]; }
-  else if (/^weekend/.test(unit)) { r.unit = 'week'; r.days = [6]; }
+  else if (/^weekend/.test(unit)) { r.unit = 'week'; r.days = [0, 6]; }
   else if (/^week/.test(unit)) r.unit = 'week';
   else if (/^month/.test(unit)) r.unit = 'month';
   else if (/^year/.test(unit)) r.unit = 'year';
@@ -156,19 +182,22 @@ export function parseDue(text, now = today()) {
   if (!recur && !date && !time) return null;
   if (!date) {
     if (recur?.days?.length) { date = now; for (let i = 0; i < 7 && !recur.days.includes(fromYmd(date).getDay()); i++) date = addDays(date, 1); }
+    else if (recur?.nth) { const d = fromYmd(now); date = nthWeekday(d.getFullYear(), d.getMonth(), recur.nth, recur.dow); if (date < now) { const t = new Date(d.getFullYear(), d.getMonth() + 1, 1); date = nthWeekday(t.getFullYear(), t.getMonth(), recur.nth, recur.dow); } }
     else if (recur?.dom) { date = addMonths(now, 0, recur.dom); if (date < now) date = addMonths(now, 1, recur.dom); }
     else date = now;
   }
-  if (recur) { recur.anchor = date; if (recur.unit === 'month' && !recur.dom) recur.dom = fromYmd(date).getDate(); }
+  if (recur) { recur.anchor = date; if (recur.unit === 'month' && !recur.dom && !recur.nth) recur.dom = fromYmd(date).getDate(); }
   rest = rest.replace(/\s+(on|at|by|due)\s*$/i, '').replace(/\s{2,}/g, ' ').trim();
   return { due: { date, time: time || null, recur: recur || null }, rest };
 }
 
 /** Quick add: "Mulch at Hanel fri 8am p1 #Projects @promise for 2h" */
 export function parseQuickAdd(text, ctx) {
-  const out = { content: text, priority: 4, labels: [], projectId: null, sectionId: null, due: null, duration: null, chips: [] };
+  const out = { content: text, priority: 4, labels: [], projectId: null, sectionId: null, due: null, deadline: null, duration: null, chips: [] };
   let s = ' ' + text + ' ';
   let m;
+  // {nov 20} sets a deadline, as in Todoist
+  if ((m = s.match(/\{([^}]+)\}/))) { const d = parseDue(m[1].trim()); if (d && !d.due.recur) { out.deadline = d.due.date; s = s.replace(m[0], ' '); out.chips.push('⚑ ' + fmtDate(d.due.date)); } }
   if ((m = s.match(/\s[pP]([1-4])(?=\s)/))) { out.priority = +m[1]; s = s.replace(m[0], ' '); out.chips.push('Priority ' + m[1]); }
   // #Project (longest matching project name wins, so names with spaces work)
   const hash = s.indexOf(' #');
@@ -192,6 +221,7 @@ export function parseQuickAdd(text, ctx) {
   }
   const d = parseDue(s.trim());
   if (d && d.rest.trim()) { out.due = d.due; s = d.rest; out.chips.unshift(describeDue(d.due)); }
+  if (looksRepeating(text.replace(/\{[^}]*\}/g, '')) && !out.due?.recur) { out.repeatProblem = true; out.chips.push('⚠ repeat not understood'); }
   out.content = s.replace(/\s{2,}/g, ' ').trim();
   return out;
 }
