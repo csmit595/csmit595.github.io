@@ -16,12 +16,12 @@ let flushTimer = null;
 
 function openDb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('steward', 1);
+    const r = indexedDB.open('steward', 2);
     r.onupgradeneeded = () => {
       const d = r.result;
-      for (const s of ['kv', 'blobs', 'events']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
+      for (const s of ['kv', 'blobs', 'events', 'vec']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
     };
-    r.onsuccess = () => res(r.result);
+    r.onsuccess = () => { r.result.onversionchange = () => r.result.close(); res(r.result); };
     r.onerror = () => rej(r.error);
   });
 }
@@ -118,6 +118,11 @@ export const store = {
   // ---- cached calendar events --------------------------------------------
   putKV(key, val) { return idb('events', 'readwrite', s => s.put(val, key)); },
   getKV(key) { return idb('events', 'readonly', s => s.get(key)); },
+
+  // ---- meaning-search vectors (kept on this device only) -----------------------
+  vecPut(key, val) { return idb('vec', 'readwrite', s => s.put(val, key)); },
+  vecDel(key) { return idb('vec', 'readwrite', s => s.delete(key)); },
+  vecAll() { return new Promise((res, rej) => { const out = []; const tx = db.transaction('vec', 'readonly'); const c = tx.objectStore('vec').openCursor(); c.onsuccess = () => { const cur = c.result; if (cur) { out.push([cur.key, cur.value]); cur.continue(); } }; tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); }); },
 
   async exportAll() {
     const out = { app: 'steward', format: 1, exportedAt: new Date().toISOString() };

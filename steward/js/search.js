@@ -62,7 +62,7 @@ function termScore(term, text, fuzzy) {
 }
 const WEIGHT = { title: 10, meta: 5, body: 3, att: 2 };
 
-function docs() {
+export function docs() {
   const out = [];
   const comments = new Map();
   for (const c of store.all('comments')) comments.set(c.taskId, (comments.get(c.taskId) || '') + ' ' + c.text);

@@ -10,8 +10,9 @@ import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
 import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
+import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -114,11 +115,32 @@ function drawResults() {
   const { q, results, fuzzy } = search(searchQ, { kind: searchKind || undefined });
   const shown = results.slice(0, 80);
   const row = r => r.kind === 'task'
-    ? h('button', { class: 'rowlink sres' + (r.item.completedAt ? ' done' : ''), onclick: () => openTask(r.item.id) }, icon(r.item.completedAt ? 'done' : 'check', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, q.terms)), (r.where.has('body')) && h('small', null, excerpt(r, q.terms)), h('small', { class: 'smeta' }, `Task · ${M.projectName(r.item.projectId)}${r.item.due ? ' · ' + fmtDate(r.item.due.date) : ''}${r.item.completedAt ? ' · completed' : ''}${(r.item.labels || []).length ? ' · @' + r.item.labels.join(' @') : ''}`)))
-    : h('a', { class: 'rowlink sres', href: '#/note/' + r.item.id }, icon('note', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, q.terms)), h('small', null, excerpt(r, q.terms)), h('small', { class: 'smeta' }, `Note · ${store.get('notebooks', r.item.notebookId)?.name || ''} · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}${(r.item.tags || []).length ? ' · ' + r.item.tags.join(', ') : ''}`)));
+    ? h('button', { class: 'rowlink sres' + (r.item.completedAt ? ' done' : ''), onclick: () => openTask(r.item.id) }, icon(r.item.completedAt ? 'done' : 'check', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), (r.where.has('body')) && h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Task · ${M.projectName(r.item.projectId)}${r.item.due ? ' · ' + fmtDate(r.item.due.date) : ''}${r.item.completedAt ? ' · completed' : ''}${(r.item.labels || []).length ? ' · @' + r.item.labels.join(' @') : ''}`)))
+    : h('a', { class: 'rowlink sres', href: '#/note/' + r.item.id }, icon('note', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Note · ${store.get('notebooks', r.item.notebookId)?.name || ''} · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}${(r.item.tags || []).length ? ' · ' + r.item.tags.join(', ') : ''}`)));
   fill(el, h('div', { class: 'sub scount' }, results.length ? `${results.length} result${results.length === 1 ? '' : 's'}${results.length > 80 ? ', showing the best 80' : ''}${fuzzy ? ' · including close spellings' : ''}` : ''),
     h('div', { class: 'rows' }, shown.map(row)),
-    !results.length && h('div', { class: 'empty' }, h('strong', null, 'Nothing found'), h('p', null, 'Try fewer or shorter words.')));
+    !results.length && h('div', { class: 'empty nores' }, h('strong', null, 'No exact matches'), h('p', null, semanticOn() ? 'Looking for notes and tasks with a similar meaning…' : 'Try fewer or shorter words.')),
+    h('div', { class: 'meaning' }));
+  drawMeaning(searchQ, new Set(shown.slice(0, 12).map(r => r.kind + r.item.id)), row);
+}
+let meaningRun = 0;
+async function drawMeaning(query, have, row) {
+  const box = $('.results .meaning'); if (!box) return;
+  const plain = query.replace(/\b\w+:\S+/g, '').replace(/["@-]/g, ' ').trim();
+  if (!semanticOn()) { if (isMobile() || !window.matchMedia('(pointer: fine)').matches) fill(box, h('p', { class: 'sub' }, 'Search by meaning is off on this device. ', h('a', { href: '#/settings' }, 'Turn it on in Settings'), ' (one-time download of about 35 MB).')); return; }
+  if (plain.length < 3) return;
+  const my = ++meaningRun;
+  let hits;
+  try { hits = await semantic.query(plain, { kind: searchKind || undefined, limit: 10 }); }
+  catch (e) { if (my === meaningRun) fill(box, h('p', { class: 'sub' }, navigator.onLine ? 'Search by meaning is not available right now.' : 'Search by meaning needs one online visit to download. It will work offline after that.')); return; }
+  if (my !== meaningRun || !box.isConnected) return;
+  hits = hits.filter(r => !have.has(r.kind + r.item.id));
+  const progress = semStatus.total && semStatus.done < semStatus.total ? ` Still reading your notes: ${semStatus.done} of ${semStatus.total}.` : '';
+  const nores = $('.results .nores p'); if (nores) nores.textContent = hits.length ? 'But these look related.' : 'Nothing similar in meaning either. Try other words.';
+  if (!hits.length) return fill(box, progress && h('p', { class: 'sub' }, progress.trim()));
+  const terms = plain.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+  fill(box, h('section', { class: 'group' }, h('div', { class: 'ghead' }, h('h3', null, 'Related by meaning'), h('span', { class: 'sub' }, progress.trim())),
+    h('div', { class: 'rows' }, hits.map(r => row({ ...r, where: new Set(['body']), body: r.text, atts: [], _terms: terms })))));
 }
 const snippet = (text, w) => { const i = text.toLowerCase().indexOf(w); return text.slice(Math.max(0, i - 30), i + 60).replace(/\s+/g, ' ').trim(); };
 
@@ -155,6 +177,7 @@ function viewSettings(main) {
   theme.value = settings.get('theme');
   const home = h('select', { class: 'field slim', onchange: () => settings.set('home', home.value) }, [['today', 'Today'], ['inbox', 'Inbox'], ['upcoming', 'Upcoming'], ['calendar', 'Calendar'], ['notes', 'Notes']].map(([v, l]) => h('option', { value: v }, l)));
   home.value = settings.get('home');
+  const semBox = h('input', { type: 'checkbox', checked: semanticOn(), onchange: () => { settings.set('semantic', semBox.checked); if (semBox.checked) semantic.kick(500); const l = $('#sem-line'); if (l) l.textContent = semLine(); } });
   const bookmarklet = `javascript:(()=>{const s=getSelection();let h='';if(s&&s.rangeCount&&!s.isCollapsed){const d=document.createElement('div');d.append(s.getRangeAt(0).cloneContents());h=d.innerHTML}else{const a=document.querySelector('article,main,[role=main]')||document.body;h=a.innerHTML}open('${appUrl}#clip='+encodeURIComponent(JSON.stringify({u:location.href,t:document.title,h:h.slice(0,300000)})))})()`;
   const clipLink = h('a', { class: 'btn', onclick: e => { e.preventDefault(); toast('Drag this button onto your bookmarks bar'); } }, 'Clip to Steward');
   clipLink.setAttribute('href', bookmarklet);
@@ -173,6 +196,9 @@ function viewSettings(main) {
       perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Steward in this browser’s settings.')),
     card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
       h('label', { class: 'inline' }, 'Week starts on ', ws)),
+    card('Search by meaning', h('label', { class: 'inline' }, semBox, ' Find notes and tasks by what they are about, not only the exact words'),
+      h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
+      h('p', { class: 'sub', id: 'sem-line' }, semLine())),
     card('Clip from the web and other apps',
       h('p', null, h('b', null, 'On your Mac: '), 'drag this button to your browser’s bookmarks bar. On any page, select text (or nothing, for the whole article) and click it.'), clipLink,
       h('p', null, h('b', null, 'On your phone: '), 'in any app, tap Share and choose Steward. Links, text, photos, PDFs and recordings all become notes in the Clips notebook.')),
@@ -186,6 +212,7 @@ function viewSettings(main) {
       h('p', { class: 'sub' }, 'Mac (Chrome): click the install icon at the right of the address bar, or the three-dot menu, then "Install Steward". Android (Chrome): three-dot menu, then "Add to Home screen" and "Install".')),
     h('p', { class: 'sub center' }, `Steward ${VERSION}`)));
 }
+const semLine = () => !semanticOn() ? 'Off on this device.' : semStatus.error ? (semStatus.error === 'offline' ? 'Waiting for a connection to download the model.' : 'Problem: ' + semStatus.error) : !semStatus.total ? 'Starts a few seconds after Steward opens.' : semStatus.done < semStatus.total ? `Reading your notes and tasks: ${semStatus.done} of ${semStatus.total}` : `Up to date: ${semStatus.total} notes and tasks indexed.`;
 const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? 'Syncing…' : sync.status === 'auth' ? 'Google needs you to reconnect. Tap Sync now.' : sync.status === 'offline' ? sync.message : sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet';
 
 function applyTheme() { const t = settings.get('theme'); if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t; }
@@ -251,8 +278,10 @@ async function start() {
   $('#scrim').addEventListener('click', closeDrawer);
   window.addEventListener('hashchange', () => { closeDrawer(); if (!location.hash.startsWith('#clip=') && location.hash !== '#shared') render(); else intake(); });
   const pushSoon = debounce(() => sync.run(), 4000);
-  store.on(info => { if (info.ocr) { pushSoon(); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); });
+  store.on(info => { if (info.ocr) { pushSoon(); semantic.kick(12000); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); if (info.local || info.remote || info.ocr) semantic.kick(info.local ? 6000 : 12000); });
   ocr.kick(15000);
+  semantic.kick(20000);
+  semantic.on(() => { const l = $('#sem-line'); if (l) l.textContent = semLine(); });
   sync.on(() => { drawSidebar(parseRoute()); const l = $('#sync-line'); if (l) l.textContent = syncLine(); });
   if (!(await intake())) render();
   document.body.classList.add('ready');
