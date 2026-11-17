@@ -1,6 +1,6 @@
 {
-  "name": "Bruin",
-  "short_name": "Bruin",
+  "name": "Steward",
+  "short_name": "Steward",
   "description": "Tasks, notes and calendar in one place.",
   "start_url": "./",
   "scope": "./",

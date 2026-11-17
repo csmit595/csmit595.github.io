@@ -287,7 +287,7 @@ export const sync = {
     if (!calId) {
       const list = await this.api(`${CAL}/users/me/calendarList?minAccessRole=owner`);
       calId = (list.items || []).find(c => c.summary === 'Steward Reminders')?.id;
-      if (!calId) calId = (await this.api(`${CAL}/calendars`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ summary: 'Steward Reminders', description: 'Task reminders from the Bruin app. Managed automatically.' }) })).id;
+      if (!calId) calId = (await this.api(`${CAL}/calendars`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ summary: 'Steward Reminders', description: 'Task reminders from the Steward app. Managed automatically.' }) })).id;
       ls.set('remCal', calId);
     }
     const now = Date.now(), horizon = now + 60 * 864e5;
@@ -302,7 +302,7 @@ export const sync = {
     const r = await this.api(`${base}?singleEvents=true&maxResults=2500&timeMin=${encodeURIComponent(new Date(now).toISOString())}`);
     const have = new Map((r.items || []).filter(e => e.status !== 'cancelled').map(e => [e.id, e]));
     const json = { 'Content-Type': 'application/json' };
-    const body = (id, w) => JSON.stringify({ id, summary: w.summary, description: 'Reminder from Bruin', status: 'confirmed', start: { dateTime: w.at.toISOString() }, end: { dateTime: new Date(w.at.getTime() + 5 * 60000).toISOString() }, reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 0 }] } });
+    const body = (id, w) => JSON.stringify({ id, summary: w.summary, description: 'Reminder from Steward', status: 'confirmed', start: { dateTime: w.at.toISOString() }, end: { dateTime: new Date(w.at.getTime() + 5 * 60000).toISOString() }, reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 0 }] } });
     for (const [id, e] of have) if (id.startsWith('st') && !want.has(id)) await this.api(`${base}/${id}`, { method: 'DELETE' }).catch(() => {});
     for (const [id, w] of want) {
       const e = have.get(id);
