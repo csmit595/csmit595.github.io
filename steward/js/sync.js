@@ -47,12 +47,46 @@ export const sync = {
       document.head.append(s);
     });
   },
+  // Sign-in has two modes. With the Google client secret on this device, Steward uses Google's code flow and keeps a
+  // refresh token, so it renews its one-hour pass quietly and never has to ask again. Without it, it falls back to
+  // the older token flow, which needs a tap (pop-up) whenever the pass runs out.
+  secret() { return ls.get('secret', ''); },
+  setSecret(v) { if (v) ls.set('secret', v); else ls.del('secret'); },
+  staysSignedIn() { return !!(this.secret() && ls.get('refresh')); },
+  async tokenCall(params) {
+    const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: settings.get('clientId'), client_secret: this.secret(), ...params }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(j.error === 'invalid_grant' ? 'auth' : j.error === 'invalid_client' ? 'bad-secret' : (j.error || 'auth')); e.detail = j.error_description; throw e; }
+    ls.set('token', { access_token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 });
+    if (j.refresh_token) ls.set('refresh', j.refresh_token);
+    ls.set('connected', true);
+    return j.access_token;
+  },
   async token(interactive) {
     const t = ls.get('token');
-    if (t && t.exp > Date.now() + 60000) return t.access_token;
+    const upgrade = interactive && this.secret() && !ls.get('refresh');
+    if (t && t.exp > Date.now() + 60000 && !upgrade) return t.access_token;
     if (!this.configured()) throw new Error('not-configured');
     if (!navigator.onLine) throw new Error('offline');
+    const refresh = ls.get('refresh');
+    if (refresh && this.secret()) {
+      try { return await (this._refreshing ||= this.tokenCall({ grant_type: 'refresh_token', refresh_token: refresh })); }
+      catch (e) { if (e.message === 'auth' || e.message === 'bad-secret') { ls.del('refresh'); if (e.message === 'bad-secret') this.setSecret(''); if (!interactive) throw new Error('auth'); } else throw e; }
+      finally { this._refreshing = null; }
+    }
     await this.loadGis();
+    if (interactive && this.secret()) {
+      return new Promise((res, rej) => {
+        const client = google.accounts.oauth2.initCodeClient({
+          client_id: settings.get('clientId'), scope: SCOPES, ux_mode: 'popup', login_hint: ls.get('email', undefined),
+          callback: r => { if (r.error) return rej(new Error(r.error)); this.tokenCall({ grant_type: 'authorization_code', code: r.code, redirect_uri: 'postmessage' }).then(res, rej); },
+          error_callback: e => rej(new Error(e?.type || 'auth')),
+        });
+        // Asking for consent makes Google hand over a refresh token even if Steward was allowed before.
+        client.requestCode({ prompt: 'consent' });
+      });
+    }
     return new Promise((res, rej) => {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: settings.get('clientId'), scope: SCOPES, login_hint: ls.get('email', undefined),
@@ -67,15 +101,31 @@ export const sync = {
       client.requestAccessToken({ prompt: interactive && !ls.get('connected', false) ? 'consent' : '' });
     });
   },
+  /** Shares the client secret between your devices through a small file in the Steward folder of your own Drive. */
+  async shareSecret(d) {
+    const name = 'steward-google-login.json';
+    if (this.secret()) {
+      if (d.files.login) return;
+      const f = await this.find(name, d.root);
+      if (f) { d.files.login = f.id; return; }
+      const r = await this.upload(null, name, d.root, 'application/json', JSON.stringify({ about: 'Lets Steward on your other devices stay signed in to Google. Keep this file private.', clientSecret: this.secret() }));
+      d.files.login = r.id;
+    } else {
+      const f = await this.find(name, d.root);
+      if (!f) return;
+      try { const j = await (await this.api(`${DRIVE}/files/${f.id}?alt=media`, {}, true)).json(); if (j.clientSecret) { this.setSecret(j.clientSecret); d.files.login = f.id; } } catch (e) { if (e.message === 'auth') throw e; }
+    }
+  },
   async connect() {
     await this.token(true);
     try { const me = await this.api(`${DRIVE}/about?fields=user(emailAddress)`); ls.set('email', me.user.emailAddress); } catch {}
     return this.run(true);
   },
   disconnect() {
-    const t = ls.get('token');
-    if (t && window.google?.accounts) try { google.accounts.oauth2.revoke(t.access_token, () => {}); } catch {}
-    for (const k of ['token', 'connected', 'drive', 'versions', 'remCal', 'email']) ls.del(k);
+    const t = ls.get('token'), rt = ls.get('refresh');
+    if (rt) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(rt), { method: 'POST' }).catch(() => {});
+    else if (t && window.google?.accounts) try { google.accounts.oauth2.revoke(t.access_token, () => {}); } catch {}
+    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email']) ls.del(k);
     store.driveClear().catch(() => {});
     this.set('off');
   },
@@ -147,8 +197,12 @@ export const sync = {
       ls.set('drive', d);
       await this.syncReminders().catch(e => console.warn('reminders', e));
       await this.refreshEvents().catch(e => console.warn('calendar', e));
+      await this.shareSecret(d).catch(e => { if (e.message === 'auth') throw e; console.warn('login file', e); });
+      ls.set('drive', d);
       this.lastSync = Date.now(); ls.set('lastSync', this.lastSync);
-      this.set('idle');
+      // This device just learned how to stay signed in: one tap finishes it (Google needs a tap to show its window).
+      if (this.secret() && !ls.get('refresh')) { this.set('auth', 'Tap once so Google keeps Steward signed in'); this.armGesture(); }
+      else this.set('idle');
     } catch (e) {
       console.warn('sync', e);
       if (e.status === 404) { ls.del('drive'); store.driveClear().catch(() => {}); }

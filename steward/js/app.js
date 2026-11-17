@@ -13,7 +13,7 @@ import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '2.5.1';
+const VERSION = '2.6.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -69,7 +69,7 @@ function drawSidebar(route) {
   const st = sync.status;
   const time = sync.lastSync ? new Date(sync.lastSync).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
   // Long label for a full-width sidebar; short one for a narrow window (split screen). Hover shows the long one.
-  const [long, short] = st === 'syncing' ? ['Syncing…', 'Syncing…'] : st === 'off' ? (sync.configured() && sync.connected() ? ['Sync', 'Sync'] : ['Not syncing yet', 'Set up']) : st === 'offline' ? ['Offline · saved here', 'Offline'] : st === 'auth' ? ['Tap to reconnect', 'Reconnect'] : st === 'error' ? ['Sync problem', 'Problem'] : ['Synced ' + time, time || 'Synced'];
+  const [long, short] = st === 'syncing' ? ['Syncing…', 'Syncing…'] : st === 'off' ? (sync.configured() && sync.connected() ? ['Sync', 'Sync'] : ['Not syncing yet', 'Set up']) : st === 'offline' ? ['Offline · saved here', 'Offline'] : st === 'auth' ? (/^Tap once/.test(sync.message) ? ['Tap to stay signed in', 'Tap once'] : ['Tap to reconnect', 'Reconnect']) : st === 'error' ? ['Sync problem', 'Problem'] : ['Synced ' + time, time || 'Synced'];
   const pill = h('button', { class: 'syncpill ' + st, title: sync.message || long, onclick: () => { if (!sync.configured()) location.hash = '#/settings'; else sync.run(true); } },
     icon(st === 'offline' || st === 'off' ? 'cloudoff' : 'sync', 14), h('span', { class: 'pl-long' }, long), h('span', { class: 'pl-short' }, short));
   fill(side, 
@@ -174,7 +174,12 @@ function viewSettings(main) {
   } else {
     g.push(h('p', null, 'Connected', sync.email() ? ' as ' + sync.email() : '', '. Data is saved in the ', h('b', null, 'Steward'), ' folder in your Google Drive.'),
       h('p', { class: 'sub', id: 'sync-line' }, syncLine()),
-      h('div', { class: 'row gap' }, btn('Sync now', () => sync.run(true), 'primary', 'sync'), btn('Disconnect', async () => { if (await confirmDlg('Disconnect this device from Google? Your data stays on this device and in Drive.', 'Disconnect')) { sync.disconnect(); again(); } }, 'link')));
+      sync.staysSignedIn() ? h('p', { class: 'sub' }, '✓ Stays signed in on this device — no reconnecting needed.')
+        : sync.secret() ? h('p', { class: 'sub' }, 'One step left on this device: tap ', h('b', null, 'Stay signed in'), ' and allow Steward in the Google window.')
+        : h('details', null, h('summary', { class: 'sub' }, 'Stop having to reconnect to Google'),
+          h('p', { class: 'sub' }, 'Paste the client secret from the Google Cloud console (APIs & Services → Credentials → the Steward web client). You only do this on one device: your others pick it up from your Drive on their next sync.'),
+          (() => { const sec = h('input', { class: 'field mono', placeholder: 'GOCSPX-…', autocomplete: 'off' }); return h('div', { class: 'row gap' }, sec, btn('Save', () => { const v = sec.value.trim(); if (!/^GOCSPX-/.test(v)) return toast('A client secret starts with GOCSPX-'); sync.setSecret(v); sync.run(true).then(again); }, 'primary')); })()),
+      h('div', { class: 'row gap' }, sync.secret() && !sync.staysSignedIn() ? btn('Stay signed in', () => sync.run(true).then(again), 'primary') : null, btn('Sync now', () => sync.run(true), sync.secret() && !sync.staysSignedIn() ? '' : 'primary', 'sync'), btn('Disconnect', async () => { if (await confirmDlg('Disconnect this device from Google? Your data stays on this device and in Drive.', 'Disconnect')) { sync.disconnect(); again(); } }, 'link')));
   }
   // Reminders
   const auto = h('input', { type: 'checkbox', checked: settings.get('autoRemind'), onchange: () => { settings.set('autoRemind', auto.checked); if (sync.connected()) sync.run(); } });
