@@ -14,7 +14,7 @@ import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 import { importTodoist, describeImport } from './import-todoist.js';
 
-const VERSION = '3.0.0';
+const VERSION = '3.0.1';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 

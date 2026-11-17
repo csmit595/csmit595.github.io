@@ -239,6 +239,14 @@ a.att::before { content: "📎"; }
 .wtp .gap { height: 14px; } .wtp small { color: #888; font: 12px var(--sans); margin-top: 8px; }
 .wtitle { display: block; width: 100%; border: 0; outline: none; background: none; color: #111; font: bold var(--fs)/var(--sp) "Times New Roman", Times, serif; text-align: center; margin-bottom: 12pt; }
 .wsheet.paper .wtitle { line-height: 1.1; margin-bottom: 24pt; }
+/* Blank, no formatting: like a new Google Doc (Arial 11, 1.15 spacing, no indents; the title is only the document's name) */
+.wsheet.plain { font-family: Arial, Helvetica, sans-serif; } .wsheet.plain .wtp { display: none; }
+.wsheet.plain .wtitle { font: 600 15px/1.3 var(--sans); text-align: left; color: #666; margin-bottom: 18px; padding-bottom: 8px; border-bottom: 1px solid #eee; }
+.wsheet.plain .wbody p, .wsheet.plain .wbody > div { text-indent: 0; }
+.wsheet.plain .wbody h1, .wsheet.plain .wbody h2, .wsheet.plain .wbody h3 { font-family: inherit; font-style: normal; text-align: left; line-height: 1.2; margin: 1.5em 0 .5em; }
+.wsheet.plain .wbody h1 { font-size: 20pt; } .wsheet.plain .wbody h2 { font-size: 16pt; } .wsheet.plain .wbody h3 { font-size: 14pt; }
+.wsheet.plain .wbody ul, .wsheet.plain .wbody ol { padding-left: 0.5in; }
+.wsheet.plain .wbody blockquote { line-height: inherit; }
 .wbody { outline: none; min-height: 5in; counter-reset: fn; overflow-wrap: anywhere; }
 .wbody p, .wbody > div { margin: 0; text-indent: 0.5in; }
 .wbody h1, .wbody h2, .wbody h3 { font: inherit; font-weight: normal; margin: 12pt 0 0; text-indent: 0; } .wbody h1 { text-align: center; font-style: italic; } .wbody h2 { text-align: center; } .wbody h3 { font-style: italic; }

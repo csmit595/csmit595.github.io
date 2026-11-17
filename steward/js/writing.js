@@ -9,11 +9,13 @@ import { installTools, importDocx } from './writing-tools.js';
 
 const go = hash => { location.hash = hash; };
 let mounted = null, listQ = '';
-const KINDS = { paper: 'Turabian paper (BJU Seminary)', sermon: 'Sermon', other: 'Document' };
+const KINDS = { plain: 'Blank, no formatting', paper: 'Turabian paper (BJU Seminary)', sermon: 'Sermon', other: 'Document' };
 const TEMPLATES = {
   paper: { title: '', body: '<p><br></p>', meta: { titlePage: true, bibliography: true, spacing: 2, fontSize: 12, pageNum: 'bottom', place: 'Greenville, South Carolina' } },
   sermon: { title: '', body: '<h3>Passage</h3><p><br></p><h3>Introduction</h3><p><br></p><h3>Exposition</h3><p><br></p><h3>Application</h3><p><br></p><h3>Conclusion</h3><p><br></p>', meta: { titlePage: false, bibliography: false, spacing: 1.5, fontSize: 14, pageNum: 'bottom' } },
   other: { title: '', body: '<p><br></p>', meta: { titlePage: false, bibliography: false, spacing: 1.5, fontSize: 12, pageNum: 'bottom' } },
+  // Like a brand-new Google Doc: Arial 11, 1.15 spacing, no indents, no title printed on the page, no page numbers.
+  plain: { title: '', body: '<p><br></p>', meta: { titlePage: false, bibliography: false, spacing: 1.15, fontSize: 11, pageNum: 'none' } },
 };
 export const liveDocs = () => store.all('docs').filter(d => !d.trashed);
 const metaOf = d => ({ ...TEMPLATES[d.kind || 'other'].meta, ...(d.meta || {}) });
@@ -81,11 +83,11 @@ function viewList(main) {
         { label: 'Delete', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete "${d.title || 'Untitled'}"?`)) { store.patch('docs', d.id, { trashed: true }); toast('Document deleted', 'Undo', () => { store.patch('docs', d.id, { trashed: false }); draw(); }, 8000); draw(); } } },
       ])))),
     !docs.length && h('div', { class: 'empty' }, h('strong', null, q ? 'No documents match' : 'No documents yet'), h('p', null, q ? '' : 'Start a Turabian paper or a sermon manuscript.'),
-      !q && h('div', { class: 'starters' }, h('button', { class: 'starter', type: 'button', onclick: () => newDoc('paper') }, icon('edit', 22), h('b', null, 'Turabian paper'), h('small', null, 'Title page, footnotes, bibliography')), h('button', { class: 'starter', type: 'button', onclick: () => newDoc('sermon') }, icon('book', 22), h('b', null, 'Sermon manuscript'), h('small', null, 'Text, outline, illustrations')), h('button', { class: 'starter', type: 'button', onclick: () => newDoc('other') }, icon('note', 22), h('b', null, 'Blank document'), h('small', null, 'Anything long-form')))));
+      !q && h('div', { class: 'starters' }, h('button', { class: 'starter', type: 'button', onclick: () => newDoc('paper') }, icon('edit', 22), h('b', null, 'Turabian paper'), h('small', null, 'Title page, footnotes, bibliography')), h('button', { class: 'starter', type: 'button', onclick: () => newDoc('sermon') }, icon('book', 22), h('b', null, 'Sermon manuscript'), h('small', null, 'Text, outline, illustrations')), h('button', { class: 'starter', type: 'button', onclick: () => newDoc('plain') }, icon('note', 22), h('b', null, 'Blank, no formatting'), h('small', null, 'A clean page, like a new Google Doc')), h('button', { class: 'starter', type: 'button', onclick: () => newDoc('other') }, icon('note', 22), h('b', null, 'Blank document'), h('small', null, 'Anything long-form')))));
   };
   main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Writing'), h('div', { class: 'sub' }, 'Papers, sermons and other long documents')),
     h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/sources' }, icon('book', 16), 'Sources'), docxIn, btn('Open a Word file', () => docxIn.click(), '', 'note'),
-      btn('New', e => menu(e.currentTarget, [{ label: 'Turabian paper (BJU Seminary)', icon: 'edit', onclick: () => newDoc('paper') }, { label: 'Sermon manuscript', icon: 'edit', onclick: () => newDoc('sermon') }, { label: 'Blank document', icon: 'edit', onclick: () => newDoc('other') }]), 'primary', 'plus'))),
+      btn('New', e => menu(e.currentTarget, [{ label: 'Turabian paper (BJU Seminary)', icon: 'edit', onclick: () => newDoc('paper') }, { label: 'Sermon manuscript', icon: 'edit', onclick: () => newDoc('sermon') }, { label: 'Blank document', icon: 'edit', onclick: () => newDoc('other') }, { label: 'Blank, no formatting', icon: 'edit', onclick: () => newDoc('plain') }]), 'primary', 'plus'))),
     search, rows);
   draw();
 }
@@ -178,7 +180,7 @@ function mountEditor(main, id) {
   const queue = debounce(save, 800);
   const touch = () => { dirty = true; queue(); };
   const sheet = h('div', { class: 'wsheet' });
-  const applyLook = () => { sheet.style.setProperty('--sp', meta.spacing); sheet.style.setProperty('--fs', meta.fontSize + 'pt'); sheet.classList.toggle('paper', kind === 'paper');
+  const applyLook = () => { sheet.style.setProperty('--sp', meta.spacing); sheet.style.setProperty('--fs', meta.fontSize + 'pt'); sheet.classList.toggle('paper', kind === 'paper'); sheet.classList.toggle('plain', kind === 'plain');
     fill(tp, meta.titlePage ? [h('b', null, title.value || 'Title'), h('span', { class: 'gap' }), h('span', null, 'by'), h('b', null, meta.author || 'Your name'), h('span', { class: 'gap' }), h('span', null, 'A Paper Submitted to the Faculty of BJU Seminary'), h('span', null, 'in Fulfillment of the Requirements for the Degree of'), h('span', null, meta.degree || '<Degree Name>'), h('span', { class: 'gap' }), h('span', null, meta.place || 'Greenville, South Carolina'), h('span', null, meta.monthYear || 'Month Year'), h('small', null, 'Title page · click to edit')] : h('small', null, 'No title page · click for page setup')); };
 
   // selection helpers
@@ -287,7 +289,8 @@ function mountEditor(main, id) {
   try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch {}
   applyLook(); drawNotes(); updateCount();
   mounted = { id, save, destroy: () => T.destroy() };
-  if (!d0.title && !isMobile()) title.focus();
+  if (kind === 'plain') { title.placeholder = 'Untitled document'; if (!isMobile()) body.focus(); } // start typing straight onto the page, as in Google Docs
+  else if (!d0.title && !isMobile()) title.focus();
 }
 window.addEventListener('pagehide', () => mounted?.save());
 document.addEventListener('visibilitychange', () => { if (document.hidden) mounted?.save(); });
@@ -299,13 +302,14 @@ export function buildPrintHtml(doc) {
   dom.querySelectorAll('sup.fn').forEach(m => { const n = notes.find(x => x.id === m.dataset.fn); if (!n) return m.remove(); const wrap = dom.createElement('span'); wrap.innerHTML = `<sup class="call">${n.n}</sup><span class="footnote"><span class="fnum">${n.n}</span> ${n.html}</span>`; m.replaceWith(...wrap.childNodes); });
   dom.querySelectorAll('hr.pagebreak').forEach(x => { const b = dom.createElement('div'); b.className = 'pagebreak'; x.replaceWith(b); });
   dom.querySelectorAll('[contenteditable]').forEach(x => x.removeAttribute('contenteditable'));
+  const plain = doc.kind === 'plain', FF = plain ? 'Arial, Helvetica, sans-serif' : '"Times New Roman", Times, serif';
   const fs = meta.fontSize, lh = +(fs * meta.spacing).toFixed(2), one = fs; // exact line heights, as the BJU manual requires ("exactly 24 point")
-  const num = meta.pageNum === 'top' ? `@top-right { content: counter(page); font: ${fs}pt "Times New Roman", Times, serif; }` : meta.pageNum === 'none' ? '' : `@bottom-center { content: counter(page); font: ${fs}pt "Times New Roman", Times, serif; }`;
+  const num = meta.pageNum === 'top' ? `@top-right { content: counter(page); font: ${fs}pt ${FF}; }` : meta.pageNum === 'none' ? '' : `@bottom-center { content: counter(page); font: ${fs}pt ${FF}; }`;
   const css = `
 @page { size: 8.5in 11in; margin: 1in; ${num} @footnote { float: bottom; margin-top: 12pt; } }
 @page title { margin: 2in 1in 1in 1in; @bottom-center { content: none; } @top-right { content: none; } }
 html, body { margin: 0; }
-body { font: ${fs}pt/${lh}pt "Times New Roman", Times, serif; color: #000; text-align: left; hyphens: manual; }
+body { font: ${fs}pt/${lh}pt ${FF}; color: #000; text-align: left; hyphens: manual; }
 p, .docbody > div { margin: 0; text-indent: 0.5in; orphans: 2; widows: 2; }
 h1, h2, h3 { font-size: inherit; line-height: inherit; font-weight: normal; margin: ${one}pt 0 0; break-after: avoid; text-indent: 0; }
 h1 { text-align: center; font-style: italic; } h2 { text-align: center; } h3 { text-align: left; font-style: italic; }
@@ -324,10 +328,11 @@ sup.call { font-size: 0.7em; line-height: 0; }
 .doctitle { text-align: center; font-weight: bold; text-indent: 0; line-height: ${one}pt; margin-bottom: ${one * 2}pt; }
 .docbody { counter-reset: page 1; }
 .bib { break-before: page; } .bib .doctitle { margin-bottom: ${one * 2}pt; } .bibentry { text-indent: -0.5in; margin: 0 0 ${one}pt 0.5in; line-height: ${one}pt; }
+${plain ? `p, .docbody > div { text-indent: 0; } h1, h2, h3 { text-align: left; font-style: normal; margin: ${one * 1.5}pt 0 ${one * 0.5}pt; line-height: 1.2; } h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 14pt; } ul, ol { padding-left: 0.5in; } blockquote { line-height: inherit; } .footnote { font-family: ${FF}; text-indent: 0; font-size: 9pt; line-height: 11pt; }` : ''}
 @media screen { body { background: #8a8a8a; } .pagedjs_pages { padding: 16px 0; } .pagedjs_page { background: #fff; margin: 0 auto 16px; box-shadow: 0 2px 10px rgba(0,0,0,.4); } }
 @media print { .pagedjs_page { margin: 0; box-shadow: none; } }`;
   const tpHtml = meta.titlePage ? `<section class="titlepage"><div class="tp-title">${esc(doc.title || 'Untitled')}</div><div>by<br><b>${esc(meta.author || '')}</b></div><div>A Paper Submitted to<br>the Faculty of BJU Seminary<br>in Fulfillment of the Requirements for the Degree of<br>${esc(meta.degree || '')}</div><div>${esc(meta.place || 'Greenville, South Carolina')}<br>${esc(meta.monthYear || '')}</div></section>` : '';
-  const head = doc.title ? `<div class="doctitle">${esc(doc.title)}</div>` : '';
+  const head = doc.title && !plain ? `<div class="doctitle">${esc(doc.title)}</div>` : ''; // a plain document's title is just its name, as in Google Docs
   const bibHtml = bib.length ? `<section class="bib"><div class="doctitle">Bibliography</div>${bib.map(b => `<p class="bibentry">${b}</p>`).join('')}</section>` : '';
   const lib = new URL('vendor/paged/paged.polyfill.min.js', document.baseURI).href;
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(doc.title || 'Document')}</title><style>${css}</style></head><body>${tpHtml}<section class="docbody">${head}${dom.body.innerHTML}</section>${bibHtml}<script src="${lib}"></scr` + `ipt></body></html>`;
