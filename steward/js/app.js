@@ -13,7 +13,7 @@ import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 
-const VERSION = '2.4.1';
+const VERSION = '2.5.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -72,7 +72,7 @@ function drawSidebar(route) {
     st === 'syncing' ? 'Syncing…' : st === 'off' ? (sync.configured() && sync.connected() ? 'Sync' : 'Not syncing yet') : st === 'offline' ? 'Offline · saved here' : st === 'auth' ? 'Tap to reconnect' : st === 'error' ? 'Sync problem' : 'Synced ' + (sync.lastSync ? new Date(sync.lastSync).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : ''));
   fill(side, 
     h('div', { class: 'brand' }, h('img', { src: 'icons/mark.png', alt: '', width: 44, height: 44 }), h('strong', null, 'Steward'), h('span', { class: 'grow' }), pill),
-    h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task'),
+    h('div', { class: 'addline' }, h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task'), iconBtn('sidebar', 'Hide sidebar (⌘\\)', toggleSide, 'only-desktop')),
     h('nav', null,
       link('#/search', 'search', 'Search'),
       link('#/inbox', 'inbox', 'Inbox', open.filter(t => (t.projectId || 'inbox') === 'inbox' && !t.parentId).length),
@@ -105,6 +105,9 @@ function defaultsForRoute() {
   return {};
 }
 const closeDrawer = () => document.body.classList.remove('drawer');
+// Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
+const setSideHidden = on => { document.body.classList.toggle('side-hidden', on); try { localStorage.setItem('steward.sideHidden', on ? '1' : ''); } catch {} };
+const toggleSide = () => { setSideHidden(!document.body.classList.contains('side-hidden')); if (parseRoute().view === 'calendar') schedule({ force: true }); };
 
 // ---- search -------------------------------------------------------------------------------
 let searchKind = '';
@@ -284,6 +287,10 @@ async function start() {
   $('#fab').addEventListener('click', () => (NOTE_VIEWS.includes(parseRoute().view) ? newNote() : openQuickAdd(defaultsForRoute())));
   $('#menu-btn').addEventListener('click', e => { e.preventDefault(); document.body.classList.toggle('drawer'); });
   $('#scrim').addEventListener('click', closeDrawer);
+  try { if (localStorage.getItem('steward.sideHidden')) document.body.classList.add('side-hidden'); } catch {}
+  $('#side-show').addEventListener('click', toggleSide);
+  // Resizing the window (split screen, full screen) redraws the calendar so its hour height fits.
+  window.addEventListener('resize', debounce(() => { if (parseRoute().view === 'calendar' && !isMobile()) schedule({ force: true }); }, 200));
   // Rotating the phone switches between layouts: redraw so the calendar etc. pick up the new size.
   window.matchMedia(PHONE_MQ).addEventListener('change', () => { closeDrawer(); schedule({ force: true }); });
   window.addEventListener('hashchange', () => { closeDrawer(); if (!location.hash.startsWith('#clip=') && location.hash !== '#shared') render(); else intake(); });
@@ -305,6 +312,7 @@ async function start() {
   let day = today();
   setInterval(() => { if (today() !== day) { day = today(); schedule(); } }, 60000);
   document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === '\\' && !isMobile()) { e.preventDefault(); toggleSide(); return; }
     if (modalOpen() || e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.target.isContentEditable) return;
     if (e.key === 'q') { e.preventDefault(); openQuickAdd(defaultsForRoute()); }
     else if (e.key === 'n') { e.preventDefault(); newNote(); }

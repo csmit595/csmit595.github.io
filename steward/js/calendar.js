@@ -47,7 +47,8 @@ const open = it => (it.kind === 'task' ? openTask(it.t.id) : editEvent(it.e));
 const chip = it => h('button', { class: 'cchip ' + it.kind, style: it.kind === 'event' ? { background: it.color } : null, title: it.title, onclick: e => { e.stopPropagation(); open(it); } }, it.kind === 'task' && h('span', { class: `dot pri${it.t.priority || 4}` }), it.start != null && h('span', { class: 'ct' }, fmtTime(`${pad(Math.floor(it.start / 60))}:${pad(it.start % 60)}`)), it.title);
 
 export function renderCalendar(route, main) {
-  HOUR = isMobile() ? 64 : 52;
+  // Phones: tall hours for thumbs. Desktop: size hours so about 6 AM to 9 PM fits the window without scrolling.
+  HOUR = isMobile() ? 64 : Math.max(40, Math.min(60, Math.floor((window.innerHeight - 210) / 15)));
   let view = settings.get('calView');
   if (isMobile() && view === 'week') view = '3day';
   const n = { day: 1, '3day': 3, week: 7 }[view];
@@ -89,7 +90,7 @@ function timeGrid(from, n) {
   const scroll = h('div', { class: 'cg-scroll' }, body);
   const grid = h('div', { class: 'cg', style: { '--n': n } }, head, allday, scroll);
   grid.style.setProperty('--n', n); grid.style.setProperty('--hour', HOUR + 'px');
-  requestAnimationFrame(() => { scroll.scrollTop = savedScroll ?? Math.max(0, Math.min(7, new Date().getHours() - 1) * HOUR); scroll.addEventListener('scroll', () => { savedScroll = scroll.scrollTop; }); });
+  requestAnimationFrame(() => { scroll.scrollTop = savedScroll ?? Math.max(0, Math.min(isMobile() ? 7 : 6, new Date().getHours() - 1) * HOUR); scroll.addEventListener('scroll', () => { savedScroll = scroll.scrollTop; }); });
   return grid;
 }
 function monthGrid(first) {

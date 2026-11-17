@@ -18,6 +18,7 @@ const P = {
   plus: 'M12 5v14M5 12h14',
   x: 'M18 6 6 18M6 6l12 12',
   menu: 'M3 6h18M3 12h18M3 18h18',
+  sidebar: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 3v18',
   more: 'M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM19 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z',
   back: 'M19 12H5M12 19l-7-7 7-7',
   left: 'M15 18l-6-6 6-6', right: 'M9 18l6-6-6-6', down: 'M6 9l6 6 6-6',
@@ -107,5 +108,7 @@ export function menu(anchor, items) {
   setTimeout(() => document.addEventListener('pointerdown', off, true));
 }
 // Phone layout: narrow screens, and phones turned sideways (e.g. Galaxy S24 Ultra landscape is ~832 x 384).
-export const PHONE_MQ = '(max-width: 820px), (orientation: landscape) and (max-height: 500px) and (pointer: coarse)';
+// Phone layout: touch screens up to 820px wide, any window narrower than 560px, or a phone turned sideways.
+// A Mac window in split screen (about 750px on a 14" MacBook Pro) keeps the desktop layout.
+export const PHONE_MQ = '(max-width: 820px) and (pointer: coarse), (max-width: 560px), (orientation: landscape) and (max-height: 500px) and (pointer: coarse)';
 export const isMobile = () => window.matchMedia(PHONE_MQ).matches;

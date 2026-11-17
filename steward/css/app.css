@@ -257,7 +257,7 @@ sup.fn.flash, .wnote.flash { background: #fff3a3; }
 .cite-preview { font: 15px/1.4 "Times New Roman", Times, serif; background: var(--bg); border-radius: 8px; padding: 12px; align-self: start; position: sticky; top: 0; } .cite-preview .sub { font-family: var(--sans); margin: 8px 0 2px; } .cite-preview .sub:first-child { margin-top: 0; }
 .modal.full { width: min(1100px, 100%); } .modal-wrap:has(.modal.full) { padding-top: 2vh; } .wframe { width: 100%; height: 78vh; border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; background: #8a8a8a; }
 .picker .rowlink.on { background: var(--soft); }
-@media (max-width: 820px), (orientation: landscape) and (max-height: 500px) and (pointer: coarse) { .wsheet { padding: 22px 18px; min-height: 60vh; } .wscroll { padding: 0 0 120px; } .src-grid { grid-template-columns: minmax(0, 1fr); } .wbody p, .wbody > div { text-indent: 0.3in; } .wbar .btn.tiny { padding: 3px 7px; } }
+@media (max-width: 820px) and (pointer: coarse), (max-width: 560px), (orientation: landscape) and (max-height: 500px) and (pointer: coarse) { .wsheet { padding: 22px 18px; min-height: 60vh; } .wscroll { padding: 0 0 120px; } .src-grid { grid-template-columns: minmax(0, 1fr); } .wbody p, .wbody > div { text-indent: 0.3in; } .wbar .btn.tiny { padding: 3px 7px; } }
 
 .wfind, .wtable { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line2); }
 .wfind .field { width: 190px; } .wfind .fcount { min-width: 74px; }
@@ -311,10 +311,67 @@ sup.fn.flash, .wnote.flash { background: #fff3a3; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
 .card h3 { font: 600 17px var(--serif); margin-bottom: 8px; } .card p { margin: 6px 0; }
 
+/* Mac laptop: 14" MacBook Pro is about 1512 x 982 points, roughly 1512 x 860 inside a browser window */
+:root { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+@media (pointer: fine) {
+  :root { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  #main { padding-bottom: 48px; }
+  .nlist { padding-bottom: 40px; }
+}
+#side-show { display: none; }
+.addline { display: flex; align-items: center; gap: 4px; margin: 4px 0 10px; } .addline .btn.wide { margin: 0; flex: 1; }
+.syncpill { white-space: nowrap; min-width: 0; overflow: hidden; flex: 0 1 auto; }
+body.side-hidden { grid-template-columns: minmax(0, 1fr); }
+body.side-hidden #side { display: none; }
+body.side-hidden #side-show { display: grid; place-items: center; position: fixed; top: 12px; left: 10px; z-index: 20; width: 34px; height: 34px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; color: var(--muted); padding: 0; }
+body.side-hidden #side-show:hover { color: var(--text); border-color: var(--muted); }
+body.side-hidden #main:not(.notes-layout):not(.writer-main) { padding-left: max(56px, clamp(16px, 4vw, 48px)); }
+body.side-hidden .nlist { padding-top: 54px; }
+body.side-hidden .writer .wbar { padding-left: 52px; }
+/* full-width window: use the room */
+@media (min-width: 1280px) and (pointer: fine) {
+  #main > * { max-width: 940px; }
+  .escroll > * { max-width: 800px; }
+  .modal { width: min(660px, 100%); }
+}
+/* short laptop screen: tighten vertical space so more fits without scrolling */
+@media (max-height: 940px) and (pointer: fine) {
+  #main { padding-top: 18px; }
+  .vhead { margin-bottom: 12px; }
+  h1 { font-size: 24px; }
+  #side { padding-top: 10px; }
+  .brand { margin-bottom: 6px; }
+  .shead { padding-top: 12px; }
+  .slink { padding: 5px 8px; }
+  .nlist { padding-top: 16px; }
+  .escroll { padding-top: 16px; }
+  .wscroll { padding-top: 14px; }
+  .modal-wrap { padding-top: 4vh; }
+  .wframe { height: 84vh; }
+  .group { margin-bottom: 16px; }
+  .cg, .cm { margin-bottom: 10px; }
+}
+/* narrower Mac window (split screen, a resized window) */
+@media (max-width: 1100px) and (min-width: 561px) and (pointer: fine) {
+  body { grid-template-columns: 236px minmax(0, 1fr); }
+  #side { padding: 12px 10px 24px; }
+  #main.notes-layout { grid-template-columns: 270px minmax(0, 1fr); }
+  .nlist { padding-left: 12px; padding-right: 12px; } .nlist .vhead { flex-wrap: wrap; row-gap: 8px; }
+  .brand img { width: 36px; height: 36px; } .brand strong { font-size: 19px; }
+  .wsheet { padding: 0.65in; }
+  .board .col { flex-basis: 250px; }
+}
+@media (max-width: 900px) and (min-width: 561px) and (pointer: fine) {
+  body { grid-template-columns: 212px minmax(0, 1fr); }
+  #main.notes-layout { grid-template-columns: 250px minmax(0, 1fr); }
+  .wsheet { padding: 0.45in; }
+  .td-grid { grid-template-columns: 88px minmax(0, 1fr); }
+}
+
 /* phone layout */
 #tabs, #fab, #scrim { display: none; }
 #modal-root { position: fixed; z-index: 50; }
-@media (max-width: 820px), (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+@media (max-width: 820px) and (pointer: coarse), (max-width: 560px), (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
   body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
   #side { position: fixed; inset: 0 auto 0 0; width: min(310px, 86vw); z-index: 40; transform: translateX(-102%); transition: transform .2s; padding-top: max(14px, env(safe-area-inset-top)); }
   body.drawer #side { transform: none; box-shadow: var(--shadow); }
@@ -326,7 +383,9 @@ sup.fn.flash, .wnote.flash { background: #fff3a3; }
   #fab { display: grid; place-items: center; position: fixed; right: 16px; bottom: calc(70px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 18px; border: 0; background: var(--accent); color: var(--on-accent); box-shadow: 0 6px 18px rgba(20, 40, 24, .35); z-index: 30; }
   body[data-view=note] #fab, body[data-view=calendar] #fab, body[data-view=settings] #fab { display: none; }
   #toasts { bottom: calc(76px + env(safe-area-inset-bottom)); }
-  .only-mobile { display: inline-grid; }
+  .only-mobile { display: inline-grid; } .only-desktop { display: none !important; }
+  body.side-hidden #side { display: block; } body.side-hidden #side-show { display: none; }
+  body.side-hidden #main, body.side-hidden #main:not(.notes-layout):not(.writer-main) { padding-left: 14px; } body.side-hidden .nlist { padding-top: max(18px, env(safe-area-inset-top)); } body.side-hidden .writer .wbar { padding-left: 10px; }
   h1 { font-size: 23px; }
   .task { padding: 10px 2px; } .check { width: 22px; height: 22px; }
   .modal-wrap { padding: 0; place-items: end center; }
