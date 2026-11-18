@@ -5,7 +5,8 @@ import * as M from './model.js';
 import { sync } from './sync.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpen, isMobile, PHONE_MQ } from './ui.js';
 import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from './tasks.js';
-import { renderNotes, leaveNotes, newNote, noteAddMenu, createClip, importEnex } from './notes.js';
+import { renderNotes, leaveNotes, newNote, dictateNote, noteAddMenu, createClip, importEnex } from './notes.js';
+import { canDictate } from './dictate.js';
 import { renderCalendar } from './calendar.js';
 import { renderWriting, leaveWriting, liveDocs } from './writing.js';
 import { compileFilter } from './filters.js';
@@ -16,7 +17,7 @@ import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 
-const VERSION = '4.0.3';
+const VERSION = '4.1.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -89,7 +90,7 @@ function drawSidebar(route) {
   const todayCount = open.filter(t => t.due && t.due.date <= now && !t.parentId).length;
   fill(side,
     h('div', { class: 'brand' }, h('img', { src: 'icons/mark.png', alt: '', width: 40, height: 40 }), h('strong', null, 'Steward'), h('span', { class: 'grow' }), pill),
-    h('div', { class: 'addline' }, h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task', h('kbd', { class: 'only-desktop' }, 'Q')), iconBtn('sidebar', 'Hide sidebar (⌘\\)', toggleSide, 'only-desktop')),
+    h('div', { class: 'addline' }, h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task', h('kbd', { class: 'only-desktop' }, 'Q')), canDictate() && iconBtn('mic', 'Speak tasks (D)', () => { closeDrawer(); openQuickAdd({ ...defaultsForRoute(), dictate: true }); }), iconBtn('sidebar', 'Hide sidebar (⌘\\)', toggleSide, 'only-desktop')),
     h('button', { class: 'sside-search', type: 'button', onclick: () => { closeDrawer(); location.hash = '#/search'; } }, icon('search', 16), h('span', { class: 'grow' }, 'Search everything'), h('kbd', { class: 'only-desktop' }, '⌘K')),
     h('nav', null,
       link('#/inbox', 'inbox', 'Inbox', open.filter(t => (t.projectId || 'inbox') === 'inbox' && !t.parentId).length),
@@ -125,7 +126,7 @@ const closeDrawer = () => document.body.classList.remove('drawer');
 let goPending = 0;
 const GO = { t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', w: '#/writing', s: '#/settings' };
 function shortcuts() {
-  const rows = [['Q', 'Add a task'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then W', 'Writing'], ['Esc', 'Close a window'], ['?', 'This list']];
+  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then W', 'Writing'], ['Esc', 'Close a window'], ['?', 'This list']];
   modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
 }
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
@@ -550,14 +551,25 @@ function fabGestures() {
   fab.addEventListener('pointerdown', e => {
     if (parseRoute().view === 'note') e.preventDefault(); // keep the keyboard and cursor where they are
     if (e.button > 0) return;
-    g = { id: e.pointerId, x: e.clientX, y: e.clientY, far: 0, armed: false };
+    g = { id: e.pointerId, x: e.clientX, y: e.clientY, far: 0, armed: false, long: false };
     try { fab.setPointerCapture(e.pointerId); } catch {}
+    // Press and hold: speak a note or tasks instead of typing.
+    const mine = g;
+    if (canDictate()) mine.timer = setTimeout(() => {
+      if (g !== mine || mine.far >= 8) return;
+      mine.long = true; buzz(15);
+      menu(fab, [
+        { label: 'Speak a note', icon: 'mic', onclick: () => { closeDrawer(); dictateNote(); } },
+        { label: 'Speak tasks', icon: 'check', onclick: () => { closeDrawer(); openQuickAdd({ ...defaultsForRoute(), dictate: true }); } },
+      ]);
+    }, 450);
   });
   fab.addEventListener('pointermove', e => {
     if (!g || e.pointerId !== g.id) return;
     const dx = e.clientX - g.x, dy = e.clientY - g.y;
     g.far = Math.max(g.far, Math.hypot(dx, dy));
-    if (g.far < 8) return;
+    if (g.far < 8 || g.long) return;
+    clearTimeout(g.timer);
     fab.classList.add('swiping');
     fab.style.transform = `translateX(${Math.max(-MAX, Math.min(0, dx))}px)`;
     const armed = dx < -ARM && Math.abs(dy) < 70;
@@ -568,8 +580,8 @@ function fabGestures() {
   });
   const end = e => {
     if (!g || e.pointerId !== g.id) return;
-    const { armed, far } = g; g = null; reset();
-    if (armed || far > 20) { swallowClick = true; setTimeout(() => { swallowClick = false; }, 450); }
+    const { armed, far, long } = g; clearTimeout(g.timer); g = null; reset();
+    if (armed || far > 20 || long) { swallowClick = true; setTimeout(() => { swallowClick = false; }, 450); }
     if (armed && e.type === 'pointerup') { closeDrawer(); openQuickAdd(defaultsForRoute()); }
   };
   fab.addEventListener('pointerup', end);
@@ -622,7 +634,7 @@ async function repairApp() {
 async function start() {
   applyTheme();
   const seen = localStorage.getItem('steward.seenVersion');
-  if (seen !== VERSION) { localStorage.setItem('steward.seenVersion', VERSION); if (seen) setTimeout(() => toast(`Steward updated to ${VERSION}`), 1200); }
+  if (seen !== VERSION) { localStorage.setItem('steward.seenVersion', VERSION); if (seen) setTimeout(() => toast(`Steward updated to ${VERSION}. New: speak tasks and notes. Tap the microphone in Add task or in a note${isMobile() ? ', or press and hold the plus button' : ', or press D'}.`, null, null, 9000), 1200); }
   await store.init();
   M.repairTasks();
   settings.adoptLocal();
@@ -698,6 +710,7 @@ async function start() {
     if (Date.now() - goPending < 900 && GO[e.key]) { e.preventDefault(); goPending = 0; location.hash = GO[e.key]; return; }
     if (e.key === 'q') { e.preventDefault(); openQuickAdd(defaultsForRoute()); }
     else if (e.key === 'n') { e.preventDefault(); newNote(); }
+    else if (e.key === 'd' && canDictate()) { e.preventDefault(); openQuickAdd({ ...defaultsForRoute(), dictate: true }); }
     else if (e.key === '/') { e.preventDefault(); location.hash = '#/search'; }
     else if (e.key === '?') { e.preventDefault(); shortcuts(); }
     else if (e.key === 'g') { goPending = Date.now(); }

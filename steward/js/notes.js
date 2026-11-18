@@ -7,6 +7,7 @@ import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, isMobile
 import { openQuickAdd, openTask } from './tasks.js';
 import { ocr } from './ocr.js';
 import { search } from './search.js';
+import { canDictate, listen, listeningBar, insertSpoken, caretAtEnd, titleFrom } from './dictate.js';
 
 const go = hash => { location.hash = hash; };
 let scope = { kind: 'all' }, query = '', sortBy = 'updated';
@@ -31,6 +32,7 @@ const fresh = new Set();
 const isBlank = n => !String(n.title || '').trim() && !(n.attachments || []).length && !/<(img|audio|table|hr)\b/i.test(n.body || '') && !stripHtml(n.body || '').trim();
 export function leaveNotes(nextId) {
   const was = mounted;
+  mounted?.stopDictation?.();
   mounted?.save(true); mounted?.urls.forEach(u => URL.revokeObjectURL(u)); mounted = null;
   if (was && was.id !== nextId && fresh.has(was.id)) { fresh.delete(was.id); const n = store.get('notes', was.id); if (n && isBlank(n)) store.remove('notes', was.id); }
 }
@@ -47,7 +49,7 @@ export function renderNotes(route, main, info = {}) {
   const pane = main.querySelector('.neditor');
   if (route.view === 'note') {
     const focused = pane.contains(document.activeElement);
-    if (!mounted || mounted.id !== route.id || (info.remote && !focused)) mountEditor(pane, route.id);
+    if (!mounted || mounted.id !== route.id || (info.remote && !focused && !mounted.isDictating?.())) mountEditor(pane, route.id);
     else mounted.refreshTasks?.();
   } else { leaveNotes(); fill(pane, h('div', { class: 'empty pane-empty' }, icon('note', 40), h('strong', null, 'Pick a note to read'), h('p', null, 'Or start a new one with ', h('kbd', null, 'N'), '. Everything here is searchable, even the words inside photos and PDFs.'), btn('New note', () => newNote(), 'primary', 'plus'))); }
 }
@@ -70,6 +72,9 @@ function scopeTitle() {
   if (scope.kind === 'trash') return 'Trash';
   return 'All notes';
 }
+/** Start a new note and begin dictating into it right away. */
+export function dictateNote(extra = {}) { const n = newNote(extra); dictateOnOpen = n.id; return n; }
+let dictateOnOpen = null;
 export function newNote(extra = {}) {
   const n = M.addNote({ notebookId: scope.kind === 'nb' ? scope.id : undefined, notebook: 'Notes', tags: scope.kind === 'tag' ? [scope.id] : [], ...extra });
   if (isBlank(n)) fresh.add(n.id);
@@ -258,14 +263,37 @@ function mountEditor(pane, id) {
     catch { toast('This browser could not share or copy the note'); }
   };
   let rec = null;
-  const recBtn = iconBtn('mic', 'Record audio', async () => {
+  // ---- dictation: speak and the words are typed at the cursor -------------------------------------------------
+  let dict = null, bar = null;
+  const stopDictation = () => dict?.stop();
+  const dictate = () => {
+    if (dict) { dict.stop(); return; }
+    if (trashed) { toast('Restore this note to add to it'); return; }
+    if (savedRange) restoreSel(); else { caretAtEnd(body); keepSel(); }
+    bar = listeningBar(stopDictation);
+    dictBtn.classList.add('recording');
+    dict = listen({
+      onFinal: raw => { restoreSel(); insertSpoken(body, raw); touch(); keepSel(); },
+      onInterim: t => bar?.set(t),
+      onEnd: () => {
+        dict = null; bar?.remove(); bar = null; dictBtn.classList.remove('recording');
+        if (!body.isConnected) return;
+        if (!title.value.trim()) { const t = titleFrom(plainText(body)); if (t) { title.value = t; touch(); } }
+        save(true);
+      },
+    });
+  };
+  const dictBtn = iconBtn('mic', 'Dictate: speak and Steward types', dictate, 'edict');
+  dictBtn.addEventListener('pointerdown', e => e.preventDefault()); // keep the cursor where it is
+  if (!canDictate() || trashed) dictBtn.hidden = true;
+  const recBtn = iconBtn('rec', 'Record audio (saved as a recording in the note)', async () => {
     if (rec) { rec.stop(); return; }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const chunks = []; rec = new MediaRecorder(stream);
       rec.ondataavailable = e => chunks.push(e.data);
       rec.onstop = () => { stream.getTracks().forEach(t => t.stop()); const type = rec.mimeType || 'audio/webm'; rec = null; recBtn.classList.remove('recording'); attach([new File(chunks, `Recording ${new Date().toLocaleString().replace(/[/:]/g, '-')}.${type.includes('mp4') ? 'm4a' : 'webm'}`, { type })]); };
-      rec.start(); recBtn.classList.add('recording'); toast('Recording… tap the microphone again to stop');
+      rec.start(); recBtn.classList.add('recording'); toast('Recording… tap the record button again to stop');
     } catch { toast('Microphone is not available'); }
   });
   const tb = (label, title, fn, cls = '') => h('button', { type: 'button', class: 'tb ' + cls, title, 'aria-label': title, onpointerdown: e => e.preventDefault(), onclick: fn }, label);
@@ -328,14 +356,15 @@ function mountEditor(pane, id) {
   ]); };
   fill(pane, 
     h('div', { class: 'ebar' }, iconBtn('back', 'Back to notes', () => { save(true); go(scope.kind === 'nb' ? '#/notes/nb/' + scope.id : scope.kind === 'tag' ? '#/notes/tag/' + encodeURIComponent(scope.id) : scope.kind === 'trash' ? '#/trash' : '#/notes'); }, 'only-mobile'),
-      icon('book', 15), nbSel, h('span', { class: 'grow' }), h('span', { class: 'sub saved' }, 'Edited ' + new Date(n0.updatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), iconBtn('share', 'Share this note', share, 'eshare'), iconBtn('more', 'Note options', more)),
+      icon('book', 15), nbSel, h('span', { class: 'grow' }), h('span', { class: 'sub saved' }, 'Edited ' + new Date(n0.updatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), dictBtn, iconBtn('share', 'Share this note', share, 'eshare'), iconBtn('more', 'Note options', more)),
     trashed && h('div', { class: 'banner' }, 'This note is in the trash.'),
     !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn, photoIn);
   hydrate(body, n0.attachments, urls);
-  mounted = { id, save, urls, refreshTasks, addMenu };
+  mounted = { id, save, urls, refreshTasks, addMenu, stopDictation, isDictating: () => !!dict };
+  if (dictateOnOpen === id) { dictateOnOpen = null; if (!trashed) { dictate(); return; } }
   if (!n0.title && !trashed && (!isMobile() || fresh.has(id))) title.focus();
 }
-window.addEventListener('pagehide', () => mounted?.save(true));
+window.addEventListener('pagehide', () => { mounted?.stopDictation?.(); mounted?.save(true); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { mounted?.save(true); store.flush().catch(() => {}); } });
 
 const liveBacklinks = id => M.liveNotes().filter(n => n.id !== id && (n.body || '').includes(`#/note/${id}"`));

@@ -724,3 +724,26 @@ label.inline.nowrap { flex-wrap: nowrap; align-items: flex-start; } label.inline
   .cg-allday .cchip { padding: 5px 8px; font-size: 13px; }
   .ag-items .cchip { padding: 10px 12px; }
 }
+
+/* ---- dictation (4.1) ---- */
+.qa-line { display: flex; align-items: center; gap: 6px; }
+.qa-line .qa-input { flex: 1; min-width: 0; }
+.qa-mic { flex: none; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--accent); display: grid; place-items: center; cursor: pointer; }
+.qa-mic:hover { background: var(--soft); }
+.qa-mic.recording { background: var(--p1); border-color: var(--p1); color: #fff; animation: pulse 1.2s infinite; }
+.qa-dict { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.4; color: var(--muted); background: var(--soft); border-radius: 8px; padding: 8px 10px; }
+.qa-dict[hidden] { display: none; }
+.qa-dict .dict-dot { margin-top: 4px; }
+.dict-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--p1); animation: pulse 1.2s infinite; }
+.dictbar { position: fixed; z-index: 95; left: 50%; transform: translateX(-50%); bottom: calc(18px + env(safe-area-inset-bottom)); width: min(560px, calc(100vw - 20px));
+  display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; border-radius: 14px; background: var(--panel); color: var(--text); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.dictbar .dict-text { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 13px; line-height: 1.35; }
+.dictbar .dict-words { color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.dictbar .dict-words.live { color: var(--text); font-style: italic; }
+.dictbar .dict-stop { flex: none; }
+body:has(.dictbar) #toasts { bottom: calc(96px + env(safe-area-inset-bottom)); }
+body:has(.dictbar) #fab { display: none !important; }
+.ibtn.edict[hidden] { display: none; }
+.ibtn.edict { color: var(--accent); }
+.ibtn.edict.recording { color: #fff; }
+@media print { .dictbar { display: none !important; } }

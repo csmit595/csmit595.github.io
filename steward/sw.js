@@ -2,12 +2,12 @@
 // Google Drive in the background while Steward is closed (loaded as a module: register('sw.js', { type: 'module' })).
 import { bgSync } from './js/bg.js';
 import { kvSet } from './js/lsmirror.js';
-const VERSION = 'steward-4.0.3';
+const VERSION = 'steward-4.1.0';
 // Tools (PDF reader, Word tools, page reader, search model) are kept in their own cache, so an update to Steward
 // never throws them away and they keep working with no signal. Bump only when a file in vendor/ changes.
 const TOOLS = 'steward-tools-1';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'css/app.css', 'icons/icon-192.png', 'icons/mark.png', 'icons/icon-512.png',
-  'js/boot.js', 'js/lsmirror.js', 'js/bg.js', 'js/app.js', 'js/util.js', 'js/store.js', 'js/model.js', 'js/dates.js', 'js/filters.js', 'js/sync.js', 'js/ui.js', 'js/tasks.js', 'js/notes.js', 'js/calendar.js', 'js/ocr.js', 'js/search.js', 'js/semantic.js', 'js/semantic-worker.js', 'js/writing.js', 'js/cite.js', 'js/export-docx.js', 'js/writing-tools.js', 'js/dayplan.js', 'js/import-todoist.js', 'js/offline.js', 'icons/icon-maskable-512.png', 'privacy.html'];
+  'js/boot.js', 'js/lsmirror.js', 'js/bg.js', 'js/app.js', 'js/util.js', 'js/store.js', 'js/model.js', 'js/dates.js', 'js/filters.js', 'js/sync.js', 'js/ui.js', 'js/tasks.js', 'js/notes.js', 'js/calendar.js', 'js/ocr.js', 'js/search.js', 'js/semantic.js', 'js/semantic-worker.js', 'js/writing.js', 'js/cite.js', 'js/export-docx.js', 'js/writing-tools.js', 'js/dayplan.js', 'js/import-todoist.js', 'js/offline.js', 'js/dictate.js', 'icons/icon-maskable-512.png', 'privacy.html'];
 
 self.addEventListener('install', e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

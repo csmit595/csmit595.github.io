@@ -6,6 +6,7 @@ import { parseQuickAdd, parseDue, describeDue, looksRepeating } from './dates.js
 import { compileFilter } from './filters.js';
 import { planCard, planLine } from './dayplan.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu } from './ui.js';
+import { canDictate, listen, spokenTask, splitTasks, saysStop, withoutStop } from './dictate.js';
 
 const go = hash => { location.hash = hash; };
 const byDue = (a, b) => ((a.due?.date || '9999') + (a.due?.time || '99')).localeCompare((b.due?.date || '9999') + (b.due?.time || '99')) || (a.priority || 4) - (b.priority || 4) || M.byOrder(a, b);
@@ -374,6 +375,7 @@ export function editProject(p = {}) {
 
 // ---- quick add ------------------------------------------------------------------
 export function openQuickAdd(defaults = {}) {
+  let dict = null;
   modal(close => {
     const input = h('input', { class: 'qa-input', placeholder: 'Call Linda about the patio fri 8am p1', autofocus: true, autocomplete: 'off', 'aria-label': 'Task name' });
     const desc = h('textarea', { class: 'field', placeholder: 'Details (optional)', rows: 2, hidden: true });
@@ -413,26 +415,58 @@ export function openQuickAdd(defaults = {}) {
       fill(chips, list);
       if (p.projectId) proj.value = picked = p.projectId;
     };
-    const add = () => {
+    const add = (o = {}) => {
       const p = parse();
-      if (!p.content) return input.focus();
+      if (!p.content) { if (!o.quiet) input.focus(); return false; }
       if (p.repeatProblem && !input.dataset.warned) { input.dataset.warned = '1'; toast('Steward could not read that repeat. Press Add again to save it without repeating, or reword it (e.g. "every first mon").', null, null, 7000); return; }
       delete input.dataset.warned;
       const projectId = p.projectId || picked;
       M.addTask({ ...p, projectId, sectionId: p.sectionId || (projectId === (defaults.projectId || 'inbox') ? defaults.sectionId : null), due: p.due || pick.due || null,
         priority: p.priority !== 4 ? p.priority : (pick.priority || 4), duration: p.duration || pick.duration || null,
         deadline: p.deadline || defaults.deadline || null, parentId: defaults.parentId || null, labels: [...new Set([...(defaults.labels || []), ...p.labels])], description: desc.value.trim(), noteId: defaults.noteId || null });
-      input.value = ''; desc.value = ''; keepDate = false; pick = { due: defaults.due || null, priority: null, duration: null }; drawTools(); refresh(); toast('Task added'); input.focus();
+      input.value = ''; desc.value = ''; keepDate = false; pick = { due: defaults.due || null, priority: null, duration: null }; typed = ''; heard = ''; heardNow = ''; added++;
+      drawTools(); refresh(); toast(dict ? `Task added (${added}) · keep talking` : 'Task added'); if (!o.quiet && !dict) input.focus();
+      return true;
     };
+    // ---- dictation: speak the task; say "next task" to add it and start another, "that's all" to stop ----
+    let typed = '', heard = '', heardNow = '', added = 0;
+    const names = () => ({ projects: store.all('projects').filter(p => !p.deleted).map(p => p.name), labels: store.all('labels').filter(l => !l.deleted).map(l => l.name) });
+    const show = () => { const said = spokenTask([heard, heardNow].filter(Boolean).join(' '), names()); input.value = [typed, said].filter(Boolean).join(' '); refresh(); };
+    const dictLine = h('div', { class: 'qa-dict', hidden: true }, h('span', { class: 'dict-dot' }), h('span', null, 'Listening. Say the task the way you would type it, like ', h('i', null, '“call Linda Friday at 8 a.m. priority one”'), '. Say ', h('b', null, '“next task”'), ' to add it and start another, ', h('b', null, '“that’s all”'), ' to add the last one and stop. Tap the microphone to stop without adding.'));
+    const micBtn = canDictate() ? h('button', { type: 'button', class: 'qa-mic', title: 'Speak the task', 'aria-label': 'Speak the task', onpointerdown: e => e.preventDefault(), onclick: () => toggleDict() }, icon('mic', 20)) : null;
+    const toggleDict = () => {
+      if (dict) { dict.stop(); return; }
+      typed = input.value.trim(); heard = ''; heardNow = '';
+      dict = listen({
+        onFinal: raw => {
+          let parts = splitTasks(raw), stop = false;
+          const last = parts.length - 1;
+          if (saysStop(parts[last])) { stop = true; parts[last] = withoutStop(parts[last]); }
+          parts.forEach((part, i) => {
+            if (part.trim()) heard = [heard, part.trim()].filter(Boolean).join(' ');
+            heardNow = '';
+            if (i < last) { show(); add({ quiet: true }); }
+          });
+          show();
+          if (stop) { add({ quiet: true }); dict?.stop(); }
+        },
+        onInterim: t => { heardNow = t; show(); },
+        onEnd: () => { dict = null; heardNow = ''; if (input.isConnected) { show(); micBtn?.classList.remove('recording'); dictLine.hidden = true; if (added) toast(`${added} task${added === 1 ? '' : 's'} added by voice`); } },
+      });
+      micBtn?.classList.add('recording'); dictLine.hidden = false;
+    };
+    // Typing while listening: keep what was typed, and add newly heard words after it.
+    input.addEventListener('input', () => { if (dict) { typed = input.value.trim(); heard = ''; heardNow = ''; } });
+    if (defaults.dictate && micBtn) setTimeout(toggleDict, 80);
     input.addEventListener('input', refresh);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
     refresh();
-    return h('div', { class: 'form qa-form' }, input, chips, toolbar, desc,
+    return h('div', { class: 'form qa-form' }, h('div', { class: 'qa-line' }, input, micBtn), dictLine, chips, toolbar, desc,
       h('div', { class: 'row between qa-foot' },
         h('details', { class: 'qa-help' }, h('summary', null, 'Typing shortcuts'),
           h('p', { class: 'hint' }, 'Write it the way you would say it: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@promise'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline. If a word is mistaken for a date, tap the date chip to keep it in the name.')),
-        h('div', { class: 'row' }, btn('Close', close), btn('Add task', add, 'primary'))));
-  }, { title: defaults.parentId ? 'Add sub-task' : 'Add task', cls: 'qa' });
+        h('div', { class: 'row' }, btn('Close', close), btn('Add task', () => add(), 'primary'))));
+  }, { title: defaults.parentId ? 'Add sub-task' : 'Add task', cls: 'qa', onClose: () => dict?.stop() });
 }
 
 // ---- task details ------------------------------------------------------------------

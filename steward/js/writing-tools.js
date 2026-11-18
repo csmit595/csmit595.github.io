@@ -1,5 +1,6 @@
 // Editing tools for the Writing section: undo history, find and replace, extra formatting, format painter,
 // table tools, outline numbering, symbols, comments, versions, word count, dictation, read-aloud, curly quotes.
+import { canDictate, listen, listeningBar, insertSpoken } from './dictate.js';
 import { h, fill, uid, esc, debounce, stripHtml, sanitize } from './util.js';
 import { store, settings } from './store.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu } from './ui.js';
@@ -159,15 +160,19 @@ export function installTools(E) {
       row('Footnotes', String(body.querySelectorAll('sup.fn').length)), row('Words in typed footnotes', words(notes).toLocaleString()), selText.trim() ? row('Words in your selection', words(selText).toLocaleString()) : null,
       row('Estimated pages (double-spaced)', '≈ ' + Math.max(1, Math.round(words(text) / 290))), row('Speaking time at 130 words a minute', '≈ ' + Math.max(1, Math.round(words(text) / 130)) + ' min')), { title: 'Word count', cls: 'small' }); };
   const symbols = () => { E.keep(); modal(close => h('div', { class: 'symgrid' }, SYMBOLS.map(ch => h('button', { type: 'button', onclick: () => { run(() => { E.restore(); document.execCommand('insertText', false, ch); }); toast(`Inserted ${ch}`, null, null, 900); } }, ch))), { title: 'Insert a symbol' }); };
-  let rec = null;
+  let rec = null, bar = null;
   const dictate = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return toast('Dictation is not available in this browser. Use Chrome.');
     if (rec) { rec.stop(); return; }
-    rec = new SR(); rec.continuous = true; rec.interimResults = false; rec.lang = 'en-US';
-    rec.onresult = ev => { let t = ''; for (let i = ev.resultIndex; i < ev.results.length; i++) if (ev.results[i].isFinal) t += ev.results[i][0].transcript; if (t) run(() => { E.restore(); document.execCommand('insertText', false, t.trim() + ' '); }); E.updateCount(); };
-    rec.onend = () => { rec = null; sheetFlag('dictating', false); }; rec.onerror = e => { toast(e.error === 'not-allowed' ? 'Allow the microphone to dictate' : 'Dictation stopped: ' + e.error); };
-    E.restore(); rec.start(); sheetFlag('dictating', true); toast('Listening… choose Dictate again to stop', null, null, 3000);
+    if (!canDictate()) return toast('Dictation needs Chrome. Open Steward in Chrome to speak instead of type.');
+    E.restore();
+    bar = listeningBar(() => rec?.stop());
+    rec = listen({
+      onFinal: raw => { run(() => { E.restore(); insertSpoken(body, raw); }); E.updateCount(); },
+      onInterim: t => bar?.set(t),
+      onEnd: () => { rec = null; bar?.remove(); bar = null; sheetFlag('dictating', false); },
+    });
+    sheetFlag('dictating', true);
+    addEventListener('hashchange', () => rec?.stop(), { once: true }); // leaving the document stops listening
   };
   const sheetFlag = (c, on) => E.sheet.closest('.writer')?.classList.toggle(c, on);
   const readAloud = () => {
