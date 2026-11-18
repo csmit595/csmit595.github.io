@@ -6,6 +6,18 @@ import { pad } from './util.js';
 import { snapshot, backgroundIsNewer, kvGet } from './lsmirror.js';
 
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar';
+// Google's permission screen has a separate box for Drive and for Calendar, and they can start out unticked. If one is
+// left unticked Google still signs Steward in, but Steward cannot reach the files: catch that and say what to do.
+const NEEDED = [['https://www.googleapis.com/auth/drive', 'Google Drive'], ['https://www.googleapis.com/auth/calendar', 'Google Calendar']];
+function checkScopes(granted) {
+  if (!granted) return; // Google left the list out: nothing to check
+  const have = String(granted).split(/[\s,]+/);
+  const missing = NEEDED.filter(([s]) => !have.includes(s)).map(([, n]) => n);
+  if (!missing.length) return;
+  const e = new Error('scopes');
+  e.detail = `Google signed you in but left out ${missing.join(' and ')}. Tap here, and on Google's screen tick every box (or "Select all") before Continue.`;
+  throw e;
+}
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const CAL = 'https://www.googleapis.com/calendar/v3';
@@ -66,6 +78,7 @@ export const sync = {
       body: new URLSearchParams({ client_id: settings.get('clientId'), client_secret: this.secret(), ...params }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { const e = new Error(j.error === 'invalid_grant' ? 'auth' : j.error === 'invalid_client' ? 'bad-secret' : (j.error || 'auth')); e.detail = j.error_description; throw e; }
+    checkScopes(j.scope);
     ls.set('token', { access_token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 });
     if (j.refresh_token) ls.set('refresh', j.refresh_token);
     ls.set('connected', true);
@@ -100,13 +113,14 @@ export const sync = {
         client_id: settings.get('clientId'), scope: SCOPES, login_hint: ls.get('email', undefined),
         callback: r => {
           if (r.error) return rej(new Error(r.error));
+          try { checkScopes(r.scope); } catch (e) { return rej(e); }
           ls.set('token', { access_token: r.access_token, exp: Date.now() + (r.expires_in || 3600) * 1000 });
           ls.set('connected', true);
           res(r.access_token);
         },
         error_callback: e => rej(new Error(e?.type || 'auth')),
       });
-      client.requestAccessToken({ prompt: interactive && !ls.get('connected', false) ? 'consent' : '' });
+      client.requestAccessToken({ prompt: interactive && (!ls.get('connected', false) || ls.get('askAgain', false)) ? 'consent' : '' });
     });
   },
   /** Shares the client secret between your devices through a small file in the Steward folder of your own Drive. */
@@ -125,19 +139,21 @@ export const sync = {
     }
   },
   async connect() {
-    await this.token(true);
-    try { const me = await this.api(`${DRIVE}/about?fields=user(emailAddress)`); ls.set('email', me.user.emailAddress); } catch {}
-    return this.run(true);
+    await this.run(true);
+    if (this.hasToken() && !ls.get('email')) try { const me = await this.api(`${DRIVE}/about?fields=user(emailAddress)`); ls.set('email', me.user.emailAddress); } catch {}
   },
   disconnect() {
     const t = ls.get('token'), rt = ls.get('refresh');
     if (rt) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(rt), { method: 'POST' }).catch(() => {});
     else if (t && window.google?.accounts) try { google.accounts.oauth2.revoke(t.access_token, () => {}); } catch {}
-    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email', 'pushKey', 'pushFile', 'pushDevs', 'pushActive']) ls.del(k);
+    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email', 'pushKey', 'pushFile', 'pushDevs', 'pushActive', 'askAgain', 'startFresh']) ls.del(k);
+    this.code = '';
     store.driveClear().catch(() => {});
     this.set('off');
   },
   email() { return ls.get('email', ''); },
+  /** Settings → "Start a new Steward in this account": allow making the Steward folder in an account that has none. */
+  startFresh() { ls.set('startFresh', true); return this.run(true); },
 
   async api(url, opts = {}, raw = false) {
     const safe = !opts.method || opts.method === 'GET' || /\/upload\/drive\/v3\/files\/[^/?]+/.test(url) && opts.method === 'PATCH';
@@ -174,6 +190,15 @@ export const sync = {
   async layout() {
     let d = ls.get('drive');
     if (d?.root) return d;
+    // Several Google accounts can be signed in on one device. Picking one that has no Steward folder would quietly
+    // start a second, empty Steward there. Stop and say so, unless the person chose to start fresh in that account.
+    if (!ls.get('startFresh', false) && !(await this.find('Steward', 'root', true))) {
+      let email = ls.get('email', '');
+      try { email = (await this.api(`${DRIVE}/about?fields=user(emailAddress)`)).user.emailAddress; ls.set('email', email); } catch {}
+      const e = new Error('no-folder');
+      e.detail = `${email || 'This Google account'} has no Steward folder in its Drive. Your Steward data is probably in a different Google account: in Settings tap Disconnect, then connect again and pick that account.`;
+      throw e;
+    }
     const root = await this.folder('Steward', 'root');
     d = { root, att: await this.folder('attachments', root), inbox: await this.folder('inbox for Claude', root), files: {} };
     ls.set('drive', d);
@@ -204,8 +229,19 @@ export const sync = {
   background: false, onStale: null,
   async run(interactive = false) {
     if (this.background) return this._run(interactive);
+    // Google's sign-in window can wait for the person for as long as it likes (or never come back, on phones), so it
+    // happens BEFORE the sync lock is taken: nothing else in Steward may ever be stuck waiting on it.
+    // One tap can reach here twice (the status button and the tap-anywhere listener): open Google's window once.
+    // Only for two seconds, so a window that never came back cannot make later taps do nothing.
+    if (interactive && this._signing && Date.now() - this._signing < 2000) return;
+    if (interactive && this.configured() && navigator.onLine && (!this.hasToken() || (this.secret() && !ls.get('refresh')))) {
+      const mine = this._signing = Date.now();
+      try { await this.token(true); interactive = false; } // signed in: the sync itself must never open a window
+      catch (e) { console.warn('sign-in', e); this.fail(e, true); return; }
+      finally { if (this._signing === mine) this._signing = 0; }
+    }
     const go = async () => {
-      if (await backgroundIsNewer()) { this.onStale?.(); return; }
+      if (await backgroundIsNewer()) await this.onStale?.(); // take in what the background sync saved, then carry on
       await this._run(interactive);
       await snapshot().catch(e => console.warn('snapshot', e));
     };
@@ -239,24 +275,45 @@ export const sync = {
       await this.shareSecret(d).catch(e => { if (e.message === 'auth') throw e; console.warn('login file', e); });
       ls.set('drive', d);
       this.lastSync = Date.now(); ls.set('lastSync', this.lastSync);
+      ls.del('askAgain'); this.code = '';
       // This device just learned how to stay signed in: one tap finishes it (Google needs a tap to show its window).
       if (this.secret() && !ls.get('refresh')) { this.set('auth', 'Tap once so Google keeps Steward signed in'); this.armGesture(); }
       else this.set('idle');
     } catch (e) {
       console.warn('sync', e);
       if (e.status === 404) { ls.del('drive'); store.driveClear().catch(() => {}); }
-      if (['auth', 'popup_failed_to_open', 'popup_closed', 'interaction_required', 'access_denied'].includes(e.message)) { this.set('auth', 'Tap to reconnect to Google'); this.armGesture(); }
-      else if (e.message === 'offline' || e instanceof TypeError) this.set('offline', 'No signal. Changes are saved on this device and will sync later.');
-      else this.set('error', e.detail || e.message);
+      this.fail(e, false);
     } finally {
       this.busy = false;
       if (this.again && !this.background) { this.again = false; setTimeout(() => this.run(), 500); } // in the background, bg.js repeats
     }
   },
+  /** Turn a failure into what the person sees, and into what the next tap does. code: a short name for the screens. */
+  code: '',
+  fail(e, signingIn) {
+    const m = e.message;
+    this.code = '';
+    // Google refused the pass for lack of permission: a box was left unticked when signing in. Throw the pass away so
+    // the next tap opens Google's full screen again instead of reusing a pass that can never work.
+    const lacking = m === 'scopes' || (e.status === 403 && /insufficient authentication scopes|insufficient permission/i.test(e.detail || ''));
+    if (lacking) {
+      ls.del('token'); ls.del('refresh'); ls.set('askAgain', true); this.code = 'scopes';
+      this.set('auth', m === 'scopes' ? e.detail : `Google signed you in without access to your files. Tap here, and on Google's screen tick every box (or "Select all") before Continue.`);
+      this.armGesture();
+    } else if (m === 'no-folder') { this.code = 'no-folder'; this.set('error', e.detail); }
+    else if (m === 'popup_failed_to_open') { this.code = 'popup'; this.set('auth', 'Your browser blocked Google\'s sign-in window. Tap here to try again.'); this.armGesture(); }
+    else if (['auth', 'popup_closed', 'interaction_required', 'access_denied', 'unknown'].includes(m) || signingIn && !(m === 'offline' || e instanceof TypeError)) {
+      if (signingIn) ls.set('askAgain', true);
+      this.set('auth', signingIn ? 'Google sign-in did not finish. Tap to try again.' : 'Tap to reconnect to Google'); this.armGesture();
+    }
+    else if (m === 'offline' || e instanceof TypeError) this.set('offline', 'No signal. Changes are saved on this device and will sync later.');
+    else this.set('error', e.detail || m);
+  },
   armGesture() {
     if (this.background || typeof document === 'undefined' || this._armed) return; this._armed = true;
-    const go = () => { this._armed = false; document.removeEventListener('pointerdown', go, true); this.run(true); };
-    document.addEventListener('pointerdown', go, true);
+    // 'click', not 'pointerdown': on phones only a finished tap counts as permission to open Google's window.
+    const go = () => { this._armed = false; document.removeEventListener('click', go, true); this.run(true); };
+    document.addEventListener('click', go, true);
   },
   async syncFile(d, file) {
     const versions = ls.get('versions', {});

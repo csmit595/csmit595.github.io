@@ -16,7 +16,7 @@ import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 
-const VERSION = '3.9.0';
+const VERSION = '3.10.4';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -75,7 +75,7 @@ function drawSidebar(route) {
   const st = sync.status;
   const time = sync.lastSync ? new Date(sync.lastSync).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
   // Long label for a full-width sidebar; short one for a narrow window (split screen). Hover shows the long one.
-  const [long, short] = st === 'syncing' ? ['Syncing…', 'Syncing…'] : st === 'off' ? (sync.configured() && sync.connected() ? ['Sync', 'Sync'] : ['Not syncing yet', 'Set up']) : st === 'offline' ? ['Offline · saved here', 'Offline'] : st === 'auth' ? (/^Tap once/.test(sync.message) ? ['Tap to stay signed in', 'Tap once'] : ['Tap to reconnect', 'Reconnect']) : st === 'error' ? ['Sync problem', 'Problem'] : ['Synced ' + time, time || 'Synced'];
+  const [long, short] = st === 'syncing' ? ['Syncing…', 'Syncing…'] : st === 'off' ? (sync.configured() && sync.connected() ? ['Sync', 'Sync'] : ['Not syncing yet', 'Set up']) : st === 'offline' ? ['Offline · saved here', 'Offline'] : st === 'auth' ? (/^Tap once/.test(sync.message) ? ['Tap to stay signed in', 'Tap once'] : sync.code === 'scopes' ? ['Tick every box · tap', 'Tick boxes'] : ['Tap to reconnect', 'Reconnect']) : st === 'error' ? ['Sync problem', 'Problem'] : ['Synced ' + time, time || 'Synced'];
   const pill = h('button', { class: 'syncpill ' + st, title: sync.message || long, onclick: () => { if (!sync.configured()) location.hash = '#/settings'; else sync.run(true); } },
     icon(st === 'offline' || st === 'off' ? 'cloudoff' : 'sync', 14), h('span', { class: 'pl-long' }, long), h('span', { class: 'pl-short' }, short));
   // Sections fold (remembered per device) so a long list of projects or notebooks doesn't bury the rest.
@@ -192,10 +192,12 @@ function viewSettings(main) {
       h('p', null, 'Paste the Google client ID from the setup guide:'), h('div', { class: 'row gap' }, id, btn('Save', () => { const v = id.value.trim(); if (!/\.apps\.googleusercontent\.com$/.test(v)) return toast('That does not look like a client ID. It ends in apps.googleusercontent.com'); settings.set('clientId', v); again(); }, 'primary')));
   } else if (!sync.connected()) {
     g.push(h('p', null, 'Ready to connect. Google will ask you to allow Steward to use your Drive and Calendar.'),
-      h('div', { class: 'row gap wrap' }, btn('Connect Google account', () => sync.connect().then(again).catch(e => toast('Google sign-in did not finish: ' + e.message)), 'primary'), btn('Change client ID', () => { settings.set('clientId', ''); again(); }, 'link')));
+      h('div', { class: 'row gap wrap' }, btn('Connect Google account', () => sync.connect().then(again).catch(e => toast('Google sign-in did not finish: ' + e.message)), 'primary')),
+      sync.status === 'auth' || sync.status === 'error' ? h('p', { class: 'sub', id: 'sync-line' }, syncLine()) : null);
   } else {
     g.push(h('p', null, 'Connected', sync.email() ? ' as ' + sync.email() : '', '. Data is saved in the ', h('b', null, 'Steward'), ' folder in your Google Drive.'),
       h('p', { class: 'sub', id: 'sync-line' }, syncLine()),
+      sync.code === 'no-folder' ? h('div', { class: 'row gap wrap' }, btn('Start a new, empty Steward in this account instead', async () => { if (await confirmDlg('Make a new, empty Steward folder in this Google account? Only do this if you have never used Steward with another account.', 'Start new')) sync.startFresh().then(again); }, 'link')) : null,
       h('p', { class: 'sub', id: 'bg-line' }, bgLine()),
       sync.staysSignedIn() ? h('p', { class: 'sub' }, '✓ Stays signed in on this device — no reconnecting needed.')
         : sync.secret() ? h('p', { class: 'sub' }, 'One step left on this device: tap ', h('b', null, 'Stay signed in'), ' and allow Steward in the Google window.')
@@ -363,7 +365,7 @@ async function offLine() {
   l.textContent = (ok ? '✓ Ready for no signal. ' : '') + `Tools: ${s.tools} of ${s.toolsTotal} on this device. Attachments: ${s.files} of ${s.filesTotal}.` + (s.bytes ? ` Using ${mb(s.bytes)}` + (s.quota ? ` of ${mb(s.quota)} available.` : '.') : '') + (s.persisted ? '' : ' (The phone may clear this if it runs very low on space.)');
 }
 offline.onChange(() => { const b = $('#off-busy'); if (b) b.textContent = offline.state.line; if (!offline.state.busy) offLine(); });
-const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? 'Google needs you to reconnect. Tap Sync now.' : sync.status === 'offline' ? sync.message : (sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet') + (sync.attWaiting ? ` · ${sync.attWaiting} attachment${sync.attWaiting === 1 ? '' : 's'} waiting to upload (Steward keeps trying; tasks and notes still sync)` : '');
+const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? (sync.code || /did not finish|blocked/.test(sync.message) ? sync.message.replace(/Tap here/g, 'Tap Sync now') : 'Google needs you to reconnect. Tap Sync now.') : sync.status === 'offline' ? sync.message : (sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet') + (sync.attWaiting ? ` · ${sync.attWaiting} attachment${sync.attWaiting === 1 ? '' : 's'} waiting to upload (Steward keeps trying; tasks and notes still sync)` : '');
 
 function applyTheme() {
   const t = settings.get('theme');
@@ -667,6 +669,9 @@ async function start() {
   document.body.classList.add('ready');
   extBridge(); extAnnounce();
   if (sync.connected()) sync.run();
+  // Load Google's sign-in script now, so tapping Connect opens Google's window straight away: on phones a window
+  // opened after a slow download no longer counts as the tap's, and Chrome blocks it as a pop-up.
+  if (sync.configured() && navigator.onLine && !sync.staysSignedIn()) sync.loadGis().catch(() => {});
   window.addEventListener('online', () => sync.run());
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) { backgroundIsNewer().then(b => { if (b || Date.now() - sync.lastSync > 60000) sync.run(); }); checkReminders(); schedule(); return; }

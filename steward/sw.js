@@ -2,7 +2,7 @@
 // Google Drive in the background while Steward is closed (loaded as a module: register('sw.js', { type: 'module' })).
 import { bgSync } from './js/bg.js';
 import { kvSet } from './js/lsmirror.js';
-const VERSION = 'steward-3.9.0';
+const VERSION = 'steward-3.10.4';
 // Tools (PDF reader, Word tools, page reader, search model) are kept in their own cache, so an update to Steward
 // never throws them away and they keep working with no signal. Bump only when a file in vendor/ changes.
 const TOOLS = 'steward-tools-1';

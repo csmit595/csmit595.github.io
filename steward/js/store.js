@@ -259,6 +259,8 @@ const local = {
 export const settings = {
   get(k) {
     if (SHARED.includes(k)) { const p = data.prefs.get('shared'); if (p && !p.deleted && p[k] !== undefined) return p[k]; }
+    // an emptied client ID falls back to Steward's own, so a device can never be left asking for one
+    if (k === 'clientId') return local.get(k) || defaults[k];
     return local.get(k) ?? defaults[k];
   },
   set(k, v) {
