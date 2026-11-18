@@ -266,8 +266,9 @@ export const sync = {
   },
   armGesture() {
     if (this.background || typeof document === 'undefined' || this._armed) return; this._armed = true;
-    const go = () => { this._armed = false; document.removeEventListener('pointerdown', go, true); this.run(true); };
-    document.addEventListener('pointerdown', go, true);
+    // 'click', not 'pointerdown': on phones only a finished tap counts as permission to open Google's window.
+    const go = () => { this._armed = false; document.removeEventListener('click', go, true); this.run(true); };
+    document.addEventListener('click', go, true);
   },
   async syncFile(d, file) {
     const versions = ls.get('versions', {});

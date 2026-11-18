@@ -17,7 +17,7 @@ import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 import { offerMove } from './move.js';
 
-const VERSION = '3.10.1';
+const VERSION = '3.10.2';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -668,6 +668,9 @@ async function start() {
   document.body.classList.add('ready');
   extBridge(); extAnnounce();
   if (sync.connected()) sync.run();
+  // Load Google's sign-in script now, so tapping Connect opens Google's window straight away: on phones a window
+  // opened after a slow download no longer counts as the tap's, and Chrome blocks it as a pop-up.
+  if (sync.configured() && navigator.onLine && !sync.staysSignedIn()) sync.loadGis().catch(() => {});
   offerMove(); // only on the old GitHub address
   window.addEventListener('online', () => sync.run());
   document.addEventListener('visibilitychange', () => {
