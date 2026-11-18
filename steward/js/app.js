@@ -15,7 +15,7 @@ import { semantic, enabled as semanticOn, status as semStatus } from './semantic
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 
-const VERSION = '3.6.2';
+const VERSION = '3.6.3';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -529,6 +529,25 @@ function fabGestures() {
   });
 }
 
+// A new version of Steward was published: check whenever the app comes back to the screen, and when the new
+// version takes over, reload into it right away (or the next time Steward is opened, if you are typing).
+let hadController = !!navigator.serviceWorker?.controller, pendingReload = false;
+function safeToReload() { const a = document.activeElement; return !document.querySelector('.modal') && !(a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))); }
+async function reloadIntoUpdate() { pendingReload = false; try { await store.flush(); } catch {} location.reload(); }
+function watchForUpdates(reg) {
+  const check = () => reg.update().catch(() => {});
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (pendingReload) return reloadIntoUpdate();
+    check();
+  });
+  setInterval(() => { if (!document.hidden) check(); }, 30 * 60 * 1000);
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) { hadController = true; return; } // first install, not an update
+    if (!document.hidden && safeToReload()) reloadIntoUpdate(); else pendingReload = true;
+  });
+}
+
 async function start() {
   applyTheme();
   await store.init();
@@ -537,7 +556,8 @@ async function start() {
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }
   await sync.loadCachedEvents();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js', { type: 'module' }).then(setupBackground).catch(e => console.warn('sw', e));
+    // updateViaCache 'none': the phone always asks GitHub for a fresh sw.js (and its imports) instead of a saved copy.
+    navigator.serviceWorker.register('sw.js', { type: 'module', updateViaCache: 'none' }).then(reg => { watchForUpdates(reg); return setupBackground(reg); }).catch(e => console.warn('sw', e));
     // The background sync asks an open, visible Steward to sync itself rather than doing it behind its back.
     navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); });
   }
