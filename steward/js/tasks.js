@@ -432,7 +432,8 @@ export function openQuickAdd(defaults = {}) {
     let typed = '', heard = '', heardNow = '', added = 0;
     const names = () => ({ projects: store.all('projects').filter(p => !p.deleted).map(p => p.name), labels: store.all('labels').filter(l => !l.deleted).map(l => l.name) });
     const show = () => { const said = spokenTask([heard, heardNow].filter(Boolean).join(' '), names()); input.value = [typed, said].filter(Boolean).join(' '); refresh(); };
-    const dictLine = h('div', { class: 'qa-dict', hidden: true }, h('span', { class: 'dict-dot' }), h('span', null, 'Listening. Say the task the way you would type it, like ', h('i', null, '“call Linda Friday at 8 a.m. priority one”'), '. Say ', h('b', null, '“next task”'), ' to add it and start another, ', h('b', null, '“that’s all”'), ' to add the last one and stop. Tap the microphone to stop without adding.'));
+    const dictStatus = h('b', { class: 'qa-dict-status' });
+    const dictLine = h('div', { class: 'qa-dict', hidden: true }, h('span', { class: 'dict-dot' }), h('span', null, 'Listening. Say the task the way you would type it, like ', h('i', null, '“call Linda Friday at 8 a.m. priority one”'), '. Say ', h('b', null, '“next task”'), ' to add it and start another, ', h('b', null, '“that’s all”'), ' to add the last one and stop. Tap the microphone to stop without adding.', dictStatus));
     const micBtn = canDictate() ? h('button', { type: 'button', class: 'qa-mic', title: 'Speak the task', 'aria-label': 'Speak the task', onpointerdown: e => e.preventDefault(), onclick: () => toggleDict() }, icon('mic', 20)) : null;
     const toggleDict = () => {
       if (dict) { dict.stop(); return; }
@@ -451,6 +452,7 @@ export function openQuickAdd(defaults = {}) {
           if (stop) { add({ quiet: true }); dict?.stop(); }
         },
         onInterim: t => { heardNow = t; show(); },
+        onStatus: t => { dictStatus.textContent = t ? ' ' + t : ''; },
         onEnd: () => { dict = null; heardNow = ''; if (input.isConnected) { show(); micBtn?.classList.remove('recording'); dictLine.hidden = true; if (added) toast(`${added} task${added === 1 ? '' : 's'} added by voice`); } },
       });
       micBtn?.classList.add('recording'); dictLine.hidden = false;

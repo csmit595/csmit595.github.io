@@ -275,6 +275,7 @@ function mountEditor(pane, id) {
     dict = listen({
       onFinal: raw => { restoreSel(); insertSpoken(body, raw); touch(); keepSel(); },
       onInterim: t => bar?.set(t),
+      onStatus: t => bar?.set(t),
       onEnd: () => {
         dict = null; bar?.remove(); bar = null; dictBtn.classList.remove('recording');
         if (!body.isConnected) return;

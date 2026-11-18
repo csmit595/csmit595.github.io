@@ -1,34 +1,63 @@
-// Dictation: speak tasks and notes instead of typing them. Uses Chrome's own speech recognition.
+// Dictation: speak tasks and notes instead of typing them.
+// Two engines: Chrome's speech service (fast, needs signal) and Steward's own speech model on the device
+// (js/listen-device.js; Whisper, works with no signal). "Automatic" uses Chrome's when there is signal and the
+// device model when there is not, and switches over mid-sentence if the signal drops.
 // Spoken punctuation works everywhere ("period", "comma", "question mark", "new line", "new paragraph").
 // For tasks, spoken words are turned into Steward's typing shortcuts ("priority one" → p1, "project Hanel" → #Hanel,
 // "label promise" → @promise, "deadline friday" → {friday}, "8 a.m." → 8am), and "next task" starts another task.
 import { h } from './util.js';
 import { parseDue } from './dates.js';
 import { icon } from './ui.js';
+import { deviceListen } from './listen-device.js';
 
 const SR = () => window.SpeechRecognition || window.webkitSpeechRecognition;
-export const canDictate = () => !!SR();
+const deviceCapable = () => !!(navigator.mediaDevices?.getUserMedia && window.AudioWorkletNode && typeof WebAssembly === 'object');
+export const canDictate = () => !!SR() || deviceCapable();
 const LANG = 'en-US';
 // Android Chrome repeats earlier words in each new result; desktop Chrome does not.
 const ANDROID = /Android/i.test(navigator.userAgent);
 const FATAL = new Set(['not-allowed', 'service-not-allowed', 'audio-capture', 'language-not-supported', 'network', 'phrases-not-supported']);
 
+// Which engine, per device: 'auto' (Chrome's with signal, the device model without) or 'device' (always the device model).
+const ENGINE = 'steward.dictate.engine';
+export const dictEngine = () => { try { return localStorage.getItem(ENGINE) === 'device' ? 'device' : 'auto'; } catch { return 'auto'; } };
+export const setDictEngine = v => { try { localStorage.setItem(ENGINE, v === 'device' ? 'device' : 'auto'); } catch {} };
+// Whether the device speech model is fully downloaded (kept up to date by offline.js).
+let modelHere = false;
+export const setModelHere = v => { modelHere = !!v; };
+
 let active = null; // only one microphone session at a time
 
 /**
  * Start listening. Calls onFinal(text) with each finished phrase (raw words), onInterim(text) with the words still
- * being heard, and onEnd() once listening stops for good. Returns { stop }.
+ * being heard (Chrome's engine only), onStatus(text) with what the device model is doing ("Writing it down…"),
+ * and onEnd() once listening stops for good. Returns { stop }.
  */
-export function listen({ onFinal, onInterim = () => {}, onEnd = () => {}, onError } = {}) {
-  const Rec = SR();
-  if (!Rec) { (onError || say)('Dictation needs Chrome. Open Steward in Chrome to speak instead of type.'); onEnd(); return { stop() {} }; }
+export function listen(opts = {}) {
+  const { onFinal, onInterim = () => {}, onEnd = () => {}, onStatus = () => {} } = opts;
+  const onError = opts.onError || say;
   active?.stop();
-  let stopped = false, rec = null, quietRounds = 0, heard = false;
+  let stopped = false, inner = null, ended = false;
+  const session = { stop() { stopped = true; inner?.stop(); }, get on() { return !stopped; } };
+  const finish = () => { if (ended) return; ended = true; if (active === session) active = null; onInterim(''); onStatus(''); onEnd(); };
+  const onDevice = () => { onInterim(''); inner = deviceListen({ onFinal, onError, onStatus, onEnd: finish }); };
+  const useDevice = deviceCapable() && (!SR() || dictEngine() === 'device' || (!navigator.onLine && (modelHere || !('processLocally' in (SR().prototype || {})))));
+  if (!SR() && !deviceCapable()) { onError('Dictation needs Chrome. Open Steward in Chrome to speak instead of type.'); onEnd(); return session; }
+  active = session;
+  if (useDevice) onDevice();
+  else inner = chromeListen({ onFinal, onInterim, onError, onEnd: finish,
+    // The signal dropped: carry on with the model on this device, if it is here.
+    handover: () => { if (stopped || !deviceCapable() || !modelHere) return false; onStatus('No signal: switching to the speech model on this device…'); onDevice(); return true; } });
+  return session;
+}
+
+function chromeListen({ onFinal, onInterim, onError, onEnd, handover }) {
+  const Rec = SR();
+  let stopped = false, rec = null, quietRounds = 0, switching = false;
   const session = {
     stop() { if (stopped) return; stopped = true; try { rec?.stop(); } catch {} },
     get on() { return !stopped; },
   };
-  const finish = () => { if (active === session) active = null; onInterim(''); onEnd(); };
   const begin = () => {
     rec = new Rec();
     rec.lang = LANG; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
@@ -46,7 +75,7 @@ export function listen({ onFinal, onInterim = () => {}, onEnd = () => {}, onErro
         let add = t;
         if (ANDROID && lastAndroid && t.toLowerCase().startsWith(lastAndroid.toLowerCase())) add = t.slice(lastAndroid.length);
         if (ANDROID) lastAndroid = t;
-        if (add.trim()) { heard = true; quietRounds = 0; onFinal(add); }
+        if (add.trim()) { quietRounds = 0; onFinal(add); }
       }
       if (ANDROID && interim && lastAndroid && interim.toLowerCase().startsWith(lastAndroid.toLowerCase())) interim = interim.slice(lastAndroid.length);
       onInterim(interim.trim());
@@ -56,28 +85,29 @@ export function listen({ onFinal, onInterim = () => {}, onEnd = () => {}, onErro
       if (e.error === 'aborted') return;
       if (FATAL.has(e.error)) {
         stopped = true;
+        if ((e.error === 'network' || e.error === 'language-not-supported') && handover) { switching = true; return; }
         const msg = e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'Steward is not allowed to use the microphone. Allow it in Chrome\'s site settings (the icon left of the address), then try again.'
           : e.error === 'audio-capture' ? 'No microphone was found.'
-          : e.error === 'network' || e.error === 'language-not-supported' ? 'Dictation needs a signal on this device right now. Type it, or record audio in a note.'
+          : e.error === 'network' || e.error === 'language-not-supported' ? 'No signal, and the speech model is not on this device yet. When you have Wi-Fi, open Settings → Speak instead of type → Download the speech model.'
           : 'Dictation stopped (' + e.error + ').';
-        (onError || say)(msg);
+        onError(msg);
       }
     };
     // Chrome stops on its own after a pause or about a minute; keep going until the person taps Stop.
     rec.onend = () => {
-      if (stopped || quietRounds >= 2) { stopped = true; finish(); return; }
-      try { begin(); } catch { stopped = true; finish(); }
+      if (switching) { switching = false; if (handover()) return; onError('No signal, and the speech model is not on this device yet. When you have Wi-Fi, open Settings → Speak instead of type → Download the speech model.'); onEnd(); return; }
+      if (stopped || quietRounds >= 2) { stopped = true; onEnd(); return; }
+      try { begin(); } catch { stopped = true; onEnd(); }
     };
     rec.start();
   };
-  try { begin(); } catch (e) { stopped = true; (onError || say)('Dictation could not start: ' + (e?.message || e)); finish(); return session; }
-  active = session;
+  try { begin(); } catch (e) { stopped = true; onError('Dictation could not start: ' + (e?.message || e)); onEnd(); return session; }
   offlineReady();
   return session;
 }
 const say = msg => import('./ui.js').then(u => u.toast(msg, null, null, 7000));
 
-// While there is signal, ask Chrome (where it can) to keep the English speech model on the device for no-signal use.
+// While there is signal, ask Chrome (where it can) to keep its English speech model on the device too.
 let askedOffline = false;
 function offlineReady() {
   const Rec = SR();

@@ -733,6 +733,7 @@ label.inline.nowrap { flex-wrap: nowrap; align-items: flex-start; } label.inline
 .qa-mic.recording { background: var(--p1); border-color: var(--p1); color: #fff; animation: pulse 1.2s infinite; }
 .qa-dict { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.4; color: var(--muted); background: var(--soft); border-radius: 8px; padding: 8px 10px; }
 .qa-dict[hidden] { display: none; }
+.qa-dict-status { color: var(--text); font-weight: 600; }
 .qa-dict .dict-dot { margin-top: 4px; }
 .dict-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--p1); animation: pulse 1.2s infinite; }
 .dictbar { position: fixed; z-index: 95; left: 50%; transform: translateX(-50%); bottom: calc(18px + env(safe-area-inset-bottom)); width: min(560px, calc(100vw - 20px));

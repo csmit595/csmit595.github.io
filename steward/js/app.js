@@ -6,7 +6,7 @@ import { sync } from './sync.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpen, isMobile, PHONE_MQ } from './ui.js';
 import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from './tasks.js';
 import { renderNotes, leaveNotes, newNote, dictateNote, noteAddMenu, createClip, importEnex } from './notes.js';
-import { canDictate } from './dictate.js';
+import { canDictate, dictEngine, setDictEngine } from './dictate.js';
 import { renderCalendar } from './calendar.js';
 import { renderWriting, leaveWriting, liveDocs } from './writing.js';
 import { compileFilter } from './filters.js';
@@ -17,7 +17,7 @@ import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 
-const VERSION = '4.1.0';
+const VERSION = '4.2.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -241,7 +241,7 @@ function viewSettings(main) {
   } });
   const restore = h('input', { type: 'file', accept: '.json', hidden: true, onchange: async () => { try { const n = store.importAll(JSON.parse(await restore.files[0].text())); toast(`Restored ${n} items`); } catch { toast('That file is not a Steward backup'); } restore.value = ''; } });
   const keepBox = h('input', { type: 'checkbox', checked: offline.keepFiles(), onchange: () => offline.setKeepFiles(keepBox.checked) });
-  setTimeout(offLine, 0);
+  setTimeout(offLine, 0); setTimeout(speechLine, 0);
   main.append(h('div', { class: 'settings' }, h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Settings'))),
     card('Google account and sync', g),
     card('Reminders', h('p', { class: 'sub' }, 'These apply on all your devices.'),
@@ -256,8 +256,13 @@ function viewSettings(main) {
     h('section', { class: 'card', id: 'blocks-card' }, h('h3', null, 'Fixed blocks'), blocksEditor(again)),
     card('Use with no signal', h('p', { class: 'sub' }, 'Steward keeps your tasks, notes, documents and calendar on this device, so it opens and works with no connection. Changes you make offline sync when the signal comes back. Adding or changing Google Calendar events still needs a connection.'),
       h('label', { class: 'inline nowrap' }, keepBox, h('span', { class: 'grow' }, 'Keep a copy of every photo, PDF and recording on this device')),
-      h('div', { class: 'row gap wrap' }, btn('Download everything to this device', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 60 MB plus your attachments).'); await offline.downloadAll(); offLine(); }, 'primary', 'download')),
+      h('div', { class: 'row gap wrap' }, btn('Download everything to this device', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 140 MB plus your attachments).'); await offline.downloadAll(); offLine(); }, 'primary', 'download')),
       h('p', { class: 'sub', id: 'off-line' }, 'Checking…'), h('p', { class: 'sub', id: 'off-busy' }, offline.state.line)),
+    card('Speak instead of type', h('p', { class: 'sub' }, 'Dictation for tasks, notes and Writing. Steward has its own speech model that runs only on this device, so speaking works with no signal and nothing you say leaves the phone or Mac. Chrome’s speech service is a little quicker when there is signal.'),
+      ...[['auto', 'Automatic: Chrome’s speech service when there is signal, the model on this device when there is not (switches over by itself if the signal drops)'], ['device', 'Always use the model on this device (private; works anywhere; each phrase appears a moment after you pause)']]
+        .map(([v, label]) => h('label', { class: 'inline block' }, h('input', { type: 'radio', name: 'dict-engine', value: v, checked: dictEngine() === v, onchange: () => { setDictEngine(v); speechLine(); } }), h('span', { class: 'grow' }, label))),
+      h('div', { class: 'row gap wrap' }, btn('Download the speech model', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 77 MB).'); await offline.downloadSpeech(); speechLine(); }, 'primary', 'download')),
+      h('p', { class: 'sub', id: 'speech-line' }, 'Checking…')),
     card('Search by meaning', h('label', { class: 'inline' }, semBox, h('span', { class: 'grow' }, 'Find notes and tasks by what they are about, not only the exact words')),
       h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
       h('p', { class: 'sub', id: 'sem-line' }, semLine())),
@@ -367,6 +372,12 @@ async function offLine() {
   const ok = s.tools === s.toolsTotal && s.files === s.filesTotal;
   l.textContent = (ok ? '✓ Ready for no signal. ' : '') + `Tools: ${s.tools} of ${s.toolsTotal} on this device. Attachments: ${s.files} of ${s.filesTotal}.` + (s.bytes ? ` Using ${mb(s.bytes)}` + (s.quota ? ` of ${mb(s.quota)} available.` : '.') : '') + (s.persisted ? '' : ' (The phone may clear this if it runs very low on space.)');
 }
+async function speechLine() {
+  const l = $('#speech-line'); if (!l) return;
+  const ok = await offline.speechHere();
+  l.textContent = ok ? '✓ The speech model is on this device. Dictation works with no signal.' : 'The speech model is not on this device yet (about 77 MB). Steward downloads it by itself the next time this device is on Wi-Fi, or tap the button.';
+}
+offline.onChange(() => { if (/speech model/.test(offline.state.line)) { const l = $('#speech-line'); if (l) l.textContent = offline.state.line; } });
 offline.onChange(() => { const b = $('#off-busy'); if (b) b.textContent = offline.state.line; if (!offline.state.busy) offLine(); });
 const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? (sync.code || /did not finish|blocked/.test(sync.message) ? sync.message.replace(/Tap here/g, 'Tap Sync now') : 'Google needs you to reconnect. Tap Sync now.') : sync.status === 'offline' ? sync.message : (sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet') + (sync.helperTrouble ? ` · ${sync.helperTrouble}: Claude’s changes, your calendar and notifications are waiting (tasks and notes still sync)` : '') + (sync.attWaiting ? ` · ${sync.attWaiting} attachment${sync.attWaiting === 1 ? '' : 's'} waiting to upload (Steward keeps trying; tasks and notes still sync)` : '');
 
@@ -679,6 +690,7 @@ async function start() {
   sync.on(() => { if (sync.status === 'idle') offline.keepSoon(); });
   sync.on(() => { const el = $('#push-panel'); if (el && sync.status === 'idle' && pushAgain) el.replaceWith(pushPanel(pushAgain)); });
   offline.keepSoon(20000);
+  offline.speechHere().catch(() => {});
   if (!(await intake())) render();
   document.body.classList.add('ready');
   extBridge(); extAnnounce();

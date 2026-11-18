@@ -169,6 +169,7 @@ export function installTools(E) {
     rec = listen({
       onFinal: raw => { run(() => { E.restore(); insertSpoken(body, raw); }); E.updateCount(); },
       onInterim: t => bar?.set(t),
+      onStatus: t => bar?.set(t),
       onEnd: () => { rec = null; bar?.remove(); bar = null; sheetFlag('dictating', false); },
     });
     sheetFlag('dictating', true);

@@ -3,6 +3,7 @@
 // - Every attachment (photos, PDFs, recordings) is kept on the device, not only the ones opened before.
 import { store } from './store.js';
 import { sync } from './sync.js';
+import { setModelHere } from './dictate.js';
 
 export const TOOLS_CACHE = 'steward-tools-1'; // keep in step with sw.js
 const base = p => new URL(p, document.baseURI).href;
@@ -13,7 +14,12 @@ const BIG = ['vendor/tess/tesseract.min.js', 'vendor/tess/worker.min.js', 'vendo
   'vendor/tf/transformers.min.js', 'vendor/tf/ort-wasm.wasm', 'vendor/tf/ort-wasm-simd.wasm',
   'vendor/models/Xenova/all-MiniLM-L6-v2/config.json', 'vendor/models/Xenova/all-MiniLM-L6-v2/tokenizer.json', 'vendor/models/Xenova/all-MiniLM-L6-v2/tokenizer_config.json',
   'vendor/models/Xenova/all-MiniLM-L6-v2/special_tokens_map.json', 'vendor/models/Xenova/all-MiniLM-L6-v2/onnx/model_quantized.onnx'];
-export const ALL_TOOLS = [...BASIC, ...BIG];
+// Steward's own speech model, so dictation works with no signal (about 77 MB). Fetched quietly on Wi-Fi.
+const W = 'vendor/models/Xenova/whisper-base.en/';
+export const SPEECH = ['js/whisper-worker.js', 'js/listen-device.js', 'js/mic-worklet.js', 'vendor/tf/transformers.min.js', 'vendor/tf/ort-wasm.wasm', 'vendor/tf/ort-wasm-simd.wasm',
+  ...['config.json', 'generation_config.json', 'preprocessor_config.json', 'tokenizer.json', 'tokenizer_config.json', 'onnx/encoder_model_quantized.onnx', 'onnx/decoder_model_merged_quantized.onnx'].map(f => W + f)];
+const SPEECH_TOOLS = SPEECH.filter(p => p.startsWith('vendor/'));
+export const ALL_TOOLS = [...new Set([...BASIC, ...BIG, ...SPEECH_TOOLS])];
 
 const KEEP = 'steward.offline.keepFiles'; // per device; on unless turned off
 export const keepFiles = () => { try { return localStorage.getItem(KEEP) !== '0'; } catch { return true; } };
@@ -32,6 +38,39 @@ async function getTool(cache, p) {
   await cache.put(base(p), res);
   return true;
 }
+
+/** Is the whole speech model on this device? (Also tells dictate.js.) */
+export async function speechHere() {
+  let ok = false;
+  try { const c = await caches.open(TOOLS_CACHE); ok = true; for (const p of SPEECH_TOOLS) if (!(await haveTool(c, p))) { ok = false; break; } } catch { ok = false; }
+  setModelHere(ok);
+  return ok;
+}
+let speechBusy = false;
+/** Download the speech model. onStep(i, n) reports progress. */
+export async function downloadSpeech({ quiet = false } = {}) {
+  if (speechBusy || !navigator.onLine) return false;
+  speechBusy = true;
+  try {
+    try { await navigator.storage?.persist?.(); } catch {}
+    const cache = await caches.open(TOOLS_CACHE);
+    let i = 0;
+    for (const p of SPEECH_TOOLS) {
+      i++;
+      if (!quiet) tell(`Downloading the speech model ${i} of ${SPEECH_TOOLS.length}…`);
+      await getTool(cache, p);
+    }
+    // the app's own small speech files live in the app cache; a normal fetch through the service worker keeps them
+    await Promise.all(SPEECH.filter(p => p.startsWith('js/')).map(p => fetch(base(p)).catch(() => {})));
+    if (!quiet) tell('The speech model is on this device. Dictation now works with no signal.');
+    return await speechHere();
+  } catch (e) {
+    if (!quiet) tell('The speech model did not finish downloading. Try again with a stronger signal (Wi-Fi is best).');
+    return false;
+  } finally { speechBusy = false; }
+}
+// Wi-Fi (or a Mac, which has no data plan to worry about) and not Data Saver.
+const roomy = () => { const c = navigator.connection; if (c?.saveData) return false; if (c?.type) return c.type === 'wifi' || c.type === 'ethernet'; return !/Android|iPhone|iPad/i.test(navigator.userAgent); };
 
 /** What is on this device now. */
 export async function status() {
@@ -80,6 +119,7 @@ async function fill({ full, files, quiet }) {
     }
   } finally {
     state.busy = false;
+    speechHere().catch(() => {});
     tell(failed ? `${failed} item${failed === 1 ? '' : 's'} could not download. Try again with a stronger signal.` : quiet ? '' : 'Everything is on this device.');
   }
   return !failed;
@@ -95,5 +135,7 @@ export function keepSoon(ms = 8000) {
   t = setTimeout(() => {
     if (document.hidden || navigator.connection?.saveData) return;
     fill({ full: false, files: keepFiles(), quiet: true }).catch(() => {});
+    // the speech model, once, the first time there is Wi-Fi
+    speechHere().then(ok => { if (!ok && roomy()) downloadSpeech({ quiet: true }); }).catch(() => {});
   }, ms);
 }
