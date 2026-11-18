@@ -5,6 +5,7 @@ Tasks, notes and calendar in one installable web app. Works offline; syncs throu
 - Open https://csmit595.github.io/steward/ in Chrome and choose "Install".
 - No build step: plain HTML, CSS and JavaScript modules.
 - No data is stored in this repository. Everything a person enters stays on their device and in their own Google Drive ("Steward" folder).
+- 3.7: updates without reinstalling. Settings → Updates has "Check for updates now" and "Reload Steward fresh" (re-downloads the app, keeps all data); a notice shows after each update; icon links carry a version so Chrome offers to update the installed icon when the artwork changes.
 - 3.6: on the phone, swipe a note right to delete it (it goes to the trash); an Undo button shows at the bottom of the screen for 3 seconds.
 - 3.5: on the phone, swipe the plus button left to add a task (two quick haptic clicks, and it turns into "Add task"); a tap still starts a note. The plus now shows on Calendar and Settings too.
 - 3.4: on the phone the plus button starts a new note; inside a note it adds from the camera, photos or files; notes have a Share button.

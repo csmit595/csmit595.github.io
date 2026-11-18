@@ -15,7 +15,7 @@ import { semantic, enabled as semanticOn, status as semStatus } from './semantic
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 
-const VERSION = '3.6.3';
+const VERSION = '3.7.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -269,6 +269,9 @@ function viewSettings(main) {
     card('Backup', h('p', { class: 'sub' }, 'Google Drive keeps earlier versions of your data files for 30 days. You can also save a copy yourself.'),
       h('div', { class: 'row gap wrap' }, btn('Download a backup', async () => { const blob = new Blob([JSON.stringify(await store.exportAll())], { type: 'application/json' }); const a = h('a', { href: URL.createObjectURL(blob), download: `steward-backup-${today()}.json` }); a.click(); }), btn('Restore from a backup', () => restore.click()), restore)),
     card('Appearance', h('label', { class: 'inline' }, 'Theme ', theme), h('label', { class: 'inline' }, 'Open Steward on ', home)),
+    card('Updates', h('p', { class: 'sub' }, 'Steward updates itself: it checks whenever you come back to it and switches to the new version on its own. You never need to uninstall it to get an update.'),
+      h('div', { class: 'row gap wrap' }, btn('Check for updates now', checkForUpdate, 'primary'), btn('Reload Steward fresh', repairApp)),
+      h('p', { class: 'sub' }, '“Reload Steward fresh” is for when something looks stuck on an old version. It downloads the app again; your tasks, notes, documents and settings stay right where they are.')),
     card('Install', installEvt ? btn('Install Steward on this device', async () => { installEvt.prompt(); installEvt = null; }, 'primary') : null,
       h('p', { class: 'sub' }, 'Mac (Chrome): click the install icon at the right of the address bar, or the three-dot menu, then "Install Steward". Android (Chrome): three-dot menu, then "Add to Home screen" and "Install".')),
     h('p', { class: 'sub center' }, `Steward ${VERSION}`)));
@@ -531,10 +534,11 @@ function fabGestures() {
 
 // A new version of Steward was published: check whenever the app comes back to the screen, and when the new
 // version takes over, reload into it right away (or the next time Steward is opened, if you are typing).
-let hadController = !!navigator.serviceWorker?.controller, pendingReload = false;
+let hadController = !!navigator.serviceWorker?.controller, pendingReload = false, swReg = null;
 function safeToReload() { const a = document.activeElement; return !document.querySelector('.modal') && !(a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))); }
 async function reloadIntoUpdate() { pendingReload = false; try { await store.flush(); } catch {} location.reload(); }
 function watchForUpdates(reg) {
+  swReg = reg;
   const check = () => reg.update().catch(() => {});
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
@@ -548,8 +552,29 @@ function watchForUpdates(reg) {
   });
 }
 
+async function checkForUpdate() {
+  const reg = swReg || await navigator.serviceWorker?.getRegistration().catch(() => null);
+  if (!reg) return toast('Updates work once Steward has been opened with a connection.');
+  if (!navigator.onLine) return toast('No connection right now. Steward will check again when you are back online.');
+  toast('Checking for a new version…', null, null, 2500);
+  try { await reg.update(); } catch { return toast('Could not reach the internet to check. Try again in a minute.'); }
+  if (reg.installing || reg.waiting) { pendingReload = false; toast('Downloading the new version. Steward will restart in a moment.', null, null, 8000); reg.waiting?.postMessage({ steward: 'skip-waiting' }); }
+  else toast(`You have the newest version (${VERSION}).`);
+}
+// Throws away the saved copy of the app (never your data) and loads it fresh from the internet.
+async function repairApp() {
+  if (!navigator.onLine) return toast('Connect to the internet first, so Steward can download itself again.');
+  if (!(await confirmDlg('Download Steward again? Your tasks, notes, documents and settings are not touched; only the saved copy of the app itself is replaced.', 'Reload fresh', false))) return;
+  try { await store.flush(); } catch {}
+  try { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } catch {}
+  try { for (const k of await caches.keys()) if (k.startsWith('steward-') && k !== 'steward-share') await caches.delete(k); } catch {}
+  location.reload();
+}
+
 async function start() {
   applyTheme();
+  const seen = localStorage.getItem('steward.seenVersion');
+  if (seen !== VERSION) { localStorage.setItem('steward.seenVersion', VERSION); if (seen) setTimeout(() => toast(`Steward updated to ${VERSION}`), 1200); }
   await store.init();
   M.repairTasks();
   settings.adoptLocal();
