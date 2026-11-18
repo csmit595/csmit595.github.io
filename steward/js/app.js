@@ -17,7 +17,7 @@ import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 import { offerMove } from './move.js';
 
-const VERSION = '3.10.0';
+const VERSION = '3.10.1';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 

@@ -204,6 +204,17 @@ export const sync = {
   background: false, onStale: null,
   async run(interactive = false) {
     if (this.background) return this._run(interactive);
+    // Google's sign-in window can wait for the person indefinitely (or never come back, on phones), so it happens
+    // BEFORE taking the sync lock: other Steward windows must never be stuck waiting on it.
+    if (interactive && this.configured() && navigator.onLine && (!this.hasToken() || (this.secret() && !ls.get('refresh')))) {
+      try { await this.token(true); }
+      catch (e) {
+        console.warn('sign-in', e);
+        if (e.message === 'offline' || e instanceof TypeError) this.set('offline', 'No signal. Changes are saved on this device and will sync later.');
+        else { this.set('auth', 'Google sign-in did not finish. Tap to try again.'); this.armGesture(); }
+        return;
+      }
+    }
     const go = async () => {
       if (await backgroundIsNewer()) { this.onStale?.(); return; }
       await this._run(interactive);
