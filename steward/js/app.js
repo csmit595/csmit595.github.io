@@ -16,7 +16,7 @@ import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 
-const VERSION = '3.10.3';
+const VERSION = '3.9.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -625,7 +625,7 @@ async function start() {
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }
   await sync.loadCachedEvents();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    // updateViaCache 'none': the phone always asks the server for a fresh sw.js (and its imports) instead of a saved copy.
+    // updateViaCache 'none': the phone always asks GitHub for a fresh sw.js (and its imports) instead of a saved copy.
     navigator.serviceWorker.register('sw.js', { type: 'module', updateViaCache: 'none' }).then(reg => { watchForUpdates(reg); return setupBackground(reg); }).catch(e => console.warn('sw', e));
     // The background sync asks an open, visible Steward to sync itself rather than doing it behind its back.
     navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); if (e.data?.steward === 'open-task' && store.get('tasks', e.data.id)) openTask(e.data.id); });
@@ -667,9 +667,6 @@ async function start() {
   document.body.classList.add('ready');
   extBridge(); extAnnounce();
   if (sync.connected()) sync.run();
-  // Load Google's sign-in script now, so tapping Connect opens Google's window straight away: on phones a window
-  // opened after a slow download no longer counts as the tap's, and Chrome blocks it as a pop-up.
-  if (sync.configured() && navigator.onLine && !sync.staysSignedIn()) sync.loadGis().catch(() => {});
   window.addEventListener('online', () => sync.run());
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) { backgroundIsNewer().then(b => { if (b || Date.now() - sync.lastSync > 60000) sync.run(); }); checkReminders(); schedule(); return; }
