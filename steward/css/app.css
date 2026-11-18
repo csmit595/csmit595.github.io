@@ -614,6 +614,7 @@ h1 { font-size: 30px; }
 
 /* task details */
 .modal.task-modal { width: min(880px, 100%); }
+.td-savebar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -4px 0 10px; padding: 6px 0 8px; background: var(--panel); border-bottom: 1px solid var(--line2); }
 .td-layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; grid-template-areas: "head side" "rest side"; grid-template-rows: auto 1fr; gap: 0 22px; align-items: start; }
 .td-head { grid-area: head; } .td-side { grid-area: side; } .td-rest { grid-area: rest; }
 .td-side { background: var(--bg); border: 1px solid var(--line2); border-radius: var(--r); padding: 6px 12px; display: grid; grid-template-columns: minmax(0, 1fr); }

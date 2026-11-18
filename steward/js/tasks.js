@@ -489,7 +489,21 @@ export function openTask(id) {
         prop('tag', 'Labels', labels),
         prop('bell', 'Reminders', remList, remAdd),
         prop('note', 'Linked note', note ? h('a', { class: 'rowlink', href: '#/note/' + note.id, onclick: close }, icon('note', 16), note.title || 'Untitled note') : btn('Create a linked note', () => { const n = M.addNote({ title: t.content, notebook: 'Notes' }); set({ noteId: n.id }); close(); go('#/note/' + n.id); }, 'tiny', 'note')));
-      fill(body, h('div', { class: 'td-layout' },
+      // Save: commit anything still being typed (name, details, date words, a comment, a sub-task, a label), then close.
+      // pointerdown keeps the cursor where it is, so a half-typed box is not blurred and redrawn before the tap lands.
+      const save = () => {
+        const c = content.value.trim(); if (c && c !== t.content) set({ content: c });
+        if (descr.value !== (t.description || '')) set({ description: descr.value });
+        const dv = dueText.value.trim(), was = t.due ? describeDue(t.due).replace(' ↻ ', ' ') : '';
+        if (dv !== was.trim()) { if (!dv) set({ due: null }); else { const d = parseDue(dv); if (d) set({ due: d.due }); else { toast("I couldn't read that date"); return; } } }
+        if (labelIn.value.trim()) { const n = labelIn.value.trim().replace(/^@/, '').replace(/\s+/g, '-'); M.ensureLabels([n]); set({ labels: [...new Set([...(get().labels || []), n])] }); }
+        if (subIn.value.trim()) { const p = parseQuickAdd(subIn.value, M.ctx()); M.addTask({ ...p, content: p.content || subIn.value.trim(), projectId: t.projectId, sectionId: t.sectionId, parentId: id }); }
+        if (cIn.value.trim()) store.put('comments', { taskId: id, text: cIn.value.trim() });
+        close(); toast('Saved');
+      };
+      const saveBtn = btn('Save', save, 'primary', 'check');
+      saveBtn.addEventListener('pointerdown', e => e.preventDefault());
+      fill(body, h('div', { class: 'td-savebar' }, h('span', { class: 'sub' }, 'Changes save as you go — tap Save to finish.'), saveBtn), h('div', { class: 'td-layout' },
         h('div', { class: 'td-head' },
         parent && h('button', { class: 'crumb', onclick: () => { close(); openTask(parent.id); } }, icon('back', 14), parent.content),
         h('div', { class: 'td-top' }, h('button', { class: `check big pri${t.priority || 4}${t.completedAt ? ' on' : ''}`, 'aria-label': 'Complete', onclick: () => { if (t.completedAt) { M.uncompleteTask(id); draw(); } else { toggle(t); close(); } } }, icon('check', 15)), content),
