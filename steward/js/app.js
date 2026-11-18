@@ -5,7 +5,7 @@ import * as M from './model.js';
 import { sync } from './sync.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpen, isMobile, PHONE_MQ } from './ui.js';
 import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from './tasks.js';
-import { renderNotes, leaveNotes, newNote, createClip, importEnex } from './notes.js';
+import { renderNotes, leaveNotes, newNote, noteAddMenu, createClip, importEnex } from './notes.js';
 import { renderCalendar } from './calendar.js';
 import { renderWriting, leaveWriting, liveDocs } from './writing.js';
 import { compileFilter } from './filters.js';
@@ -15,7 +15,7 @@ import { semantic, enabled as semanticOn, status as semStatus } from './semantic
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 
-const VERSION = '3.3.0';
+const VERSION = '3.4.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -33,6 +33,7 @@ function render(info = {}) {
   const key = location.hash;
   drawSidebar(route);
   document.body.dataset.view = route.view;
+  $('#fab').setAttribute('aria-label', route.view === 'note' ? 'Add a photo or file to this note' : 'New note');
   if (NOTE_VIEWS.includes(route.view)) { leaveWriting(); renderNotes(route, main, info); lastRouteKey = key; return; }
   if (WRITING_VIEWS.includes(route.view)) { leaveNotes(); if (route.view !== 'doc' && key === lastRouteKey && !info.remote && main.children.length) return; renderWriting(route, main, info); lastRouteKey = key; return; }
   leaveWriting();
@@ -510,7 +511,9 @@ async function start() {
     store.emit({ remote: true, events: true });
   };
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (parseRoute().view === 'settings') render({ force: true }); });
-  $('#fab').addEventListener('click', () => (NOTE_VIEWS.includes(parseRoute().view) ? newNote() : openQuickAdd(defaultsForRoute())));
+  // Phone plus button: starts a new note; inside a note it adds a photo or file. (Tasks: the "Add task" rows and the menu.)
+  $('#fab').addEventListener('pointerdown', e => { if (parseRoute().view === 'note') e.preventDefault(); }); // keep the keyboard and cursor where they are
+  $('#fab').addEventListener('click', e => (parseRoute().view === 'note' ? noteAddMenu(e.currentTarget) : newNote()));
   $('#menu-btn').addEventListener('click', e => { e.preventDefault(); document.body.classList.toggle('drawer'); });
   $('#scrim').addEventListener('click', closeDrawer);
   try { if (localStorage.getItem('steward.sideHidden')) document.body.classList.add('side-hidden'); } catch {}

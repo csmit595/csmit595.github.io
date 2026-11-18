@@ -401,7 +401,7 @@ body.side-hidden .writer .wbar { padding-left: 52px; }
   #tabs a { display: grid; justify-items: center; gap: 1px; padding: 7px 0 6px; font-size: 10.5px; color: var(--muted); text-decoration: none; }
   #tabs a.on { color: var(--accent); font-weight: 650; }
   #fab { display: grid; place-items: center; position: fixed; right: 16px; bottom: calc(70px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 18px; border: 0; background: var(--accent); color: var(--on-accent); box-shadow: 0 6px 18px rgba(20, 40, 24, .35); z-index: 30; }
-  body[data-view=note] #fab, body[data-view=calendar] #fab, body[data-view=settings] #fab { display: none; }
+  body[data-view=calendar] #fab, body[data-view=settings] #fab { display: none; }
   #toasts { bottom: calc(76px + env(safe-area-inset-bottom)); }
   .only-mobile { display: inline-grid; } .only-desktop { display: none !important; }
   body.side-hidden #side { display: block; } body.side-hidden #side-show { display: none; }
@@ -453,6 +453,8 @@ body.side-hidden .writer .wbar { padding-left: 52px; }
   /* keyboard open: give the screen to what you're typing */
   body:has(:is(input, textarea, [contenteditable=true], [contenteditable=""]):focus) :is(#tabs, #fab) { display: none; }
   body:has(:is(input, textarea, [contenteditable=true], [contenteditable=""]):focus) #main { padding-bottom: 24px; }
+  /* in a note the plus stays reachable above the keyboard */
+  body[data-view=note]:has(:is(.etitle, .ebody):focus) #fab { display: grid; bottom: calc(14px + env(safe-area-inset-bottom)); }
   .modal { max-height: 94dvh; }
 }
 /* phone turned sideways: short screen, so tighten vertical space */

@@ -123,6 +123,33 @@ export async function filesToAttachments(files) {
   return out;
 }
 
+/** A note's words as plain text (for sharing): keeps line breaks, list marks and checkboxes; leaves attachments out. */
+function plainText(root) {
+  let out = '';
+  const BLOCK = /^(DIV|P|H[1-6]|LI|BLOCKQUOTE|PRE|TR|UL|OL|TABLE|HR)$/;
+  const walk = n => {
+    for (const c of n.childNodes) {
+      if (c.nodeType === 3) { out += c.data; continue; }
+      if (c.nodeType !== 1) continue;
+      const t = c.tagName;
+      if (t === 'BR') { out += '\n'; continue; }
+      if (t === 'IMG' || t === 'AUDIO' || c.classList.contains('att')) continue;
+      const block = BLOCK.test(t);
+      if (block && out && !out.endsWith('\n')) out += '\n';
+      if (t === 'LI') { const p = c.parentElement; out += p.classList.contains('todo') ? (c.hasAttribute('data-checked') ? '☑ ' : '☐ ') : p.tagName === 'OL' ? ([...p.children].indexOf(c) + 1) + '. ' : '• '; }
+      if (t === 'HR') out += '———';
+      walk(c);
+      if (t === 'A') { const href = c.getAttribute('href') || ''; if (/^https?:/i.test(href) && c.textContent.trim() !== href) out += ` (${href})`; }
+      if (t === 'TD' || t === 'TH') out += '\t';
+      if (block && !out.endsWith('\n')) out += '\n';
+    }
+  };
+  walk(root);
+  return out.replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+/** The phone's plus button, inside a note: add from the camera, the photo library or files. */
+export function noteAddMenu(anchor) { mounted?.addMenu?.(anchor); }
+
 // ---- editor ------------------------------------------------------------------------
 function mountEditor(pane, id) {
   leaveNotes(id);
@@ -170,6 +197,30 @@ function mountEditor(pane, id) {
   });
   const fileIn = h('input', { type: 'file', multiple: true, hidden: true, onchange: () => { attach([...fileIn.files]); fileIn.value = ''; } });
   const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true, onchange: () => { attach([...camIn.files]); camIn.value = ''; } });
+  const photoIn = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onchange: () => { attach([...photoIn.files]); photoIn.value = ''; } });
+  const addMenu = anchor => {
+    if (trashed) { toast('Restore this note to add to it'); return; }
+    keepSel();
+    menu(anchor, [
+      { label: 'Camera', icon: 'camera', onclick: () => camIn.click() },
+      { label: 'Photos', icon: 'image', onclick: () => photoIn.click() },
+      { label: 'Files', icon: 'clip', onclick: () => fileIn.click() },
+    ]);
+  };
+  const share = async () => {
+    save(true);
+    const n = get(); if (!n) return;
+    const name = n.title || 'Untitled', text = plainText(body);
+    const data = { title: name, text: (n.title ? n.title + '\n\n' : '') + text };
+    if (navigator.share) {
+      const files = [];
+      for (const a of n.attachments || []) { const b = await sync.blob(a).catch(() => null); if (b) files.push(new File([b], a.name || 'file', { type: a.mime || b.type || 'application/octet-stream' })); }
+      const tries = files.length && navigator.canShare?.({ ...data, files }) ? [{ ...data, files }, data] : [data];
+      for (const d of tries) { try { await navigator.share(d); return; } catch (e) { if (e?.name === 'AbortError') return; } }
+    }
+    try { await navigator.clipboard.writeText(data.text); toast('Note copied. Paste it into a text, email or anywhere else.'); }
+    catch { toast('This browser could not share or copy the note'); }
+  };
   let rec = null;
   const recBtn = iconBtn('mic', 'Record audio', async () => {
     if (rec) { rec.stop(); return; }
@@ -241,12 +292,12 @@ function mountEditor(pane, id) {
   ]); };
   fill(pane, 
     h('div', { class: 'ebar' }, iconBtn('back', 'Back to notes', () => { save(true); go(scope.kind === 'nb' ? '#/notes/nb/' + scope.id : scope.kind === 'tag' ? '#/notes/tag/' + encodeURIComponent(scope.id) : scope.kind === 'trash' ? '#/trash' : '#/notes'); }, 'only-mobile'),
-      icon('book', 15), nbSel, h('span', { class: 'grow' }), h('span', { class: 'sub saved' }, 'Edited ' + new Date(n0.updatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), iconBtn('more', 'Note options', more)),
+      icon('book', 15), nbSel, h('span', { class: 'grow' }), h('span', { class: 'sub saved' }, 'Edited ' + new Date(n0.updatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), iconBtn('share', 'Share this note', share, 'eshare'), iconBtn('more', 'Note options', more)),
     trashed && h('div', { class: 'banner' }, 'This note is in the trash.'),
-    !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn);
+    !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn, photoIn);
   hydrate(body, n0.attachments, urls);
-  mounted = { id, save, urls, refreshTasks };
-  if (!n0.title && !trashed && !isMobile()) title.focus();
+  mounted = { id, save, urls, refreshTasks, addMenu };
+  if (!n0.title && !trashed && (!isMobile() || fresh.has(id))) title.focus();
 }
 window.addEventListener('pagehide', () => mounted?.save(true));
 document.addEventListener('visibilitychange', () => { if (document.hidden) { mounted?.save(true); store.flush().catch(() => {}); } });
