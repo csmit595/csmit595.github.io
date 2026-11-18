@@ -201,11 +201,13 @@ export const sync = {
       let j; try { j = await r.json(); } catch { j = null; }
       if (!r.ok || !j) { const e = new Error(`The Steward helper said ${r.status}`); e.status = r.status >= 400 ? r.status : 502; e.helper = true; if (attempt < 1 && r.status >= 500) { await wait(1500); continue; } throw e; }
       if (j.ok) return j;
-      if (j.error === 'auth' && attempt === 0) { ls.del('token'); if (this.staysSignedIn()) continue; throw new Error('auth'); }
+      // The helper did not accept this device's Google pass. That is the helper's trouble, not the sign-in's: Drive
+      // itself says so (401) when a pass is truly no good. Never throw the pass away over it.
       if (j.error === 'busy' && attempt < 2) { await wait(3000); continue; }
-      const e = new Error('Steward helper: ' + j.error); e.helper = true; throw e;
+      const e = new Error('Steward helper: ' + (j.error === 'auth' ? 'it did not recognise this device\'s sign-in' : j.error)); e.helper = true; throw e;
     }
   },
+  helperTrouble: '',
 
   // ---- Drive helpers -----------------------------------------------------------
   async find(name, parent, folder) {
@@ -305,14 +307,19 @@ export const sync = {
       };
       await syncAll();
       // 2. Now apply Claude's changes, and send them straight back up so the other device sees them.
-      if (await this.inbox(d)) await syncAll();
+      //    The helper hands those over. If it cannot be reached, tasks and notes must still sync: note it and go on.
+      this.helperTrouble = '';
+      let applied = 0;
+      try { applied = await this.inbox(d); }
+      catch (e) { if (e.message === 'auth' || e.message === 'offline') throw e; console.warn('helper', e); this.helperTrouble = e.helper ? e.message : 'The Steward helper could not be reached'; }
+      if (applied) await syncAll();
       // 3. Photos, PDFs and recordings last, one at a time: a file that will not upload never holds up tasks and notes.
       if (await this.pushAttachments(d)) wrote = (await this.syncLibrary(d)) || wrote;
       if (wrote || !d.files.summary) await this.writeSummary(d);
       ls.set('drive', d);
       await this.syncPush().catch(e => { if (e.message === 'auth') throw e; console.warn('notifications', e); });
       // (The backup "Steward Reminders" calendar is kept by the helper now: Steward itself has no Calendar access.)
-      await this.refreshEvents().catch(e => { if (e.message === 'auth') throw e; console.warn('calendar', e); });
+      await this.refreshEvents().catch(e => { if (e.message === 'auth') throw e; console.warn('calendar', e); if (this.helperUrl() && !this.helperTrouble) this.helperTrouble = e.helper ? e.message : 'The Steward helper could not be reached'; });
       await this.shareSecret(d).catch(e => { if (e.message === 'auth') throw e; console.warn('login file', e); });
       ls.set('drive', d);
       this.lastSync = Date.now(); ls.set('lastSync', this.lastSync);
