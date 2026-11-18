@@ -15,7 +15,7 @@ import { semantic, enabled as semanticOn, status as semStatus } from './semantic
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 
-const VERSION = '3.5.0';
+const VERSION = '3.5.1';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -490,7 +490,7 @@ function bgLine() {
 }
 
 // Phone plus button. Tap: a new note (inside a note: add a photo or file). Swipe it left: it turns into
-// "Add task" with a double buzz; let go there to open Add task. Slide back before letting go to cancel.
+// "Add task" with two quick clicks; let go there to open Add task. Slide back before letting go to cancel.
 function fabGestures() {
   const fab = $('#fab'), ARM = 44, MAX = 96;
   let g = null, swallowClick = false;
@@ -512,7 +512,7 @@ function fabGestures() {
     const armed = dx < -ARM && Math.abs(dy) < 70;
     if (armed !== g.armed) {
       g.armed = armed; fab.classList.toggle('task-mode', armed);
-      buzz(armed ? [18, 45, 18] : 8); // two pulses: you're on "Add task"; one tiny tick: back to note
+      buzz(armed ? [7, 70, 7] : 5); // two quick clicks: you're on "Add task"; one tiny tick: back to note
     }
   });
   const end = e => {
