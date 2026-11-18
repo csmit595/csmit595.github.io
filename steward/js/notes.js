@@ -124,7 +124,7 @@ function swipeDelete(row, n) {
       setTimeout(() => {
         const open = location.hash === '#/note/' + n.id;
         store.patch('notes', n.id, { trashed: true });
-        toast(`“${(n.title || 'Untitled').slice(0, 40)}” moved to trash`, 'Undo', () => store.patch('notes', n.id, { trashed: false }), 8000);
+        toast(`“${(n.title || 'Untitled').slice(0, 40)}” moved to trash`, 'Undo', () => store.patch('notes', n.id, { trashed: false }), 3000);
         if (open) go('#/notes');
       }, 180);
     };
