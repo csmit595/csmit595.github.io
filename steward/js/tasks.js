@@ -7,6 +7,7 @@ import { compileFilter } from './filters.js';
 import { planCard, planLine } from './dayplan.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu } from './ui.js';
 import { canDictate, listen, spokenTask, splitTasks, saysStop, withoutStop } from './dictate.js';
+import { orgPanel, readOrg, mergeList, hasArea, projectIdByName, orgOn } from './organize.js';
 
 const go = hash => { location.hash = hash; };
 const byDue = (a, b) => ((a.due?.date || '9999') + (a.due?.time || '99')).localeCompare((b.due?.date || '9999') + (b.due?.time || '99')) || (a.priority || 4) - (b.priority || 4) || M.byOrder(a, b);
@@ -381,6 +382,9 @@ export function openQuickAdd(defaults = {}) {
     const desc = h('textarea', { class: 'field', placeholder: 'Details (optional)', rows: 2, hidden: true });
     const chips = h('div', { class: 'chips' });
     let picked = defaults.projectId || 'inbox';
+    // Suggested organization (area, tags, customer promise, project): filed only when Confirm is pressed.
+    const org = orgPanel({ kind: 'task', text: () => [parse().content, desc.value].filter(Boolean).join('. '),
+      current: () => { const p = parse(); const pid = p.projectId || (picked !== 'inbox' ? picked : null); return readOrg([...(defaults.labels || []), ...p.labels], { project: pid ? M.projectName(pid).toLowerCase() : null }); } });
     const proj = projectSelect(picked, v => { picked = v; });
     proj.classList.add('slim', 'qa-proj'); proj.setAttribute('aria-label', 'Project');
     // One-tap pickers. Words typed in the name still win; these fill in what the words leave out.
@@ -414,16 +418,23 @@ export function openQuickAdd(defaults = {}) {
       for (const l of defaults.labels || []) list.push(h('span', { class: 'chip' }, '@' + l));
       fill(chips, list);
       if (p.projectId) proj.value = picked = p.projectId;
+      org.refresh();
     };
     const add = (o = {}) => {
       const p = parse();
       if (!p.content) { if (!o.quiet) input.focus(); return false; }
       if (p.repeatProblem && !input.dataset.warned) { input.dataset.warned = '1'; toast('Steward could not read that repeat. Press Add again to save it without repeating, or reword it (e.g. "every first mon").', null, null, 7000); return; }
       delete input.dataset.warned;
-      const projectId = p.projectId || picked;
+      let projectId = p.projectId || picked;
+      let labels = [...new Set([...(defaults.labels || []), ...p.labels])];
+      const fin = org.confirmed() ? org.final() : null;
+      if (fin) { labels = mergeList(labels, fin, org.removedTags()); if (fin.project && projectId === 'inbox' && !defaults.parentId) projectId = projectIdByName(fin.project) || projectId; }
+      const learnText = [p.content, desc.value.trim()].filter(Boolean).join('. ');
       M.addTask({ ...p, projectId, sectionId: p.sectionId || (projectId === (defaults.projectId || 'inbox') ? defaults.sectionId : null), due: p.due || pick.due || null,
         priority: p.priority !== 4 ? p.priority : (pick.priority || 4), duration: p.duration || pick.duration || null,
-        deadline: p.deadline || defaults.deadline || null, parentId: defaults.parentId || null, labels: [...new Set([...(defaults.labels || []), ...p.labels])], description: desc.value.trim(), noteId: defaults.noteId || null });
+        deadline: p.deadline || defaults.deadline || null, parentId: defaults.parentId || null, labels, description: desc.value.trim(), noteId: defaults.noteId || null });
+      if (fin) org.commit(learnText);
+      org.reset();
       input.value = ''; desc.value = ''; keepDate = false; pick = { due: defaults.due || null, priority: null, duration: null }; typed = ''; heard = ''; heardNow = ''; added++;
       drawTools(); refresh(); toast(dict ? `Task added (${added}) · keep talking` : 'Task added'); if (!o.quiet && !dict) input.focus();
       return true;
@@ -463,7 +474,8 @@ export function openQuickAdd(defaults = {}) {
     input.addEventListener('input', refresh);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
     refresh();
-    return h('div', { class: 'form qa-form' }, h('div', { class: 'qa-line' }, input, micBtn), dictLine, chips, toolbar, desc,
+    desc.addEventListener('input', () => org.refresh());
+    return h('div', { class: 'form qa-form' }, h('div', { class: 'qa-line' }, input, micBtn), dictLine, chips, org.el, toolbar, desc,
       h('div', { class: 'row between qa-foot' },
         h('details', { class: 'qa-help' }, h('summary', null, 'Typing shortcuts'),
           h('p', { class: 'hint' }, 'Write it the way you would say it: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@promise'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline. If a word is mistaken for a date, tap the date chip to keep it in the name.')),
@@ -509,6 +521,16 @@ export function openTask(id) {
       const remAdd = btn('Add reminder', e => menu(e.currentTarget, [...REM_OPTS.map(([before, label]) => ({ label, onclick: () => { set({ reminders: [...(t.reminders || []), { before }] }); draw(); } })),
         { label: 'Pick a date and time…', onclick: () => modal(c2 => { const dt = h('input', { type: 'datetime-local', class: 'field', autofocus: true }); return h('div', null, dt, h('div', { class: 'row end' }, btn('Cancel', c2), btn('Add', () => { if (dt.value) { set({ reminders: [...(t.reminders || []), { at: dt.value }] }); c2(); draw(); } }, 'primary'))); }, { title: 'Remind me at', cls: 'small' }) }]), 'tiny', 'bell');
       const note = t.noteId && store.get('notes', t.noteId);
+      // Organize: suggestions for a task not yet filed under an area; one Confirm files it and teaches Steward.
+      const org = orgPanel({ kind: 'task', text: () => [get()?.content, get()?.description].filter(Boolean).join('. '),
+        current: () => { const x = get() || t; return readOrg(x.labels, { project: x.projectId && x.projectId !== 'inbox' ? M.projectName(x.projectId).toLowerCase() : null }); },
+        apply: (fin, removed) => {
+          const x = get(); if (!x) return;
+          const f = { labels: mergeList(x.labels, fin, removed) };
+          if (fin.project && x.projectId === 'inbox' && !x.parentId) { const pid = projectIdByName(fin.project); if (pid) { f.projectId = pid; f.sectionId = null; } }
+          M.ensureLabels(f.labels); set(f); setTimeout(draw, 0);
+        } });
+      if (hasArea(t.labels)) org.showDone(readOrg(t.labels)); else org.refresh(true);
       const kids = M.childrenOf(id).sort(M.byOrder);
       const subIn = h('input', { class: 'field', placeholder: 'Add a sub-task and press Enter', onkeydown: e => { if (e.key === 'Enter' && subIn.value.trim()) { const p = parseQuickAdd(subIn.value, M.ctx()); M.addTask({ ...p, content: p.content || subIn.value.trim(), projectId: t.projectId, sectionId: t.sectionId, parentId: id }); draw(); body.querySelector('.sub-in')?.focus(); } } });
       subIn.classList.add('sub-in');
@@ -517,6 +539,7 @@ export function openTask(id) {
       const parent = t.parentId && store.get('tasks', t.parentId);
       const prop = (ic, label, ...kids) => h('div', { class: 'tprop' }, h('div', { class: 'tprop-l' }, icon(ic, 14), label), h('div', { class: 'tprop-v' }, kids));
       const side = h('aside', { class: 'td-side' },
+        orgOn() && prop('tag', 'Organize', org.el),
         prop('inbox', 'Project', projectSelect(t.projectId, v => { set({ projectId: v, sectionId: null }); for (const k of M.childrenOf(id)) store.patch('tasks', k.id, { projectId: v, sectionId: null }, { silent: true }); draw(); }), sections.length > 0 && secSel),
         prop('upcoming', 'Date', dueText, h('div', { class: 'row wrap seg-chips' }, quick('Today', today()), quick('Tomorrow', addDays(today(), 1)), quick('Next week', nextDow(1)), t.due && btn('None', () => { set({ due: null }); draw(); }, 'tiny')), h('div', { class: 'row gap dt-row' }, dateIn, timeIn)),
         prop('flag', 'Deadline', h('div', { class: 'row gap' }, deadlineIn, t.deadline && btn('Clear', () => { set({ deadline: null }); draw(); }, 'tiny'))),

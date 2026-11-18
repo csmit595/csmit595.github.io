@@ -13,7 +13,8 @@ const tell = () => { for (const f of listeners) f(); };
 
 export const enabled = () => { const v = settings.get('semantic'); return v == null ? window.matchMedia('(pointer: fine)').matches : !!v; };
 
-function embed(texts) {
+/** Turn texts into meaning vectors with the on-device model (also used by the organizer). */
+export function embed(texts) {
   if (!worker) {
     worker = new Worker(new URL('./semantic-worker.js', import.meta.url), { type: 'module' });
     worker.onmessage = e => { const w = waiting.get(e.data.id); waiting.delete(e.data.id); if (!w) return; e.data.error ? w.rej(new Error(e.data.error)) : w.res(e.data.vecs); };
@@ -36,7 +37,7 @@ function chunksOf(d) {
 }
 async function loadVectors() {
   if (loaded) return; loaded = true;
-  for (const [k, v] of await store.vecAll()) vectors.set(k, v);
+  for (const [k, v] of await store.vecAll()) if (!String(k).startsWith('org:')) vectors.set(k, v); // org: the organizer's own
 }
 
 /** Keep the meaning index up to date in the background. */

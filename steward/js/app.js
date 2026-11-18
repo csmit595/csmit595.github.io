@@ -16,8 +16,9 @@ import { semantic, enabled as semanticOn, status as semStatus } from './semantic
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
+import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.2.0';
+const VERSION = '4.3.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -181,6 +182,41 @@ async function drawMeaning(query, have, row) {
 const snippet = (text, w) => { const i = text.toLowerCase().indexOf(w); return text.slice(Math.max(0, i - 30), i + 60).replace(/\s+/g, ' ').trim(); };
 
 // ---- settings --------------------------------------------------------------------------------
+// Settings → Organize automatically: on/off, the language model, what it has learned, and the names it knows.
+function orgCard(card, again) {
+  const on = h('input', { type: 'checkbox', checked: orgOn(), onchange: () => { settings.set('orgOn', on.checked); again(); } });
+  const mdl = h('input', { type: 'checkbox', checked: orgModelOn(), onchange: () => settings.set('orgModel', mdl.checked) });
+  const words = store.all('orgwords').sort((a, b) => a.word.localeCompare(b.word));
+  const areaSel = (v = '') => { const s = h('select', { class: 'field slim', 'aria-label': 'Area' }, h('option', { value: '' }, 'No area'), ORG_AREAS.map(a => h('option', { value: a.id }, a.name))); s.value = v || ''; return s; };
+  const w = h('input', { class: 'field', placeholder: 'Name or word, e.g. a customer or family member' });
+  const a = areaSel(), t = h('input', { class: 'field', placeholder: 'Tags it brings (comma between), optional' });
+  const addWord = () => {
+    const word = w.value.trim(); if (word.length < 2) return toast('Type the name or word first');
+    const tags = t.value.split(',').map(tagSlug).filter(Boolean);
+    const cur = store.all('orgwords').find(x => x.word.toLowerCase() === word.toLowerCase());
+    store.put('orgwords', { ...(cur || {}), word, area: a.value || null, tags });
+    again();
+  };
+  const n = lessonCount();
+  return card('Organize automatically',
+    h('p', { class: 'sub' }, 'As you write a task or note, Steward suggests an area (CS Outdoors, Seminary, Church, Home/Family, Personal), finer tags, “customer promise”, and a project or notebook. Nothing is filed until you press ', h('b', null, 'Confirm'), '. Every confirmation, and every suggestion you take off, teaches it. It all runs on this device.'),
+    h('label', { class: 'inline block' }, on, h('span', { class: 'grow' }, 'Suggest organization for new tasks and notes')),
+    h('label', { class: 'inline block' }, mdl, h('span', { class: 'grow' }, 'Also compare by meaning with the on-device language model (the same one as Search by meaning; works offline once downloaded)')),
+    h('p', { class: 'sub' }, n ? `Learned from ${n} confirmation${n === 1 ? '' : 's'}. ` : 'Nothing learned yet: it starts from built-in rules and gets better with each Confirm. ',
+      'What it learns is saved in your Google Drive (Steward/steward-organize.json) and synced, so your phone and Mac make the same suggestions.'),
+    h('details', null, h('summary', null, `Names and words it knows (${words.length})`),
+      h('p', { class: 'sub' }, 'People, customers and places that always mean an area: “Elise” → Home/Family, a customer’s name → CS Outdoors. Synced to all your devices.'),
+      h('div', { class: 'orgwords' }, words.map(x => h('div', { class: 'row gap orgword' },
+        h('b', null, x.word), h('span', { class: 'sub grow' }, [x.area && ORG_AREAS.find(r => r.id === x.area)?.name, ...(x.tags || []).map(tagName)].filter(Boolean).join(' · ') || '—'),
+        h('button', { class: 'linkbtn', onclick: () => { store.remove('orgwords', x.id); again(); } }, 'Remove')))),
+      h('div', { class: 'row gap wrap' }, w, a, t, btn('Add', addWord, 'primary'))),
+    h('div', { class: 'row gap wrap' }, n > 0 && btn('Forget what it has learned', async () => {
+      if (!(await confirmDlg(`Forget all ${n} confirmations on every device? Suggestions go back to the built-in rules. Names and words it knows are kept.`, 'Forget'))) return;
+      for (const l of store.all('lessons')) store.remove('lessons', l.id, { silent: true });
+      store.emit({ type: 'lessons', local: true }); toast('Forgotten'); again();
+    }, 'danger')));
+}
+
 function viewSettings(main) {
   const again = () => render({ force: true });
   const card = (title, ...kids) => h('section', { class: 'card' }, h('h3', null, title), kids);
@@ -266,6 +302,7 @@ function viewSettings(main) {
     card('Search by meaning', h('label', { class: 'inline' }, semBox, h('span', { class: 'grow' }, 'Find notes and tasks by what they are about, not only the exact words')),
       h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
       h('p', { class: 'sub', id: 'sem-line' }, semLine())),
+    orgCard(card, again),
     card('Clip from the web and other apps',
       h('p', null, h('b', null, 'On your Mac, best: the Steward Clipper for Chrome. '), 'Clip the article, text only, the full page, a selection, a bookmark, a screenshot or a PDF, choose the notebook and tags, and add a note to yourself. It also adds “Save to Steward” to the right-click menu, and Option+Shift+S opens it.'),
       h('a', { class: 'btn primary', href: 'clipper/steward-clipper.zip', download: 'steward-clipper.zip' }, 'Download the Steward Clipper'),
@@ -685,6 +722,7 @@ async function start() {
   store.on(info => { if (info.ocr) { pushSoon(); semantic.kick(12000); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); if (info.local || info.remote || info.ocr) semantic.kick(info.local ? 6000 : 12000); });
   ocr.kick(15000);
   semantic.kick(20000);
+  orgWarmUp();
   semantic.on(() => { const l = $('#sem-line'); if (l) l.textContent = semLine(); });
   sync.on(() => { drawSidebar(parseRoute()); const l = $('#sync-line'); if (l) l.textContent = syncLine(); });
   sync.on(() => { if (sync.status === 'idle') offline.keepSoon(); });

@@ -250,6 +250,15 @@ export function applyOps(ops) {
         if (!it.id && !String(it.text || '').trim()) throw new Error('a comment needs text');
         const curC = it.id ? store.get('comments', it.id) : null;
         store.put('comments', { ...(curC || {}), taskId: it.taskId, text: String(it.text ?? curC?.text ?? ''), author: it.author || curC?.author || 'Claude', ...it });
+      } else if (type === 'orgword') {
+        // a name or word the organizer should know: {word, area, tags:[...]} (area: cs-outdoors, seminary, church, home-family, personal)
+        const word = String(it.word || '').trim();
+        const cur = it.id ? store.get('orgwords', it.id) : store.all('orgwords').find(w => w.word.toLowerCase() === word.toLowerCase());
+        if (!cur && word.length < 2) throw new Error('an orgword needs a word');
+        const AREAS = ['cs-outdoors', 'seminary', 'church', 'home-family', 'personal'];
+        if (it.area != null && !AREAS.includes(it.area)) throw new Error(`area must be one of ${AREAS.join(', ')}`);
+        if (it.tags !== undefined) it.tags = labelList(it.tags).map(t => t.toLowerCase());
+        store.put('orgwords', { ...(cur || { area: null, tags: [] }), ...it, ...(word ? { word } : {}), id: cur?.id || it.id || undefined });
       } else if (['section', 'label', 'filter', 'notebook'].includes(type)) {
         const cur = it.id ? store.get(type + 's', it.id) : null;
         if (!cur && !String(it.name || '').trim()) throw new Error(`a new ${type} needs a name`);

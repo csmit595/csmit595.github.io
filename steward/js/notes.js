@@ -8,6 +8,7 @@ import { openQuickAdd, openTask } from './tasks.js';
 import { ocr } from './ocr.js';
 import { search } from './search.js';
 import { canDictate, listen, listeningBar, insertSpoken, caretAtEnd, titleFrom } from './dictate.js';
+import { orgPanel, readOrg, mergeList, hasArea, notebookIdByName } from './organize.js';
 
 const go = hash => { location.hash = hash; };
 let scope = { kind: 'all' }, query = '', sortBy = 'updated';
@@ -209,7 +210,8 @@ function mountEditor(pane, id) {
     store.patch('notes', id, { title: title.value.trim(), body: serialize(body) });
   };
   const queue = debounce(() => save(), 700);
-  const touch = () => { dirty = true; queue(); };
+  let orgKick = () => {}; // set once the Organize row exists (dictated words count too)
+  const touch = () => { dirty = true; queue(); orgKick(); };
   title.addEventListener('input', touch);
   body.addEventListener('input', touch);
   title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); body.focus(); } });
@@ -337,6 +339,22 @@ function mountEditor(pane, id) {
     fill(tagsEl, icon('tag', 14), (n.tags || []).map(t => h('span', { class: 'chip' }, t, !trashed && h('button', { 'aria-label': 'Remove tag', onclick: () => { store.patch('notes', id, { tags: n.tags.filter(x => x !== t) }); drawTags(); } }, '×'))), !trashed && input, h('datalist', { id: 'tag-list' }, M.allTags().map(([t]) => h('option', { value: t }))));
   };
   drawTags();
+  // Organize: as the note is written, suggest an area, tags, "customer promise" and a notebook; Confirm files it.
+  const nbLower = () => { const nb = store.get('notebooks', get()?.notebookId); return nb && !/^notes$/i.test(nb.name) ? nb.name.toLowerCase() : null; };
+  const org = orgPanel({ kind: 'note', minWords: 3, delay: 1200,
+    text: () => [title.value.trim(), plainText(body)].filter(Boolean).join('. ').slice(0, 2000),
+    current: () => readOrg(get()?.tags, { notebook: nbLower() }),
+    apply: (fin, removed) => {
+      save(true);
+      const n = get(); if (!n) return;
+      const f = { tags: mergeList(n.tags, fin, removed) };
+      if (fin.notebook) { const nb = notebookIdByName(fin.notebook); if (nb && nb !== n.notebookId) { f.notebookId = nb; nbSel.value = nb; } }
+      store.patch('notes', id, f); drawTags();
+    } });
+  if (!trashed) {
+    if (hasArea(n0.tags)) org.showDone(readOrg(n0.tags, { notebook: nbLower() })); else org.refresh(true);
+    orgKick = () => org.refresh();
+  }
   const tasksEl = h('div', { class: 'ntasks' });
   const refreshTasks = () => {
     const list = store.all('tasks').filter(t => t.noteId === id && !t.completedAt);
@@ -359,7 +377,7 @@ function mountEditor(pane, id) {
     h('div', { class: 'ebar' }, iconBtn('back', 'Back to notes', () => { save(true); go(scope.kind === 'nb' ? '#/notes/nb/' + scope.id : scope.kind === 'tag' ? '#/notes/tag/' + encodeURIComponent(scope.id) : scope.kind === 'trash' ? '#/trash' : '#/notes'); }, 'only-mobile'),
       icon('book', 15), nbSel, h('span', { class: 'grow' }), h('span', { class: 'sub saved' }, 'Edited ' + new Date(n0.updatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), dictBtn, iconBtn('share', 'Share this note', share, 'eshare'), iconBtn('more', 'Note options', more)),
     trashed && h('div', { class: 'banner' }, 'This note is in the trash.'),
-    !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn, photoIn);
+    !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, !trashed && org.el, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn, photoIn);
   hydrate(body, n0.attachments, urls);
   mounted = { id, save, urls, refreshTasks, addMenu, stopDictation, isDictating: () => !!dict };
   if (dictateOnOpen === id) { dictateOnOpen = null; if (!trashed) { dictate(); return; } }

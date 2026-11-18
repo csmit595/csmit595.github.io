@@ -5,12 +5,15 @@ export const FILES = {
   tasks: ['projects', 'sections', 'tasks', 'comments', 'labels', 'filters', 'prefs', 'blocks'],
   notes: ['notebooks', 'notes', 'ocr'],
   writing: ['docs', 'sources'],
+  // what the organizer has learned (confirmed suggestions) and the names it knows: one small synced file, so the
+  // phone and the Mac train the same model and suggest the same things
+  organize: ['lessons', 'orgwords'],
 };
 export const TYPES = Object.values(FILES).flat();
 // Synced to Drive as one file per item (folder Steward/library), so editing one note uploads only that note.
 export const ITEMWISE = ['notebooks', 'notes', 'ocr', 'docs', 'sources'];
 // Synced as one combined file (small and changes often).
-export const BUNDLES = { tasks: FILES.tasks };
+export const BUNDLES = { tasks: FILES.tasks, organize: FILES.organize };
 const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
 
 const data = Object.fromEntries(TYPES.map(t => [t, new Map()]));

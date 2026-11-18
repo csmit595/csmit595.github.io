@@ -15,7 +15,7 @@ const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const CAL = 'https://www.googleapis.com/calendar/v3';
 const FOLDER = 'application/vnd.google-apps.folder';
-const needsApp = o => o && o.op !== 'delete' && ['note', 'doc', 'document'].includes(String(o.type || '').toLowerCase());
+const needsApp = o => o && o.op !== 'delete' && ['note', 'doc', 'document', 'orgword'].includes(String(o.type || '').toLowerCase());
 
 /**
  * env.http(url, {method, headers, body}) -> {status, text}  (synchronous)
