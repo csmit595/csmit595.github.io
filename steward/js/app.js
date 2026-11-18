@@ -16,7 +16,7 @@ import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 
-const VERSION = '3.10.4';
+const VERSION = '4.0.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -191,7 +191,7 @@ function viewSettings(main) {
     g.push(h('p', null, 'Steward keeps everything on this device and works without a connection. To sync between your Mac and phone, back up to Google Drive, show Google Calendar and get phone reminders, connect it to your Google account once.'),
       h('p', null, 'Paste the Google client ID from the setup guide:'), h('div', { class: 'row gap' }, id, btn('Save', () => { const v = id.value.trim(); if (!/\.apps\.googleusercontent\.com$/.test(v)) return toast('That does not look like a client ID. It ends in apps.googleusercontent.com'); settings.set('clientId', v); again(); }, 'primary')));
   } else if (!sync.connected()) {
-    g.push(h('p', null, 'Ready to connect. Google will ask you to allow Steward to use your Drive and Calendar.'),
+    g.push(h('p', null, 'Ready to connect. Google will ask you to let Steward use the files it makes in your Drive (only its own files, nothing else).'),
       h('div', { class: 'row gap wrap' }, btn('Connect Google account', () => sync.connect().then(again).catch(e => toast('Google sign-in did not finish: ' + e.message)), 'primary')),
       sync.status === 'auth' || sync.status === 'error' ? h('p', { class: 'sub', id: 'sync-line' }, syncLine()) : null);
   } else {
@@ -199,6 +199,8 @@ function viewSettings(main) {
       h('p', { class: 'sub', id: 'sync-line' }, syncLine()),
       sync.code === 'no-folder' ? h('div', { class: 'row gap wrap' }, btn('Start a new, empty Steward in this account instead', async () => { if (await confirmDlg('Make a new, empty Steward folder in this Google account? Only do this if you have never used Steward with another account.', 'Start new')) sync.startFresh().then(again); }, 'link')) : null,
       h('p', { class: 'sub', id: 'bg-line' }, bgLine()),
+      sync.helperUrl() ? h('p', { class: 'sub' }, '✓ Steward helper connected (Claude’s changes, your calendar and notifications).')
+        : h('p', { class: 'sub' }, 'Waiting for the Steward helper: until it is connected, your calendar, notifications and Claude’s note changes will not come through.'),
       sync.staysSignedIn() ? h('p', { class: 'sub' }, '✓ Stays signed in on this device — no reconnecting needed.')
         : sync.secret() ? h('p', { class: 'sub' }, 'One step left on this device: tap ', h('b', null, 'Stay signed in'), ' and allow Steward in the Google window.')
         : h('details', null, h('summary', { class: 'sub' }, 'Stop having to reconnect to Google'),
