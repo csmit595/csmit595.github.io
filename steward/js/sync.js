@@ -1,14 +1,18 @@
 // Google sign-in, Google Drive sync, Google Calendar, and reminder notifications on the phone and the Mac (sent by
 // the Google helper through Web Push; the old "Steward Reminders" calendar is kept only until they are proven).
+// Since 4.0 Steward asks Google only for per-file Drive access ("drive.file": the files Steward itself made), so the
+// sign-in has no warning screen and needs no Google review. What it cannot see that way (Claude's change files and
+// scans, the notifications folder, Google Calendar) it reaches through the Steward helper's web app, which runs in
+// Charles's own Google account and answers only Steward's own sign-in for that account (steward-helper/).
 import { store, settings, BUNDLES, ITEMWISE } from './store.js';
-import { applyOps, buildSummary, reminderTimes, openTasks, reminderKey } from './model.js';
+import { applyOps, buildSummary } from './model.js';
 import { pad } from './util.js';
 import { snapshot, backgroundIsNewer, kvGet } from './lsmirror.js';
 
-const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar';
+const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+const SCOPE_V = 2; // 1: whole Drive and Calendar (before 4.0); 2: per-file Drive only
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
-const CAL = 'https://www.googleapis.com/calendar/v3';
 const FILE_NAMES = { tasks: 'steward-tasks.json' };
 // Before 2.4, notes and writing were whole-section files. Any still found are read in once, then moved to the trash.
 const OLD_FILES = { 'steward-notes.json': ['notebooks', 'notes', 'ocr'], 'steward-writing.json': ['docs', 'sources'] };
@@ -68,10 +72,20 @@ export const sync = {
     if (!r.ok) { const e = new Error(j.error === 'invalid_grant' ? 'auth' : j.error === 'invalid_client' ? 'bad-secret' : (j.error || 'auth')); e.detail = j.error_description; throw e; }
     ls.set('token', { access_token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 });
     if (j.refresh_token) ls.set('refresh', j.refresh_token);
-    ls.set('connected', true);
+    ls.set('connected', true); ls.set('scopeV', SCOPE_V);
     return j.access_token;
   },
+  /** A device still signed in with the old wide access gives it back once, then signs in again with the narrow one. */
+  dropOldGrant() {
+    if (!ls.get('connected', false) || ls.get('scopeV', 1) >= SCOPE_V) return false;
+    const rt = ls.get('refresh'), t = ls.get('token');
+    const tok = rt || t?.access_token;
+    if (tok) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(tok), { method: 'POST' }).catch(() => {});
+    ls.del('refresh'); ls.del('token'); ls.set('scopeV', SCOPE_V);
+    return true;
+  },
   async token(interactive) {
+    if (this.dropOldGrant() && !interactive) throw new Error('auth');
     const t = ls.get('token');
     const upgrade = interactive && this.secret() && !ls.get('refresh');
     if (t && t.exp > Date.now() + 60000 && !upgrade) return t.access_token;
@@ -87,7 +101,7 @@ export const sync = {
     if (interactive && this.secret()) {
       return new Promise((res, rej) => {
         const client = google.accounts.oauth2.initCodeClient({
-          client_id: settings.get('clientId'), scope: SCOPES, ux_mode: 'popup', login_hint: ls.get('email', undefined),
+          client_id: settings.get('clientId'), scope: SCOPES, ux_mode: 'popup', login_hint: ls.get('email', undefined), include_granted_scopes: false,
           callback: r => { if (r.error) return rej(new Error(r.error)); this.tokenCall({ grant_type: 'authorization_code', code: r.code, redirect_uri: 'postmessage' }).then(res, rej); },
           error_callback: e => rej(new Error(e?.type || 'auth')),
         });
@@ -97,11 +111,11 @@ export const sync = {
     }
     return new Promise((res, rej) => {
       const client = google.accounts.oauth2.initTokenClient({
-        client_id: settings.get('clientId'), scope: SCOPES, login_hint: ls.get('email', undefined),
+        client_id: settings.get('clientId'), scope: SCOPES, login_hint: ls.get('email', undefined), include_granted_scopes: false,
         callback: r => {
           if (r.error) return rej(new Error(r.error));
           ls.set('token', { access_token: r.access_token, exp: Date.now() + (r.expires_in || 3600) * 1000 });
-          ls.set('connected', true);
+          ls.set('connected', true); ls.set('scopeV', SCOPE_V);
           res(r.access_token);
         },
         error_callback: e => rej(new Error(e?.type || 'auth')),
@@ -133,7 +147,7 @@ export const sync = {
     const t = ls.get('token'), rt = ls.get('refresh');
     if (rt) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(rt), { method: 'POST' }).catch(() => {});
     else if (t && window.google?.accounts) try { google.accounts.oauth2.revoke(t.access_token, () => {}); } catch {}
-    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email', 'pushKey', 'pushFile', 'pushDevs', 'pushActive']) ls.del(k);
+    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email', 'pushKey', 'pushFile', 'pushDevs', 'pushActive', 'inboxDone']) ls.del(k);
     store.driveClear().catch(() => {});
     this.set('off');
   },
@@ -159,6 +173,24 @@ export const sync = {
     }
   },
 
+  // ---- the Steward helper (Apps Script web app in Charles's Google account) ----------------------------------------
+  helperUrl() { const u = settings.get('helperUrl'); return typeof u === 'string' && /^https:\/\/script\.google(usercontent)?\.com\//.test(u) ? u : ''; },
+  async helper(action, data = {}) {
+    const url = this.helperUrl();
+    if (!url) throw new Error('no-helper');
+    for (let attempt = 0; ; attempt++) {
+      const token = await this.token(false);
+      // text/plain keeps this a "simple" request, which Apps Script web apps accept from another site
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ token, action, ...data }) });
+      let j; try { j = await r.json(); } catch { j = null; }
+      if (!r.ok || !j) { const e = new Error(`The Steward helper said ${r.status}`); e.status = r.status >= 400 ? r.status : 502; e.helper = true; if (attempt < 1 && r.status >= 500) { await wait(1500); continue; } throw e; }
+      if (j.ok) return j;
+      if (j.error === 'auth' && attempt === 0) { ls.del('token'); if (this.staysSignedIn()) continue; throw new Error('auth'); }
+      if (j.error === 'busy' && attempt < 2) { await wait(3000); continue; }
+      const e = new Error('Steward helper: ' + j.error); e.helper = true; throw e;
+    }
+  },
+
   // ---- Drive helpers -----------------------------------------------------------
   async find(name, parent, folder) {
     const q = `name='${name.replace(/'/g, "\\'")}' and '${parent}' in parents and trashed=false` + (folder ? ` and mimeType='application/vnd.google-apps.folder'` : '');
@@ -173,8 +205,17 @@ export const sync = {
   },
   async layout() {
     let d = ls.get('drive');
-    if (d?.root) return d;
-    const root = await this.folder('Steward', 'root');
+    if (d?.root) { if (!ls.get('rootSeen')) ls.set('rootSeen', d.root); return d; }
+    // Never start a second Steward folder: if this device (or the helper) knows one exists that Steward cannot see
+    // with its per-file access, stop and say so instead of making an empty new one.
+    const seen = await this.find('Steward', 'root', true);
+    if (!seen && (ls.get('rootSeen') || this.helperUrl())) {
+      let known = ls.get('rootSeen');
+      if (!known && this.helperUrl()) known = (await this.helper('ping').catch(() => ({}))).root;
+      if (known) { const e = new Error('Steward cannot see its folder in your Google Drive with the new sign-in. Ask Claude to look at it.'); e.noAccess = true; throw e; }
+    }
+    const root = seen ? seen.id : await this.folder('Steward', 'root');
+    ls.set('rootSeen', root);
     d = { root, att: await this.folder('attachments', root), inbox: await this.folder('inbox for Claude', root), files: {} };
     ls.set('drive', d);
     return d;
@@ -233,9 +274,9 @@ export const sync = {
       if (await this.pushAttachments(d)) wrote = (await this.syncLibrary(d)) || wrote;
       if (wrote || !d.files.summary) await this.writeSummary(d);
       ls.set('drive', d);
-      await this.syncPush(d).catch(e => { if (e.message === 'auth') throw e; console.warn('notifications', e); });
-      await this.syncReminders().catch(e => console.warn('reminders', e));
-      await this.refreshEvents().catch(e => console.warn('calendar', e));
+      await this.syncPush().catch(e => { if (e.message === 'auth') throw e; console.warn('notifications', e); });
+      // (The backup "Steward Reminders" calendar is kept by the helper now: Steward itself has no Calendar access.)
+      await this.refreshEvents().catch(e => { if (e.message === 'auth') throw e; console.warn('calendar', e); });
       await this.shareSecret(d).catch(e => { if (e.message === 'auth') throw e; console.warn('login file', e); });
       ls.set('drive', d);
       this.lastSync = Date.now(); ls.set('lastSync', this.lastSync);
@@ -244,7 +285,7 @@ export const sync = {
       else this.set('idle');
     } catch (e) {
       console.warn('sync', e);
-      if (e.status === 404) { ls.del('drive'); store.driveClear().catch(() => {}); }
+      if (e.status === 404 && !e.helper) { ls.del('drive'); store.driveClear().catch(() => {}); }
       if (['auth', 'popup_failed_to_open', 'popup_closed', 'interaction_required', 'access_denied'].includes(e.message)) { this.set('auth', 'Tap to reconnect to Google'); this.armGesture(); }
       else if (e.message === 'offline' || e instanceof TypeError) this.set('offline', 'No signal. Changes are saved on this device and will sync later.');
       else this.set('error', e.detail || e.message);
@@ -395,46 +436,45 @@ export const sync = {
     const r = await this.upload(d.files.summary, 'steward-summary.md', d.root, 'text/plain', buildSummary());
     d.files.summary = r.id;
   },
-  /** Files Claude leaves in "inbox for Claude" are lists of changes. Apply each one, then move it to the trash. */
+  /**
+   * Files Claude leaves in "inbox for Claude" are lists of changes. Steward cannot open them itself (Claude made them,
+   * and Steward only sees its own files), so the helper hands them over; Steward applies each one, then the helper
+   * moves it to the trash. The helper's own timer applies task-only files while Steward is closed.
+   */
   async inbox(d) {
-    const q = `'${d.inbox}' in parents and trashed=false`;
-    const r = await this.api(`${DRIVE}/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType)&orderBy=createdTime&pageSize=100`);
+    if (!this.helperUrl()) return 0;
     const report = async (name, lines) => {
       const body = [`Steward ${new Date().toString()}`, `Changes from ${name}:`, ...lines].join('\n');
-      await this.upload(null, `report-${name.replace(/\.json$/i, '')}.txt`, d.inbox, 'text/plain', body).catch(e => console.warn('report', e));
+      await this.upload(null, `report-${String(name).replace(/\.json$/i, '')}.txt`, d.inbox, 'text/plain', body).catch(e => console.warn('report', e));
     };
-    let applied = 0;
-    const trash = id => this.api(`${DRIVE}/files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
     // Change files already applied here whose move to the trash did not go through: finish the move, never apply twice.
-    const doneIds = ls.get('inboxDone', []).filter(id => r.files.some(f => f.id === id));
-    for (const f of r.files) {
-      if (/^(failed-|report-)/.test(f.name) || f.mimeType === 'application/vnd.google-apps.folder') continue;
-      if (doneIds.includes(f.id)) { await trash(f.id); doneIds.splice(doneIds.indexOf(f.id), 1); ls.set('inboxDone', doneIds); continue; }
-      let did = false;
+    const earlier = ls.get('inboxDone', []);
+    if (earlier.length) { await this.helper('inboxDone', { done: earlier }); ls.set('inboxDone', []); }
+    const { files } = await this.helper('inbox');
+    const done = [], failed = [], release = [];
+    let applied = 0;
+    for (const f of files) {
+      let ops;
       try {
-        const url = f.mimeType === 'application/vnd.google-apps.document' ? `${DRIVE}/files/${f.id}/export?mimeType=text/plain` : `${DRIVE}/files/${f.id}?alt=media`;
-        let text = await (await this.api(url, {}, true)).text();
-        text = text.replace(/^﻿/, '').replace(/[“”]/g, '"').trim();
-        const j = JSON.parse(text);
-        const ops = Array.isArray(j) ? j : j?.ops;
+        const j = JSON.parse(String(f.text).replace(/^\uFEFF/, '').replace(/[\u201C\u201D]/g, '"').trim());
+        ops = Array.isArray(j) ? j : j?.ops;
         if (!Array.isArray(ops)) throw new Error('not a list of changes');
-        // Notes and documents need the page's HTML tools: a change file with any is left for when Steward is opened.
-        if (this.background && ops.some(o => o && o.op !== 'delete' && ['note', 'doc', 'document'].includes(String(o.type || '').toLowerCase()))) continue;
-        const results = applyOps(ops);
-        applied++; did = true;
-        doneIds.push(f.id); ls.set('inboxDone', doneIds);
-        await store.flush().catch(() => {});
-        const problems = results.filter(x => x.startsWith('problem'));
-        if (problems.length) await report(f.name, [`${results.filter(x => x.startsWith('ok')).length} applied, ${problems.length} with problems:`, ...problems]);
-        await trash(f.id);
-        doneIds.splice(doneIds.indexOf(f.id), 1); ls.set('inboxDone', doneIds);
       } catch (e) {
-        // No signal, sign-in, or Google having a bad moment: the file is fine, so leave it and try again next sync.
-        if (e.message === 'auth' || e.message === 'offline' || e instanceof TypeError || e.status) { if (did) { this.again = true; return applied; } throw e; }
-        if (did) { console.warn('inbox', e); continue; }
-        await this.api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'failed-' + f.name }) }).catch(() => {});
+        failed.push({ id: f.id, name: f.name });
         await report(f.name, ['Nothing was applied: ' + (e.message || 'the file could not be read')]);
+        continue;
       }
+      // Notes and documents need the page's HTML tools: a change file with any is left for when Steward is opened.
+      if (this.background && ops.some(o => o && o.op !== 'delete' && ['note', 'doc', 'document'].includes(String(o.type || '').toLowerCase()))) { release.push(f.id); continue; }
+      const results = applyOps(ops);
+      applied++; done.push(f.id); ls.set('inboxDone', done);
+      await store.flush().catch(() => {});
+      const problems = results.filter(x => x.startsWith('problem'));
+      if (problems.length) await report(f.name, [`${results.filter(x => x.startsWith('ok')).length} applied, ${problems.length} with problems:`, ...problems]);
+    }
+    if (done.length || failed.length || release.length) {
+      try { await this.helper('inboxDone', { done, failed, release }); ls.set('inboxDone', []); }
+      catch (e) { if (e.message === 'auth') throw e; console.warn('inbox', e); this.again = true; } // finished on the next sync
     }
     return applied;
   },
@@ -478,8 +518,15 @@ export const sync = {
     if (b) return b;
     if (!att.driveId || !this.connected() || !navigator.onLine) return null;
     try {
-      const r = await this.api(`${DRIVE}/files/${att.driveId}?alt=media`, {}, true);
-      b = new Blob([await r.arrayBuffer()], { type: att.mime || 'application/octet-stream' });
+      try {
+        const r = await this.api(`${DRIVE}/files/${att.driveId}?alt=media`, {}, true);
+        b = new Blob([await r.arrayBuffer()], { type: att.mime || 'application/octet-stream' });
+      } catch (e) {
+        // A scan or photo Claude uploaded: Steward cannot open it itself, so the helper passes it along.
+        if (!(e.status === 404 || e.status === 403) || !this.helperUrl()) throw e;
+        const r = await this.helper('file', { id: att.driveId });
+        b = new Blob([Uint8Array.from(atob(r.b64), c => c.charCodeAt(0))], { type: att.mime || r.mime || 'application/octet-stream' });
+      }
       await store.putBlob(att.id, b);
       return b;
     } catch { return null; }
@@ -499,23 +546,12 @@ export const sync = {
     };
   },
   async fetchRange(from, to) {
-    const out = [];
-    const hidden = settings.get('hidden');
-    for (const cal of this.calendars()) {
-      if (hidden.includes(cal.id) || cal.id === ls.get('remCal')) continue;
-      let pageToken = '';
-      do {
-        const u = `${CAL}/calendars/${encodeURIComponent(cal.id)}/events?singleEvents=true&orderBy=startTime&maxResults=2500&timeMin=${encodeURIComponent(from.toISOString())}&timeMax=${encodeURIComponent(to.toISOString())}${pageToken ? '&pageToken=' + pageToken : ''}`;
-        const r = await this.api(u);
-        for (const e of r.items || []) if (e.status !== 'cancelled') out.push(this.norm(e, cal));
-        pageToken = r.nextPageToken || '';
-      } while (pageToken);
-    }
-    return out;
+    const r = await this.helper('calendar', { from: from.toISOString(), to: to.toISOString(), hidden: settings.get('hidden') });
+    ls.set('calendars', r.calendars || []);
+    const byId = new Map((r.calendars || []).map(c => [c.id, c]));
+    return (r.events || []).filter(x => byId.has(x.calId)).map(x => this.norm(x.e, byId.get(x.calId)));
   },
   async refreshEvents() {
-    const r = await this.api(`${CAL}/users/me/calendarList?minAccessRole=reader`);
-    ls.set('calendars', (r.items || []).map(c => ({ id: c.id, summary: c.summaryOverride || c.summary, backgroundColor: c.backgroundColor, primary: !!c.primary, accessRole: c.accessRole })));
     const [a, b] = this.window();
     this.events = await this.fetchRange(a, b);
     await store.putKV('events', this.events);
@@ -540,13 +576,11 @@ export const sync = {
     return b;
   },
   async saveEvent(ev) {
-    const base = `${CAL}/calendars/${encodeURIComponent(ev.calId)}/events`;
-    const opts = { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.eventBody(ev)) };
-    if (ev.id) await this.api(`${base}/${ev.id}`, { method: 'PATCH', ...opts }); else await this.api(base, { method: 'POST', ...opts });
+    await this.helper('calSave', { calId: ev.calId, eventId: ev.id || null, body: this.eventBody(ev) });
     await this.refreshEvents();
   },
   async deleteEvent(ev, whole) {
-    await this.api(`${CAL}/calendars/${encodeURIComponent(ev.calId)}/events/${whole && ev.recurringEventId ? ev.recurringEventId : ev.id}`, { method: 'DELETE' });
+    await this.helper('calDelete', { calId: ev.calId, eventId: whole && ev.recurringEventId ? ev.recurringEventId : ev.id });
     await this.refreshEvents();
   },
 
@@ -559,19 +593,13 @@ export const sync = {
       helper: !!ls.get('pushKey'), mine: ls.get('pushFile', null), devices: ls.get('pushDevs', {}), active: !!ls.get('pushActive', false), name: deviceName() };
   },
   setPushWanted(on) { ls.set('pushWanted', !!on); },
-  async syncPush(d) {
-    if (!pushSupported()) return;
-    // the helper's folder and public key
-    if (!d.push) { const f = await this.find('notifications', d.root, true); if (!f) { ls.set('pushActive', false); ls.del('pushKey'); return; } d.push = f.id; }
-    const list = async q => (await this.api(`${DRIVE}/files?q=${encodeURIComponent(`'${d.push}' in parents and trashed=false and ${q}`)}&fields=files(id,name,version)&pageSize=100`)).files || [];
-    let files;
-    try { files = await list(`(name='key.json' or name contains 'device-')`); }
-    catch (e) { if (e.status === 404) { delete d.push; return; } throw e; }
-    const keyF = files.find(f => f.name === 'key.json');
-    let key = ls.get('pushKey');
-    if (!keyF) { ls.set('pushActive', false); ls.del('pushKey'); return; }
-    if (!key || key.v !== keyF.version) { const j = await (await this.api(`${DRIVE}/files/${keyF.id}?alt=media`, {}, true)).json(); key = { v: keyF.version, pub: j.publicKey }; ls.set('pushKey', key); }
-    if (!key.pub) return;
+  async syncPush() {
+    if (!pushSupported() || !this.helperUrl()) return;
+    // the helper's public sender key, and the devices it sends to
+    let info = await this.helper('push');
+    if (!info.publicKey) { ls.set('pushActive', false); ls.del('pushKey'); return; }
+    const key = { pub: info.publicKey };
+    ls.set('pushKey', key);
 
     // this device's subscription
     const reg = inWorker ? self.registration : await navigator.serviceWorker.ready;
@@ -581,36 +609,28 @@ export const sync = {
     if (sub && (!want || !sameKey(sub))) { await sub.unsubscribe().catch(() => {}); sub = null; }
     if (!sub && want) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: unb64u(key.pub) });
 
-    // this device's file
+    // this device's entry, kept by the helper in Steward/notifications as device-<id>.json
     let devId = ls.get('deviceId'); if (!devId) { devId = Math.random().toString(36).slice(2, 10); ls.set('deviceId', devId); }
-    const name = `device-${devId}.json`;
     let mine = ls.get('pushFile', null);
-    if (mine && !files.some(f => f.id === mine.id)) mine = null; // removed from Drive (here or by the helper)
+    if (mine && !info.devices.some(x => x.id === mine.id)) mine = null; // removed from Drive (here or by the helper)
     if (!sub) {
-      if (mine) await this.api(`${DRIVE}/files/${mine.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => {});
-      ls.del('pushFile');
+      if (mine) info = await this.helper('push', { remove: mine.id });
+      ls.del('pushFile'); mine = null;
     } else {
       const js = sub.toJSON();
       const ok = await kvGet('pushOk').catch(() => null); // set by the service worker when a notification arrives
       const confirmedAt = ok?.endpoint === js.endpoint ? ok.at : (mine?.endpoint === js.endpoint ? mine.confirmedAt || 0 : 0);
       const body = JSON.stringify({ about: 'Lets the Steward helper send reminders to this device.', name: deviceName(), endpoint: js.endpoint, keys: js.keys, vapid: key.pub, confirmedAt });
       if (!mine || mine.body !== body) {
-        const r = await this.upload(mine?.id || null, name, d.push, 'text/plain', body);
-        mine = { id: r.id, endpoint: js.endpoint, confirmedAt, body };
+        info = await this.helper('push', { device: { id: devId, body } });
+        mine = { id: info.mine, endpoint: js.endpoint, confirmedAt, body };
         ls.set('pushFile', mine);
-        files = files.filter(f => f.id !== r.id).concat({ id: r.id, name, version: r.version });
       }
     }
 
     // every device's state: notifications are proven once every device listed has shown its test
-    const old = ls.get('pushDevs', {}), devs = {};
-    for (const f of files.filter(x => x.name.startsWith('device-'))) {
-      if (old[f.id] && old[f.id].v === f.version) { devs[f.id] = old[f.id]; continue; }
-      if (mine && f.id === mine.id) { const j = JSON.parse(mine.body); devs[f.id] = { v: f.version, name: j.name, confirmedAt: j.confirmedAt, mine: true }; continue; }
-      try { const j = await (await this.api(`${DRIVE}/files/${f.id}?alt=media`, {}, true)).json(); devs[f.id] = { v: f.version, name: j.name || 'device', confirmedAt: j.confirmedAt || 0 }; }
-      catch (e) { if (e.status !== 404) throw e; }
-    }
-    for (const id in devs) devs[id].mine = !!mine && id === mine.id;
+    const devs = {};
+    for (const x of info.devices || []) devs[x.id] = { name: x.name, confirmedAt: mine && x.id === mine.id ? mine.confirmedAt : x.confirmedAt, mine: !!mine && x.id === mine.id };
     ls.set('pushDevs', devs);
     const all = Object.values(devs);
     ls.set('pushActive', all.length > 0 && all.every(x => x.confirmedAt));
@@ -621,60 +641,11 @@ export const sync = {
     if (!fileId || fileId === mine?.id) {
       ls.set('pushWanted', false);
       const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe().catch(() => {});
-      if (mine) await this.api(`${DRIVE}/files/${mine.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => {});
+      if (mine) await this.helper('push', { remove: mine.id }).catch(() => {});
       ls.del('pushFile');
-    } else await this.api(`${DRIVE}/files/${fileId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
+    } else await this.helper('push', { remove: fileId });
     const devs = ls.get('pushDevs', {}); delete devs[fileId || mine?.id]; ls.set('pushDevs', devs);
     ls.set('pushActive', Object.values(devs).length > 0 && Object.values(devs).every(x => x.confirmedAt));
-  },
-
-  // ---- backup reminders: the "Steward Reminders" Google calendar, used only until notifications are proven on
-  // every device; after that it is emptied and left alone ----
-  async syncReminders() {
-    const clearOnly = !!ls.get('pushActive', false);
-    let calId = ls.get('remCal');
-    if (clearOnly && ls.get('remCalEmpty', false)) return; // already emptied: nothing more to do
-    if (!clearOnly) ls.del('remCalEmpty');
-    if (!calId) {
-      const list = await this.api(`${CAL}/users/me/calendarList?minAccessRole=owner`);
-      calId = (list.items || []).find(c => c.summary === 'Steward Reminders')?.id;
-      if (!calId && clearOnly) { ls.set('remCalEmpty', true); return; } // no backup calendar to empty
-      if (!calId) calId = (await this.api(`${CAL}/calendars`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ summary: 'Steward Reminders', description: 'Task reminders from the Steward app. Managed automatically.' }) })).id;
-      ls.set('remCal', calId);
-    }
-    const now = Date.now(), horizon = now + 60 * 864e5;
-    const want = new Map();
-    if (!clearOnly) for (const t of openTasks()) for (const at of reminderTimes(t)) {
-      const ms = at.getTime();
-      if (ms < now - 60000 || ms > horizon) continue;
-      want.set(reminderKey(t.id, at), { summary: '⏰ ' + t.content, at });
-    }
-    const base = `${CAL}/calendars/${encodeURIComponent(calId)}/events`;
-    let r;
-    try { r = await this.api(`${base}?singleEvents=true&maxResults=2500&timeMin=${encodeURIComponent(new Date(now).toISOString())}`); }
-    catch (e) { if (e.status === 404) { ls.del('remCal'); if (clearOnly) ls.set('remCalEmpty', true); return; } throw e; }
-    const have = new Map((r.items || []).filter(e => e.status !== 'cancelled').map(e => [e.id, e]));
-    const json = { 'Content-Type': 'application/json' };
-    // Reminders Claude made while Steward was closed carry "steward-task:<id>" in their description.
-    // Keep the ones that still match a task's reminder (so the phone does not buzz twice); remove the rest.
-    for (const [id, e] of have) {
-      if (id.startsWith('st')) continue;
-      const m = /steward-task:([\w-]+)/.exec(e.description || '');
-      if (!m || !e.start?.dateTime) continue;
-      const key = reminderKey(m[1], new Date(e.start.dateTime));
-      if (want.has(key) && !have.has(key)) want.delete(key);
-      else await this.api(`${base}/${id}`, { method: 'DELETE' }).catch(() => {});
-    }
-    const body = (id, w) => JSON.stringify({ id, summary: w.summary, description: 'Reminder from Steward', status: 'confirmed', start: { dateTime: w.at.toISOString() }, end: { dateTime: new Date(w.at.getTime() + 5 * 60000).toISOString() }, reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 0 }] } });
-    for (const [id, e] of have) if (id.startsWith('st') && !want.has(id)) await this.api(`${base}/${id}`, { method: 'DELETE' }).catch(() => {});
-    for (const [id, w] of want) {
-      const e = have.get(id);
-      if (e && e.summary === w.summary) continue;
-      if (e) { await this.api(`${base}/${id}`, { method: 'PATCH', headers: json, body: body(id, w) }).catch(() => {}); continue; }
-      try { await this.api(base, { method: 'POST', headers: json, body: body(id, w) }); }
-      catch (err) { if (err.status === 409) await this.api(`${base}/${id}`, { method: 'PUT', headers: json, body: body(id, w) }).catch(() => {}); else throw err; }
-    }
-    if (clearOnly) ls.set('remCalEmpty', true);
   },
 };
 

@@ -37,37 +37,51 @@ function tools(env) {
   return { api, json, find, trash };
 }
 
+/** Finds the Steward folder, the inbox and the task file (remembered between runs). Returns null if not set up yet. */
+function locate(env, api, find) {
+  let d = JSON.parse(env.props.get('drive') || 'null');
+  const alive = id => { try { return !api(`${DRIVE}/files/${id}?fields=trashed`).trashed; } catch (e) { if (e.status === 404) return false; throw e; } };
+  if (!d || !alive(d.inbox) || !alive(d.tasks)) {
+    const root = find('Steward', 'root', true);
+    if (!root) return null;
+    const inbox = find('inbox for Claude', root.id, true), tasks = find('steward-tasks.json', root.id);
+    if (!inbox || !tasks) return null;
+    d = { root: root.id, inbox: inbox.id, tasks: tasks.id };
+    env.props.set('drive', JSON.stringify(d));
+  }
+  if (d.push && !alive(d.push)) { delete d.push; env.props.set('drive', JSON.stringify(d)); }
+  return d;
+}
+// Change files the app has taken to apply itself (through web() below): the timer leaves them alone for a while.
+const CLAIM = 10 * 60000;
+const claims = env => Object.fromEntries(Object.entries(readJson(env.props.get('claimed'), {})).filter(([, at]) => at > Date.now() - CLAIM));
+
 export function run(env) {
   const log = [];
   const { api, json, find, trash } = tools(env);
 
   // ---- where things are ----
-  let d = JSON.parse(env.props.get('drive') || 'null');
-  const alive = id => { try { return !api(`${DRIVE}/files/${id}?fields=trashed`).trashed; } catch (e) { if (e.status === 404) return false; throw e; } };
-  if (!d || !alive(d.inbox) || !alive(d.tasks)) {
-    const root = find('Steward', 'root', true);
-    if (!root) return 'No Steward folder in Drive yet.';
-    const inbox = find('inbox for Claude', root.id, true), tasks = find('steward-tasks.json', root.id);
-    if (!inbox || !tasks) return 'Steward has not finished setting up Drive yet.';
-    d = { root: root.id, inbox: inbox.id, tasks: tasks.id };
-    env.props.set('drive', JSON.stringify(d));
-  }
-  if (d.push && !alive(d.push)) { delete d.push; env.props.set('drive', JSON.stringify(d)); }
+  const d = locate(env, api, find);
+  if (!d) return 'Steward has not finished setting up Drive yet.';
   setUpPush(env, api, find, json, d);
 
   // ---- 1. Claude's change files ----
   const q = `'${d.inbox}' in parents and trashed=false`;
+  const claimed = claims(env);
   const files = (api(`${DRIVE}/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType)&orderBy=createdTime&pageSize=100`).files || [])
-    .filter(f => !/^(failed-|report-)/.test(f.name) && f.mimeType !== FOLDER);
+    .filter(f => !/^(failed-|report-)/.test(f.name) && f.mimeType !== FOLDER && !claimed[f.id]);
   // Files left for the app last time (notes, documents) don't need looking at again until the app takes them.
   const deferred = new Set(JSON.parse(env.props.get('deferred') || '[]'));
   const fresh = files.filter(f => !deferred.has(f.id));
   env.props.set('deferred', JSON.stringify(files.filter(f => deferred.has(f.id)).map(f => f.id)));
   const meta = api(`${DRIVE}/files/${d.tasks}?fields=version`);
   const remindersDue = meta.version !== env.props.get('tasksVersion') || Date.now() - Number(env.props.get('remindersAt') || 0) > 6 * 3600e3;
-  if (!fresh.length && !remindersDue) return 'Nothing new.';
+  // Steward finds this helper through the shared settings in steward-tasks.json (it can only see its own files).
+  const urlNew = !!env.url && env.props.get('urlSaved') !== env.url;
+  if (!fresh.length && !remindersDue && !urlNew) return 'Nothing new.';
 
   store.merge('tasks', JSON.parse(api(`${DRIVE}/files/${d.tasks}?alt=media`, {}, true)));
+  if (urlNew) { const cur = store.get('prefs', 'shared'); store.put('prefs', { ...(cur || {}), id: 'shared', helperUrl: env.url }); log.push('helper address saved for Steward'); }
   const report = (name, lines) => {
     const form = { name: `report-${name.replace(/\.json$/i, '')}.txt`, parents: [d.inbox], mimeType: 'text/plain' };
     const body = [`Steward (Google helper) ${new Date().toString()}`, `Changes from ${name}:`, ...lines].join('\n');
@@ -98,12 +112,13 @@ export function run(env) {
     log.push(`applied ${f.name}: ${results.length - problems.length} ok, ${problems.length} problems`);
     pendingTrash.push(f.id);
   }
-  if (applied) {
+  if (applied || urlNew) {
     // Re-read just before writing: if a device saved in the meantime, fold its version in so nothing is lost.
     const now = api(`${DRIVE}/files/${d.tasks}?fields=version`);
     if (now.version !== meta.version) store.merge('tasks', JSON.parse(api(`${DRIVE}/files/${d.tasks}?alt=media`, {}, true)));
     const r = api(`${UPLOAD}/files/${d.tasks}?uploadType=media&fields=id,version`, { method: 'PATCH', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(store.snapshot('tasks')) });
     env.props.set('tasksVersion', r.version);
+    if (urlNew) env.props.set('urlSaved', env.url);
     // only once the tasks are safely in Drive; remembered first, so a failed move is finished next run, not re-applied
     const ids = pendingTrash.splice(0);
     env.props.set('applied', JSON.stringify([...done, ...ids]));
@@ -270,4 +285,111 @@ function setUpPush(env, api, find, json, d) {
   d.pushKey = keys.public;
   env.props.set('drive', JSON.stringify(d));
   return keys;
+}
+
+// ---- Steward's line to the helper ----------------------------------------------------------------------------
+// Steward signs in with per-file Drive access only ("drive.file"), so Google never shows it a warning screen. That
+// access covers the files Steward made itself, but not the files Claude leaves in "inbox for Claude", the photos and
+// scans Claude files into Steward/attachments, the notifications folder this helper keeps, or Google Calendar.
+// Steward reaches those through this helper, published as a web app that runs as Charles. wrapper.gs.js checks that
+// every request carries a Google pass issued to Steward for the same Google account before calling web().
+const SLIM_EVENT = e => ({ id: e.id, summary: e.summary, start: e.start, end: e.end, location: e.location, description: e.description, recurringEventId: e.recurringEventId, htmlLink: e.htmlLink, status: e.status });
+
+export function web(env, req) {
+  const { api, json, find, trash } = tools(env);
+  const d = locate(env, api, find);
+  if (!d) return { ok: false, error: 'Steward has not finished setting up Drive yet.' };
+  const parentsOf = id => api(`${DRIVE}/files/${id}?fields=parents,trashed`);
+  switch (req.action) {
+    case 'ping': return { ok: true, root: d.root };
+
+    // Claude's change files, for Steward to apply itself. The timer leaves them alone for 10 minutes once taken.
+    case 'inbox': {
+      const q = `'${d.inbox}' in parents and trashed=false`;
+      const listed = (api(`${DRIVE}/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType)&orderBy=createdTime&pageSize=100`).files || [])
+        .filter(f => !/^(failed-|report-)/.test(f.name) && f.mimeType !== FOLDER).slice(0, 25);
+      const claimed = claims(env), files = [];
+      for (const f of listed) {
+        const url = f.mimeType === 'application/vnd.google-apps.document' ? `${DRIVE}/files/${f.id}/export?mimeType=text/plain` : `${DRIVE}/files/${f.id}?alt=media`;
+        let text; try { text = String(api(url, {}, true)); } catch (e) { if (e.status === 404) continue; throw e; }
+        claimed[f.id] = Date.now(); files.push({ id: f.id, name: f.name, text });
+      }
+      env.props.set('claimed', JSON.stringify(claimed));
+      return { ok: true, files };
+    }
+    case 'inboxDone': {
+      const claimed = claims(env), deferred = new Set(readJson(env.props.get('deferred'), []));
+      const inInbox = id => { try { const m = parentsOf(id); return !m.trashed && (m.parents || []).includes(d.inbox); } catch (e) { if (e.status === 404) return false; throw e; } };
+      for (const id of req.done || []) { if (inInbox(id)) trash(id); delete claimed[id]; deferred.delete(id); }
+      for (const f of req.failed || []) {
+        if (inInbox(f.id)) api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: json, body: JSON.stringify({ name: 'failed-' + String(f.name || 'change.json').replace(/^failed-/, '') }) });
+        delete claimed[f.id]; deferred.delete(f.id);
+      }
+      for (const id of req.release || []) delete claimed[id]; // taken but left for later (a note change while Steward was closed)
+      env.props.set('claimed', JSON.stringify(claimed)); env.props.set('deferred', JSON.stringify([...deferred]));
+      return { ok: true };
+    }
+
+    // A photo, scan or PDF that Claude put in Steward/attachments (Steward can read its own uploads directly).
+    case 'file': {
+      const m = parentsOf(req.id);
+      const att = find('attachments', d.root, true);
+      if (m.trashed || !att || !(m.parents || []).includes(att.id)) return { ok: false, error: 'not a Steward attachment' };
+      return { ok: true, ...env.download(req.id) };
+    }
+
+    // Google Calendar
+    case 'calendar': {
+      const hidden = new Set(req.hidden || []);
+      const list = api(`${CAL}/users/me/calendarList?minAccessRole=reader`).items || [];
+      const calendars = list.map(c => ({ id: c.id, summary: c.summaryOverride || c.summary, backgroundColor: c.backgroundColor, primary: !!c.primary, accessRole: c.accessRole }));
+      const events = [];
+      for (const c of calendars) {
+        if (hidden.has(c.id) || c.summary === 'Steward Reminders') continue;
+        let pageToken = '';
+        do {
+          const r = api(`${CAL}/calendars/${encodeURIComponent(c.id)}/events?singleEvents=true&orderBy=startTime&maxResults=2500&timeMin=${encodeURIComponent(req.from)}&timeMax=${encodeURIComponent(req.to)}${pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''}`);
+          for (const e of r.items || []) if (e.status !== 'cancelled') events.push({ calId: c.id, e: SLIM_EVENT(e) });
+          pageToken = r.nextPageToken || '';
+        } while (pageToken);
+      }
+      return { ok: true, calendars, events };
+    }
+    case 'calSave': {
+      const base = `${CAL}/calendars/${encodeURIComponent(req.calId)}/events`;
+      const e = req.eventId ? api(`${base}/${encodeURIComponent(req.eventId)}`, { method: 'PATCH', headers: json, body: JSON.stringify(req.body) })
+        : api(base, { method: 'POST', headers: json, body: JSON.stringify(req.body) });
+      return { ok: true, event: SLIM_EVENT(e) };
+    }
+    case 'calDelete': {
+      try { api(`${CAL}/calendars/${encodeURIComponent(req.calId)}/events/${encodeURIComponent(req.eventId)}`, { method: 'DELETE' }); }
+      catch (e) { if (e.status !== 404 && e.status !== 410) throw e; }
+      return { ok: true };
+    }
+
+    // Notifications: the sender key, and this device's entry in Steward/notifications.
+    case 'push': {
+      const keys = setUpPush(env, api, find, json, d);
+      let mine = null;
+      if (req.remove) {
+        const m = parentsOf(req.remove);
+        if (!m.trashed && (m.parents || []).includes(d.push)) trash(req.remove);
+      }
+      if (req.device && /^[a-z0-9]{4,20}$/.test(req.device.id || '')) {
+        const name = `device-${req.device.id}.json`, body = String(req.device.body || '');
+        JSON.parse(body); // must be a device entry, not anything else
+        const f = find(name, d.push);
+        if (f) { api(`${UPLOAD}/files/${f.id}?uploadType=media`, { method: 'PATCH', headers: { 'Content-Type': 'text/plain' }, body }); mine = f.id; }
+        else mine = env.upload({ name, parents: [d.push], mimeType: 'text/plain' }, body).id;
+      }
+      const q = `'${d.push}' in parents and trashed=false and name contains 'device-'`;
+      const devices = [];
+      for (const f of api(`${DRIVE}/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=100`).files || []) {
+        try { const j = JSON.parse(api(`${DRIVE}/files/${f.id}?alt=media`, {}, true)); devices.push({ id: f.id, file: f.name, name: String(j.name || 'device').slice(0, 40), confirmedAt: j.confirmedAt || 0, endpoint: j.endpoint || '' }); }
+        catch (e) { if (e.status && e.status !== 404) throw e; }
+      }
+      return { ok: true, publicKey: keys.public, devices, mine };
+    }
+  }
+  return { ok: false, error: 'unknown request' };
 }

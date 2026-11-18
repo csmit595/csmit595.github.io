@@ -19,12 +19,18 @@ const callFile = mk('claude-2026-11-17-call.json', inbox, JSON.stringify({ ops: 
 ] }));
 const noteFile = mk('claude-2026-11-17-note.json', inbox, JSON.stringify({ ops: [{ op: 'upsert', type: 'note', item: { title: 'Plan', markdown: '# hi' } }] }));
 const badFile = mk('claude-2026-11-17-bad.json', inbox, '{ not json');
+const mainEvents = new Map([['e1', { id: 'e1', summary: 'Hanel walk-through', start: { dateTime: '2026-11-20T09:00:00-05:00' }, end: { dateTime: '2026-11-20T10:00:00-05:00' } }]]);
 const events = new Map([['olddead', { id: 'olddead', summary: '⏰ gone', description: 'steward-task:zzz', start: { dateTime: due.toISOString() } }]]);
 
 function handle(url, o) {
   const u = new URL(url), m = (o.method || 'get').toUpperCase(); let mm;
   const J = (x, s = 200) => ({ s, t: JSON.stringify(x) });
-  if (u.pathname === '/calendar/v3/users/me/calendarList') return J({ items: [{ id: 'remcal', summary: 'Steward Reminders' }] });
+  if (u.pathname === '/calendar/v3/users/me/calendarList') return J({ items: [{ id: 'remcal', summary: 'Steward Reminders', accessRole: 'owner' }, { id: 'main', summary: 'Charles', accessRole: 'owner', primary: true }, { id: 'hid', summary: 'Hidden one', accessRole: 'reader' }] });
+  if ((mm = /^\/calendar\/v3\/calendars\/(main|hid)\/events(?:\/(.+))?$/.exec(u.pathname))) {
+    if (m === 'GET') return J({ items: [...mainEvents.values()] });
+    if (m === 'DELETE') { mainEvents.delete(decodeURIComponent(mm[2])); return { s: 204, t: '' }; }
+    const b = JSON.parse(o.payload); const id = mm[2] ? decodeURIComponent(mm[2]) : 'ev' + nid++; const e = { ...(mainEvents.get(id) || {}), ...b, id }; mainEvents.set(id, e); return J(e);
+  }
   if ((mm = /^\/calendar\/v3\/calendars\/remcal\/events(?:\/(.+))?$/.exec(u.pathname))) {
     if (m === 'GET') return J({ items: [...events.values()] });
     if (m === 'DELETE') { events.delete(mm[1]); return { s: 204, t: '' }; }
@@ -39,22 +45,28 @@ function handle(url, o) {
     const f = files.get(mm[1]); if (!f) return J({}, 404);
     if (m === 'PATCH') { Object.assign(f, JSON.parse(o.payload)); return J({ id: f.id }); }
     if (u.searchParams.get('alt') === 'media') return { s: 200, t: f.body };
-    return J({ version: f.version, trashed: f.trashed });
+    return J({ version: f.version, trashed: f.trashed, parents: f.parents, mimeType: f.mimeType, size: String((f.body || '').length) });
   }
   if ((mm = /^\/upload\/drive\/v3\/files\/([^/]+)$/.exec(u.pathname))) { const f = files.get(mm[1]); f.body = o.payload; f.version = String(+f.version + 1); return J({ id: f.id, version: f.version }); }
-  if (u.pathname === '/upload/drive/v3/files') { const parts = o.payload.split(/--steward\d+/); const meta = JSON.parse(parts[1].split('\r\n\r\n')[1]); mk(meta.name, meta.parents[0], parts[2].split('\r\n\r\n')[1]); return J({}); }
+  if (u.pathname === '/upload/drive/v3/files') { const parts = o.payload.split(/--steward\d+/); const meta = JSON.parse(parts[1].split('\r\n\r\n')[1]); return J({ id: mk(meta.name, meta.parents[0], parts[2].split('\r\n\r\n')[1].replace(/\r\n$/, '')) }); }
   throw new Error('unhandled ' + m + ' ' + url);
 }
-const props = new Map(), logs = [], triggers = [], pushes = [];
+const cache = new Map();
+const props = new Map([['clientId', 'cid'], ['webAppUrl', 'https://script.google.com/macros/s/XYZ/exec']]), logs = [], triggers = [], pushes = [];
 const ctx = {
   console: { log: s => logs.push(s) },
   ScriptApp: { getOAuthToken: () => 'AT', getProjectTriggers: () => [], newTrigger: fn => ({ timeBased: () => ({ everyMinutes: n => ({ create: () => { triggers.push(fn + '/' + n); } }) }) }) },
   PropertiesService: { getScriptProperties: () => ({ getProperty: k => props.get(k) ?? null, setProperty: (k, v) => props.set(k, v) }) },
+  CacheService: { getScriptCache: () => ({ get: k => cache.get(k) ?? null, put: (k, v) => cache.set(k, v) }) },
+  ContentService: { MimeType: { JSON: 'json' }, createTextOutput: t => ({ setMimeType: () => ({ text: t }) }) },
   LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
-  Utilities: { sleep: () => {}, getUuid: () => nodeCrypto.randomUUID(), DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (a, s) => Array.from(nodeCrypto.createHash('sha256').update(s).digest(), b => (b > 127 ? b - 256 : b)) },
+  Utilities: { base64Encode: b => Buffer.from(b.map(x => x & 255)).toString('base64'), base64EncodeWebSafe: b => Buffer.from(b.map(x => x & 255)).toString('base64url'), sleep: () => {}, getUuid: () => nodeCrypto.randomUUID(), DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (a, s) => Array.from(nodeCrypto.createHash('sha256').update(s).digest(), b => (b > 127 ? b - 256 : b)) },
   UrlFetchApp: { fetch: (url, o) => {
     if (url.startsWith('https://fcm.googleapis.com/')) { pushes.push({ url, o }); const s = url.endsWith('/gone') ? 410 : 201; return { getResponseCode: () => s, getContentText: () => '' }; }
-    if (o.headers.Authorization !== 'Bearer AT') throw new Error('no auth'); const r = handle(url, o); return { getResponseCode: () => r.s, getContentText: () => r.t }; } },
+    if (url.startsWith('https://oauth2.googleapis.com/tokeninfo')) { const tk = new URL(url).searchParams.get('access_token'); const good = { STEWARD: 'cid', OTHERAPP: 'zzz', STRANGER: 'cid' }[tk]; return { getResponseCode: () => good ? 200 : 400, getContentText: () => JSON.stringify({ aud: good, expires_in: 3000 }) }; }
+    if (url.includes('/drive/v3/about')) { const who = { 'Bearer AT': 'me', 'Bearer STEWARD': 'me', 'Bearer STRANGER': 'someone' }[o.headers.Authorization]; return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ user: { permissionId: who } }) }; }
+    if (o.headers.Authorization !== 'Bearer AT') throw new Error('no auth');
+    if (url.includes('alt=media') && !o.method) { const r = handle(url, { ...o, method: 'get' }); return { getResponseCode: () => r.s, getContentText: () => r.t, getContent: () => Array.from(Buffer.from(r.t)) }; } const r = handle(url, o); return { getResponseCode: () => r.s, getContentText: () => r.t }; } },
 };
 vm.createContext(ctx);
 vm.runInContext(code, ctx);
@@ -139,3 +151,37 @@ vm.runInContext('sendReminders()', ctx);
 props.set('remindersAt', '0'); logs.length = 0; vm.runInContext('syncSteward()', ctx);
 ok(![...events.values()].some(e => e.id.startsWith('st')), 'calendar reminders removed once the device confirmed: ' + logs.join(' | '));
 console.log('first-run log:\n' + [...props.entries()].map(([k, v]) => k + '=' + v).join('\n'));
+
+// ---- Steward's line to the helper (web app) ----
+ok(JSON.parse(files.get(tasksId).body).prefs.some(p => p.id === 'shared' && p.helperUrl === 'https://script.google.com/macros/s/XYZ/exec'), 'helper address saved in the shared settings for Steward');
+const post = (token, req) => JSON.parse(vm.runInContext(`doPost(${JSON.stringify({ postData: { contents: JSON.stringify({ token, ...req }) } })})`, ctx).text);
+ok(post('OTHERAPP', { action: 'ping' }).error === 'auth', 'a pass issued to another app is refused');
+ok(post('STRANGER', { action: 'ping' }).error === 'auth', 'a Steward pass for another Google account is refused');
+ok(post('', { action: 'ping' }).error === 'auth', 'no pass, no answer');
+ok(post('STEWARD', { action: 'ping' }).ok, 'Steward\'s own pass is accepted');
+const ib = post('STEWARD', { action: 'inbox' });
+ok(ib.ok && ib.files.length === 1 && ib.files[0].id === noteFile && /Plan/.test(ib.files[0].text), 'inbox: the note change left for the app is handed over');
+const late = mk('claude-2026-11-18-late.json', inbox, JSON.stringify({ ops: [{ op: 'upsert', type: 'task', item: { id: 'cl-late', content: 'Late task' } }] }));
+const ib2 = post('STEWARD', { action: 'inbox' });
+ok(ib2.files.some(f => f.id === late), 'inbox: a new task change is handed over too');
+logs.length = 0; vm.runInContext('syncSteward()', ctx);
+ok(!files.get(late).trashed && !JSON.parse(files.get(tasksId).body).tasks.some(x => x.id === 'cl-late'), 'timer leaves a file Steward has taken alone (never applied twice)');
+ok(post('STEWARD', { action: 'inboxDone', done: [noteFile, late, tasksId] }).ok && files.get(noteFile).trashed && files.get(late).trashed, 'inboxDone moves applied files to the trash');
+ok(!files.get(tasksId).trashed, 'inboxDone never touches a file outside the inbox');
+const att = mk('attachments', root, null, 'application/vnd.google-apps.folder');
+const scan = mk('a1-scan.jpg', att, 'JPEGDATA', 'image/jpeg');
+const fr = post('STEWARD', { action: 'file', id: scan });
+ok(fr.ok && Buffer.from(fr.b64, 'base64').toString() === 'JPEGDATA' && fr.mime === 'image/jpeg', 'file: Claude\'s scan handed over');
+ok(!post('STEWARD', { action: 'file', id: tasksId }).ok, 'file: only attachments, nothing else');
+const cal = post('STEWARD', { action: 'calendar', from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', hidden: ['hid'] });
+ok(cal.ok && cal.calendars.length === 3 && cal.events.length === 1 && cal.events[0].calId === 'main' && cal.events[0].e.summary === 'Hanel walk-through', 'calendar: calendars listed, hidden and reminder calendars skipped');
+const sv = post('STEWARD', { action: 'calSave', calId: 'main', body: { summary: 'Mulch delivery', start: { dateTime: '2026-11-21T08:00:00-05:00' }, end: { dateTime: '2026-11-21T09:00:00-05:00' } } });
+ok(sv.ok && mainEvents.has(sv.event.id), 'calendar: event saved');
+ok(post('STEWARD', { action: 'calDelete', calId: 'main', eventId: sv.event.id }).ok && !mainEvents.has(sv.event.id), 'calendar: event deleted');
+const ps = post('STEWARD', { action: 'push', device: { id: 'mac12345', body: JSON.stringify({ name: 'Mac', endpoint: 'https://fcm.googleapis.com/fcm/send/mac', keys: {}, confirmedAt: 0 }) } });
+ok(ps.ok && ps.publicKey === serverPub && ps.mine && ps.devices.some(x => x.id === ps.mine && x.name === 'Mac'), 'push: device registered and listed with the sender key');
+const ps2 = post('STEWARD', { action: 'push', device: { id: 'mac12345', body: JSON.stringify({ name: 'Mac', endpoint: 'https://fcm.googleapis.com/fcm/send/mac', confirmedAt: 5 }) } });
+ok(ps2.mine === ps.mine && ps2.devices.find(x => x.id === ps.mine).confirmedAt === 5, 'push: same device updated in place');
+ok(post('STEWARD', { action: 'push', remove: tasksId }).ok && !files.get(tasksId).trashed, 'push: remove never touches files outside notifications');
+const ps3 = post('STEWARD', { action: 'push', remove: ps.mine });
+ok(!ps3.devices.some(x => x.id === ps.mine), 'push: device removed');
