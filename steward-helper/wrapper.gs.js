@@ -36,9 +36,11 @@ function stewardEnv_() {
     const r = UrlFetchApp.fetch(req.url, { method: 'post', headers, contentType, payload, muteHttpExceptions: true });
     return { status: r.getResponseCode(), text: r.getContentText() };
   };
-  let url = props.getProperty('webAppUrl') || '';
-  if (!url) try { url = ScriptApp.getService().getUrl() || ''; } catch (e) {}
-  url = url.replace(/\/dev$/, '/exec');
+  // The web app's own /exec address, kept in the script property webAppUrl. Never guess it: on a timer run
+  // ScriptApp.getService().getUrl() gives the editor's test address, and turning its /dev into /exec makes an address
+  // that does not exist. (4.0 did that, and Steward on every device was sent to a dead address.) doPost saves the real
+  // one the first time Steward reaches it.
+  const url = /\/exec$/.test(props.getProperty('webAppUrl') || '') ? props.getProperty('webAppUrl') : '';
   return { http, upload, download, push, url, props: { get: k => props.getProperty(k), set: (k, v) => props.setProperty(k, String(v)) } };
 }
 
@@ -90,6 +92,7 @@ function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); } catch (err) { return reply({ ok: false, error: 'bad request' }); }
   if (!stewardCallerOk_(req.token)) return reply({ ok: false, error: 'auth' });
+  try { const here = ScriptApp.getService().getUrl() || ''; const p = PropertiesService.getScriptProperties(); if (/\/exec$/.test(here) && p.getProperty('webAppUrl') !== here) p.setProperty('webAppUrl', here); } catch (err) {}
   delete req.token;
   const locked = ['inbox', 'inboxDone', 'push'].includes(req.action);
   const lock = LockService.getScriptLock();

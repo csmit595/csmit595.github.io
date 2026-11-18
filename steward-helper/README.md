@@ -17,3 +17,5 @@ Build: `npm i && bash build.sh` (a built copy is kept as `Code.gs`) → paste `o
 (it sets both timers). Then Deploy → New deployment → Web app, Execute as: Me, Who has access: Anyone, and put the
 `/exec` address in the script property `webAppUrl`. After changing the code, Deploy → Manage deployments → edit → New version. Test: `node test.mjs` (runs the built script in a bare V8 context shaped like Apps Script).
 The Drive and Calendar advanced services in the manifest switch those APIs on for the script's Google project.
+
+The script property `webAppUrl` must hold the web app's real `/exec` address (Deploy → Manage deployments → Web app URL). The helper publishes that address to Steward through the shared settings; it never guesses one. It was set by hand on Nov 18 2026.
