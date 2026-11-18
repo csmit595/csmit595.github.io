@@ -218,6 +218,7 @@ export const store = {
   // ---- attachments (binary files) ----------------------------------------
   putBlob(id, blob) { return idb('blobs', 'readwrite', s => s.put(blob, id)); },
   getBlob(id) { return idb('blobs', 'readonly', s => s.get(id)); },
+  blobIds() { return idb('blobs', 'readonly', s => s.getAllKeys()).then(k => new Set(k || [])); },
   delBlob(id) { return idb('blobs', 'readwrite', s => s.delete(id)); },
   // ---- cached calendar events --------------------------------------------
   putKV(key, val) { return idb('events', 'readwrite', s => s.put(val, key)); },

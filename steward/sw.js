@@ -1,13 +1,29 @@
 // Service worker: makes Steward open with no connection, receives things shared from other apps, and syncs with
 // Google Drive in the background while Steward is closed (loaded as a module: register('sw.js', { type: 'module' })).
 import { bgSync } from './js/bg.js';
-const VERSION = 'steward-3.7.0';
+const VERSION = 'steward-3.8.0';
+// Tools (PDF reader, Word tools, page reader, search model) are kept in their own cache, so an update to Steward
+// never throws them away and they keep working with no signal. Bump only when a file in vendor/ changes.
+const TOOLS = 'steward-tools-1';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'css/app.css', 'icons/icon-192.png', 'icons/mark.png', 'icons/icon-512.png',
-  'js/boot.js', 'js/lsmirror.js', 'js/bg.js', 'js/app.js', 'js/util.js', 'js/store.js', 'js/model.js', 'js/dates.js', 'js/filters.js', 'js/sync.js', 'js/ui.js', 'js/tasks.js', 'js/notes.js', 'js/calendar.js', 'js/ocr.js', 'js/search.js', 'js/semantic.js', 'js/semantic-worker.js', 'js/writing.js', 'js/cite.js', 'js/export-docx.js', 'js/writing-tools.js', 'js/dayplan.js', 'js/import-todoist.js'];
+  'js/boot.js', 'js/lsmirror.js', 'js/bg.js', 'js/app.js', 'js/util.js', 'js/store.js', 'js/model.js', 'js/dates.js', 'js/filters.js', 'js/sync.js', 'js/ui.js', 'js/tasks.js', 'js/notes.js', 'js/calendar.js', 'js/ocr.js', 'js/search.js', 'js/semantic.js', 'js/semantic-worker.js', 'js/writing.js', 'js/cite.js', 'js/export-docx.js', 'js/writing-tools.js', 'js/dayplan.js', 'js/import-todoist.js', 'js/offline.js', 'icons/icon-maskable-512.png', 'privacy.html'];
 
 self.addEventListener('install', e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('steward-') && k !== VERSION && k !== 'steward-share').map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil((async () => {
+    const keys = await caches.keys();
+    const tools = await caches.open(TOOLS);
+    for (const k of keys) {
+      if (!k.startsWith('steward-') || k === VERSION || k === TOOLS || k === 'steward-share') continue;
+      // Older versions kept tools in the app cache: move them over instead of downloading them again.
+      if (!k.startsWith('steward-tools-')) {
+        const old = await caches.open(k);
+        for (const req of await old.keys()) if (/\/vendor\//.test(req.url) && !(await tools.match(req))) { const r = await old.match(req); if (r) await tools.put(req, r).catch(() => {}); }
+      }
+      await caches.delete(k);
+    }
+    await self.clients.claim();
+  })());
 });
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
@@ -30,6 +46,18 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (e.request.method !== 'GET' || url.pathname.includes('/clipper/')) return;
+  // Tools: use the copy on the device; download (and keep) only if it is missing.
+  if (/\/vendor\//.test(url.pathname)) {
+    e.respondWith((async () => {
+      const tools = await caches.open(TOOLS);
+      const hit = await tools.match(e.request, { ignoreSearch: true });
+      if (hit) return hit;
+      const res = await fetch(e.request);
+      if (res.status === 200 && res.type === 'basic') await tools.put(e.request, res.clone()).catch(() => {});
+      return res;
+    })());
+    return;
+  }
   // Network first so updates arrive; fall back to the saved copy when offline, or when the signal is so weak
   // that the network has not answered within a few seconds (a job site with one bar must not mean a blank screen).
   e.respondWith((async () => {

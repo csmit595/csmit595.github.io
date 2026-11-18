@@ -14,8 +14,9 @@ import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
+import * as offline from './offline.js';
 
-const VERSION = '3.7.0';
+const VERSION = '3.8.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -234,6 +235,8 @@ function viewSettings(main) {
     enex.value = ''; setTimeout(close, 2500);
   } });
   const restore = h('input', { type: 'file', accept: '.json', hidden: true, onchange: async () => { try { const n = store.importAll(JSON.parse(await restore.files[0].text())); toast(`Restored ${n} items`); } catch { toast('That file is not a Steward backup'); } restore.value = ''; } });
+  const keepBox = h('input', { type: 'checkbox', checked: offline.keepFiles(), onchange: () => offline.setKeepFiles(keepBox.checked) });
+  setTimeout(offLine, 0);
   main.append(h('div', { class: 'settings' }, h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Settings'))),
     card('Google account and sync', g),
     card('Reminders', h('p', { class: 'sub' }, 'These apply on all your devices.'),
@@ -247,6 +250,10 @@ function viewSettings(main) {
     card('Day plan', h('p', { class: 'sub' }, 'Today and Upcoming add up the time on each day’s tasks (and, on Today, anything overdue) and compare it with the hours you can plan in, after your fixed blocks and calendar events. These settings apply on all your devices.'),
       hoursEditor(again), h('label', { class: 'inline block' }, 'Rest day ', restSel)),
     h('section', { class: 'card', id: 'blocks-card' }, h('h3', null, 'Fixed blocks'), blocksEditor(again)),
+    card('Use with no signal', h('p', { class: 'sub' }, 'Steward keeps your tasks, notes, documents and calendar on this device, so it opens and works with no connection. Changes you make offline sync when the signal comes back. Adding or changing Google Calendar events still needs a connection.'),
+      h('label', { class: 'inline nowrap' }, keepBox, h('span', { class: 'grow' }, 'Keep a copy of every photo, PDF and recording on this device')),
+      h('div', { class: 'row gap wrap' }, btn('Download everything to this device', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 60 MB plus your attachments).'); await offline.downloadAll(); offLine(); }, 'primary', 'download')),
+      h('p', { class: 'sub', id: 'off-line' }, 'Checking…'), h('p', { class: 'sub', id: 'off-busy' }, offline.state.line)),
     card('Search by meaning', h('label', { class: 'inline' }, semBox, h('span', { class: 'grow' }, 'Find notes and tasks by what they are about, not only the exact words')),
       h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
       h('p', { class: 'sub', id: 'sem-line' }, semLine())),
@@ -349,6 +356,14 @@ function blocksEditor(again) {
 }
 
 const semLine = () => !semanticOn() ? 'Off on this device.' : semStatus.error ? (semStatus.error === 'offline' ? 'Waiting for a connection to download the model.' : 'Problem: ' + semStatus.error) : !semStatus.total ? 'Starts a few seconds after Steward opens.' : semStatus.done < semStatus.total ? `Reading your notes and tasks: ${semStatus.done} of ${semStatus.total}` : `Up to date: ${semStatus.total} notes and tasks indexed.`;
+const mb = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1e6)) + ' MB';
+async function offLine() {
+  const l = $('#off-line'); if (!l) return;
+  const s = await offline.status();
+  const ok = s.tools === s.toolsTotal && s.files === s.filesTotal;
+  l.textContent = (ok ? '✓ Ready for no signal. ' : '') + `Tools: ${s.tools} of ${s.toolsTotal} on this device. Attachments: ${s.files} of ${s.filesTotal}.` + (s.bytes ? ` Using ${mb(s.bytes)}` + (s.quota ? ` of ${mb(s.quota)} available.` : '.') : '') + (s.persisted ? '' : ' (The phone may clear this if it runs very low on space.)');
+}
+offline.onChange(() => { const b = $('#off-busy'); if (b) b.textContent = offline.state.line; if (!offline.state.busy) offLine(); });
 const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? 'Google needs you to reconnect. Tap Sync now.' : sync.status === 'offline' ? sync.message : (sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet') + (sync.attWaiting ? ` · ${sync.attWaiting} attachment${sync.attWaiting === 1 ? '' : 's'} waiting to upload (Steward keeps trying; tasks and notes still sync)` : '');
 
 function applyTheme() {
@@ -616,6 +631,8 @@ async function start() {
   semantic.kick(20000);
   semantic.on(() => { const l = $('#sem-line'); if (l) l.textContent = semLine(); });
   sync.on(() => { drawSidebar(parseRoute()); const l = $('#sync-line'); if (l) l.textContent = syncLine(); });
+  sync.on(() => { if (sync.status === 'idle') offline.keepSoon(); });
+  offline.keepSoon(20000);
   if (!(await intake())) render();
   document.body.classList.add('ready');
   extBridge(); extAnnounce();
