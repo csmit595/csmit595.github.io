@@ -5,3 +5,4 @@ Tasks, notes and calendar in one installable web app. Works offline; syncs throu
 - Open https://csmit595.github.io/steward/ in Chrome and choose "Install".
 - No build step: plain HTML, CSS and JavaScript modules.
 - No data is stored in this repository. Everything a person enters stays on their device and in their own Google Drive ("Steward" folder).
+- Background sync (3.2): when installed from Chrome (Android, or Mac with Chrome running), the service worker syncs with Drive every so often while Steward is closed — Claude's task changes, phone reminders, and calendar. Chrome decides how often. Changes made with no signal are sent once the connection returns.

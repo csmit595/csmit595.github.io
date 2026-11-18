@@ -74,7 +74,9 @@ function idb(storeName, mode, fn) {
 
 export const store = {
   async init() {
+    if (db) { try { await this.flush(); } catch {} db.close(); }
     db = await openDb();
+    for (const t of TYPES) data[t].clear(); // the background sync re-reads everything each time it wakes
     // Each item is stored on its own, so saving one note never rewrites the whole library.
     const rows = await new Promise((res, rej) => { const out = []; const tx = db.transaction('items', 'readonly'); const c = tx.objectStore('items').openCursor(); c.onsuccess = () => { const cur = c.result; if (cur) { out.push(cur.value); cur.continue(); } }; tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); });
     for (const row of rows) if (data[row.t]) data[row.t].set(row.v.id, row.v);

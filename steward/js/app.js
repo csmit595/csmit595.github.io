@@ -1,5 +1,5 @@
 // App shell: start-up, navigation, sidebar, search, settings, clipping intake, reminders.
-import { h, fill, today, debounce, fmtDate, fmtTime } from './util.js';
+import { h, fill, today, debounce, fmtDate, fmtTime, ymd, hm } from './util.js';
 import { store, settings } from './store.js';
 import * as M from './model.js';
 import { sync } from './sync.js';
@@ -13,8 +13,9 @@ import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 import { importTodoist, describeImport } from './import-todoist.js';
+import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 
-const VERSION = '3.1.0';
+const VERSION = '3.2.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -191,6 +192,7 @@ function viewSettings(main) {
   } else {
     g.push(h('p', null, 'Connected', sync.email() ? ' as ' + sync.email() : '', '. Data is saved in the ', h('b', null, 'Steward'), ' folder in your Google Drive.'),
       h('p', { class: 'sub', id: 'sync-line' }, syncLine()),
+      h('p', { class: 'sub', id: 'bg-line' }, bgLine()),
       sync.staysSignedIn() ? h('p', { class: 'sub' }, '✓ Stays signed in on this device — no reconnecting needed.')
         : sync.secret() ? h('p', { class: 'sub' }, 'One step left on this device: tap ', h('b', null, 'Stay signed in'), ' and allow Steward in the Google window.')
         : h('details', null, h('summary', { class: 'sub' }, 'Stop having to reconnect to Google'),
@@ -448,13 +450,50 @@ function seed() {
   store.merge('notes', { notebooks: [{ id: 'nb-notes', name: 'Notes', updatedAt: 1, createdAt: 1 }] });
 }
 
+// ---- background sync (Steward closed) ------------------------------------------------------------------------------
+// Chrome wakes Steward's service worker every so often to sync (Android, and the Mac while Chrome is running).
+// Chrome decides how often, based on how much the app is used; it needs Steward installed as an app.
+let bgState = 'checking';
+async function setupBackground(reg) {
+  try {
+    if (!('periodicSync' in reg)) { bgState = 'unsupported'; return; }
+    const st = await navigator.permissions.query({ name: 'periodic-background-sync' });
+    if (st.state !== 'granted') { bgState = 'not-installed'; return; }
+    await reg.periodicSync.register('steward-sync', { minInterval: 15 * 60000 });
+    bgState = 'on';
+  } catch (e) { console.warn('periodic sync', e); bgState = 'unsupported'; }
+  finally { const l = $('#bg-line'); if (l) l.textContent = bgLine(); }
+}
+function bgLine() {
+  if (!sync.connected()) return '';
+  let last = null; try { last = JSON.parse(localStorage.getItem('steward.bgSync')); } catch {}
+  const when = last?.at ? ` Last background sync: ${fmtDate(ymd(new Date(last.at)))} ${fmtTime(hm(new Date(last.at)))}.` : '';
+  if (bgState === 'on') return (sync.staysSignedIn() ? '✓ Syncs in the background, even while Steward is closed.' : 'Background sync needs “Stay signed in” on this device.') + when;
+  if (bgState === 'not-installed') return 'To sync while closed, install Steward as an app from Chrome (menu → Install / Add to Home screen).' + when;
+  if (bgState === 'unsupported') return 'This browser cannot sync Steward while it is closed. Use Chrome to sync in the background.';
+  return '';
+}
+
 async function start() {
   applyTheme();
   await store.init();
   settings.adoptLocal();
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }
   await sync.loadCachedEvents();
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js', { type: 'module' }).then(setupBackground).catch(e => console.warn('sw', e));
+    // The background sync asks an open, visible Steward to sync itself rather than doing it behind its back.
+    navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); });
+  }
+  // The background sync ran while this window was hidden: take its work (settings, then data) before syncing again.
+  sync.onStale = async () => {
+    await store.flush().catch(() => {});
+    await hydrate();
+    await store.init();
+    try { sync.lastSync = JSON.parse(localStorage.getItem('steward.lastSync')) || 0; } catch {}
+    await sync.loadCachedEvents();
+    store.emit({ remote: true, events: true });
+  };
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (parseRoute().view === 'settings') render({ force: true }); });
   $('#fab').addEventListener('click', () => (NOTE_VIEWS.includes(parseRoute().view) ? newNote() : openQuickAdd(defaultsForRoute())));
   $('#menu-btn').addEventListener('click', e => { e.preventDefault(); document.body.classList.toggle('drawer'); });
@@ -479,7 +518,18 @@ async function start() {
   extBridge(); extAnnounce();
   if (sync.connected()) sync.run();
   window.addEventListener('online', () => sync.run());
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (Date.now() - sync.lastSync > 60000) sync.run(); checkReminders(); schedule(); } });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { backgroundIsNewer().then(b => { if (b || Date.now() - sync.lastSync > 60000) sync.run(); }); checkReminders(); schedule(); return; }
+    // Leaving Steward: save state for the background sync, and hand it anything not yet sent.
+    snapshot().catch(() => {});
+    if (sync.connected() && (store.isDirty('tasks') || ['offline', 'error'].includes(sync.status))) {
+      if (navigator.onLine && sync.status !== 'offline') sync.run();
+      else navigator.serviceWorker?.ready.then(r => r.sync?.register('steward-push')).catch(() => {});
+    }
+  });
+  window.addEventListener('pagehide', () => { snapshot().catch(() => {}); });
+  const snapSoon = debounce(() => snapshot().catch(() => {}), 1500);
+  store.on(snapSoon); sync.on(snapSoon);
   setInterval(() => { if (!document.hidden) sync.run(); }, 3 * 60000);
   setInterval(checkReminders, 30000); checkReminders();
   let day = today();

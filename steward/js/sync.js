@@ -2,6 +2,7 @@
 import { store, settings, BUNDLES, ITEMWISE } from './store.js';
 import { applyOps, buildSummary, reminderTimes, openTasks, reminderKey } from './model.js';
 import { pad } from './util.js';
+import { snapshot, backgroundIsNewer } from './lsmirror.js';
 
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar';
 const DRIVE = 'https://www.googleapis.com/drive/v3';
@@ -191,7 +192,19 @@ export const sync = {
   },
 
   // ---- the sync cycle ------------------------------------------------------------
+  // background: true inside the service worker (Steward closed). onStale: set by the app; called instead of syncing
+  // when the background sync has run since this window loaded, so its in-memory copy must be reloaded first.
+  background: false, onStale: null,
   async run(interactive = false) {
+    if (this.background) return this._run(interactive);
+    const go = async () => {
+      if (await backgroundIsNewer()) { this.onStale?.(); return; }
+      await this._run(interactive);
+      await snapshot().catch(e => console.warn('snapshot', e));
+    };
+    return navigator.locks ? navigator.locks.request('steward-sync', go) : go();
+  },
+  async _run(interactive = false) {
     if (!this.configured() || (!this.connected() && !interactive)) return;
     if (this.busy) { this.again = true; return; }
     if (!navigator.onLine) return this.set('offline', 'No signal. Changes are saved on this device and will sync later.');
@@ -229,11 +242,11 @@ export const sync = {
       else this.set('error', e.detail || e.message);
     } finally {
       this.busy = false;
-      if (this.again) { this.again = false; setTimeout(() => this.run(), 500); }
+      if (this.again && !this.background) { this.again = false; setTimeout(() => this.run(), 500); } // in the background, bg.js repeats
     }
   },
   armGesture() {
-    if (this._armed) return; this._armed = true;
+    if (this.background || typeof document === 'undefined' || this._armed) return; this._armed = true;
     const go = () => { this._armed = false; document.removeEventListener('pointerdown', go, true); this.run(true); };
     document.addEventListener('pointerdown', go, true);
   },
@@ -386,6 +399,8 @@ export const sync = {
         const j = JSON.parse(text);
         const ops = Array.isArray(j) ? j : j?.ops;
         if (!Array.isArray(ops)) throw new Error('not a list of changes');
+        // Notes and documents need the page's HTML tools: a change file with any is left for when Steward is opened.
+        if (this.background && ops.some(o => o && o.op !== 'delete' && ['note', 'doc', 'document'].includes(String(o.type || '').toLowerCase()))) continue;
         const results = applyOps(ops);
         applied++;
         const problems = results.filter(x => x.startsWith('problem'));
