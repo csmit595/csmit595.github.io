@@ -2,7 +2,7 @@
 
 Tasks, notes and calendar in one installable web app. Works offline; syncs through the owner's own Google Drive and Google Calendar.
 
-- Open https://csmit595.github.io/steward/ in Chrome and choose "Install".
+- Open https://steward-cs.web.app/ in Chrome and choose "Install".
 - No build step: plain HTML, CSS and JavaScript modules.
 - No data is stored in this repository. Everything a person enters stays on their device and in their own Google Drive ("Steward" folder).
 - 3.9: reminders arrive as Steward's own notifications on the phone and the Mac, even while Steward is closed. The Google helper checks every minute and sends them by Web Push (no Google Calendar). Settings → Reminders turns them on per device; each device gets a test notification first, and the old "Steward Reminders" calendar stays as a backup until every device has shown its test, then it is emptied.

@@ -1,6 +1,6 @@
 // Steward Clipper background: makes clips, keeps copies of pictures and files, and hands them to an open Steward tab.
 // Clips wait in a queue (chrome.storage) until Steward has saved them, so nothing is lost if Steward is closed.
-const STEWARD = 'https://csmit595.github.io/steward/';
+const STEWARD = 'https://steward-cs.web.app/';
 const STEWARD_MATCH = STEWARD + '*';
 const MAX_PIC = 15e6, MAX_FILE = 60e6;
 
