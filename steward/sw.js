@@ -1,7 +1,7 @@
 // Service worker: makes Steward open with no connection, receives things shared from other apps, and syncs with
 // Google Drive in the background while Steward is closed (loaded as a module: register('sw.js', { type: 'module' })).
 import { bgSync } from './js/bg.js';
-const VERSION = 'steward-3.2.0';
+const VERSION = 'steward-3.3.0';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'css/app.css', 'icons/icon-192.png', 'icons/mark.png', 'icons/icon-512.png',
   'js/boot.js', 'js/lsmirror.js', 'js/bg.js', 'js/app.js', 'js/util.js', 'js/store.js', 'js/model.js', 'js/dates.js', 'js/filters.js', 'js/sync.js', 'js/ui.js', 'js/tasks.js', 'js/notes.js', 'js/calendar.js', 'js/ocr.js', 'js/search.js', 'js/semantic.js', 'js/semantic-worker.js', 'js/writing.js', 'js/cite.js', 'js/export-docx.js', 'js/writing-tools.js', 'js/dayplan.js', 'js/import-todoist.js'];
 
@@ -30,16 +30,21 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (e.request.method !== 'GET' || url.pathname.includes('/clipper/')) return;
-  // Network first so updates arrive; fall back to the saved copy when offline.
+  // Network first so updates arrive; fall back to the saved copy when offline, or when the signal is so weak
+  // that the network has not answered within a few seconds (a job site with one bar must not mean a blank screen).
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);
+    const saved = () => cache.match(e.request, { ignoreSearch: true }).then(r => r || (e.request.mode === 'navigate' ? cache.match('index.html') : undefined));
+    const net = fetch(e.request).then(res => { if (res.status === 200 && res.type === 'basic') cache.put(e.request, res.clone()).catch(() => {}); return res; });
+    const big = /\/vendor\//.test(url.pathname); // large one-time downloads (search model, page reader) get all the time they need
+    let timer;
+    const slow = big ? new Promise(() => {}) : new Promise(r => { timer = setTimeout(async () => r(await saved()), 3500); });
     try {
-      const res = await fetch(e.request);
-      if (res.ok) cache.put(e.request, res.clone());
+      const res = await Promise.race([net, slow.then(r => r || net)]);
       return res;
     } catch {
-      return (await cache.match(e.request, { ignoreSearch: true })) || (e.request.mode === 'navigate' ? cache.match('index.html') : Response.error());
-    }
+      return (await saved()) || Response.error();
+    } finally { clearTimeout(timer); net.catch(() => {}); }
   })());
 });
 self.addEventListener('notificationclick', e => { e.notification.close(); e.waitUntil(self.clients.matchAll({ type: 'window' }).then(cs => (cs[0] ? cs[0].focus() : self.clients.openWindow('./')))); });

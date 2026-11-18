@@ -29,10 +29,11 @@ function projectSelect(value, onchange) {
   return s;
 }
 function linkify(text) {
-  const parts = String(text).split(/(https?:\/\/[^\s]+)/g);
+  const parts = String(text).split(/(https?:\/\/[^\s]*[^\s.,;:!?)])/g);
   return parts.map((p, i) => i % 2 ? h('a', { href: p, target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation() }, p.replace(/^https?:\/\/(www\.)?/, '').slice(0, 40)) : p);
 }
 
+const allUnder = id => M.childrenOf(id).flatMap(c => [c, ...allUnder(c.id)]);
 function dueChip(t) {
   if (!t.due) return null;
   const now = today();
@@ -46,11 +47,13 @@ function deadlineChip(t) {
 }
 function toggle(t, row) {
   if (t.completedAt) return M.uncompleteTask(t.id);
-  const before = structuredClone(t);
+  // Completing a task also completes its open sub-tasks (or, for a repeating task, reopens them): Undo puts all of it back.
+  const before = structuredClone([t, ...allUnder(t.id)]);
   row?.classList.add('completing');
   setTimeout(() => {
+    if (!store.get('tasks', t.id) || store.get('tasks', t.id).completedAt) return; // changed meanwhile (double tap, sync)
     const r = M.completeTask(t.id);
-    toast(r?.recurring ? `Done. Next on ${fmtDate(r.next, true)}` : 'Completed', 'Undo', () => store.put('tasks', before));
+    toast(r?.recurring ? `Done. Next on ${fmtDate(r.next, true)}` : 'Completed', 'Undo', () => { for (const x of before) { const cur = store.get('tasks', x.id); if (cur) store.patch('tasks', x.id, { completedAt: x.completedAt ?? null, due: x.due ?? null, lastDoneAt: x.lastDoneAt ?? null, doneCount: x.doneCount ?? 0, remindedFor: x.remindedFor ?? null }, { silent: true }); } store.emit({ local: true }); });
   }, 160);
 }
 
@@ -380,12 +383,13 @@ export function openQuickAdd(defaults = {}) {
     proj.classList.add('slim', 'qa-proj'); proj.setAttribute('aria-label', 'Project');
     // One-tap pickers. Words typed in the name still win; these fill in what the words leave out.
     let pick = { due: defaults.due || null, priority: null, duration: null };
+    let typedDue = false;
     const now0 = today();
     const tool = (ic, label, onclick, cls = '') => h('button', { type: 'button', class: 'qa-tool ' + cls, onclick }, icon(ic, 14), h('span', null, label));
     const toolbar = h('div', { class: 'qa-tools' });
     const drawTools = () => fill(toolbar,
-      tool('today', 'Today', () => { pick.due = pick.due?.date === now0 ? null : { date: now0, time: null, recur: null }; drawTools(); refresh(); input.focus(); }, pick.due?.date === now0 ? 'on' : ''),
-      tool('upcoming', 'Tomorrow', () => { const d = addDays(now0, 1); pick.due = pick.due?.date === d ? null : { date: d, time: null, recur: null }; drawTools(); refresh(); input.focus(); }, pick.due?.date === addDays(now0, 1) ? 'on' : ''),
+      tool('today', 'Today', () => { pick.due = pick.due?.date === now0 ? null : { date: now0, time: null, recur: null }; drawTools(); refresh(); input.focus(); }, !typedDue && pick.due?.date === now0 ? 'on' : ''),
+      tool('upcoming', 'Tomorrow', () => { const d = addDays(now0, 1); pick.due = pick.due?.date === d ? null : { date: d, time: null, recur: null }; drawTools(); refresh(); input.focus(); }, !typedDue && pick.due?.date === addDays(now0, 1) ? 'on' : ''),
       tool('flag', pick.priority ? 'P' + pick.priority : 'Priority', e => menu(e.currentTarget, [1, 2, 3, 4].map(n => ({ label: n === 4 ? 'No priority' : 'Priority ' + n, icon: 'flag', onclick: () => { pick.priority = n === 4 ? null : n; drawTools(); refresh(); input.focus(); } }))), pick.priority ? 'on pri' + pick.priority : ''),
       tool('clock', pick.duration ? mins(pick.duration) : 'Time', e => menu(e.currentTarget, [15, 30, 45, 60, 90, 120, 180, 240].map(m => ({ label: mins(m), onclick: () => { pick.duration = m; drawTools(); refresh(); input.focus(); } })).concat(pick.duration ? ['-', { label: 'No estimate', icon: 'x', onclick: () => { pick.duration = null; drawTools(); refresh(); } }] : [])), pick.duration ? 'on' : ''),
       tool('note', 'Details', () => { desc.hidden = !desc.hidden; if (!desc.hidden) desc.focus(); }, ''),
@@ -397,6 +401,7 @@ export function openQuickAdd(defaults = {}) {
     const refresh = () => {
       if (!input.value.trim()) keepDate = false;
       const p = parse();
+      if (!!p.due !== typedDue) { typedDue = !!p.due; drawTools(); }
       const would = keepDate && parseQuickAdd(input.value, M.ctx()).dueChip;
       const list = p.chips.map(c => h('span', { class: 'chip' }, c));
       if (p.dueChip) list.unshift(h('button', { type: 'button', class: 'chip chip-due', title: 'Not a date? Tap to keep these words in the name', onclick: () => { keepDate = true; refresh(); input.focus(); } }, icon('upcoming', 12), p.dueChip, h('span', { class: 'chip-x', 'aria-label': 'Not a date' }, '×')));

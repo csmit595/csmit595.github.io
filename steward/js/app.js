@@ -15,7 +15,7 @@ import { semantic, enabled as semanticOn, status as semStatus } from './semantic
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 
-const VERSION = '3.2.0';
+const VERSION = '3.3.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -146,6 +146,7 @@ function drawResults() {
   const shown = results.slice(0, 80);
   const row = r => r.kind === 'task'
     ? h('button', { class: 'rowlink sres' + (r.item.completedAt ? ' done' : ''), onclick: () => openTask(r.item.id) }, icon(r.item.completedAt ? 'done' : 'check', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), (r.where.has('body')) && h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Task · ${M.projectName(r.item.projectId)}${r.item.due ? ' · ' + fmtDate(r.item.due.date) : ''}${r.item.completedAt ? ' · completed' : ''}${(r.item.labels || []).length ? ' · @' + r.item.labels.join(' @') : ''}`)))
+    : r.kind === 'source' ? h('a', { class: 'rowlink sres', href: '#/sources' }, icon('book', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, 'Source · Writing')))
     : r.kind === 'doc' ? h('a', { class: 'rowlink sres', href: '#/doc/' + r.item.id }, icon('edit', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Writing · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`)))
     : h('a', { class: 'rowlink sres', href: '#/note/' + r.item.id }, icon('note', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Note · ${store.get('notebooks', r.item.notebookId)?.name || ''} · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}${(r.item.tags || []).length ? ' · ' + r.item.tags.join(', ') : ''}`)));
   fill(el, h('div', { class: 'sub scount' }, results.length ? `${results.length} result${results.length === 1 ? '' : 's'}${results.length > 80 ? ', showing the best 80' : ''}${fuzzy ? ' · including close spellings' : ''}` : ''),
@@ -188,7 +189,7 @@ function viewSettings(main) {
       h('p', null, 'Paste the Google client ID from the setup guide:'), h('div', { class: 'row gap' }, id, btn('Save', () => { const v = id.value.trim(); if (!/\.apps\.googleusercontent\.com$/.test(v)) return toast('That does not look like a client ID. It ends in apps.googleusercontent.com'); settings.set('clientId', v); again(); }, 'primary')));
   } else if (!sync.connected()) {
     g.push(h('p', null, 'Ready to connect. Google will ask you to allow Steward to use your Drive and Calendar.'),
-      h('div', { class: 'row gap' }, btn('Connect Google account', () => sync.connect().then(again).catch(e => toast('Google sign-in did not finish: ' + e.message)), 'primary'), btn('Change client ID', () => { settings.set('clientId', ''); again(); }, 'link')));
+      h('div', { class: 'row gap wrap' }, btn('Connect Google account', () => sync.connect().then(again).catch(e => toast('Google sign-in did not finish: ' + e.message)), 'primary'), btn('Change client ID', () => { settings.set('clientId', ''); again(); }, 'link')));
   } else {
     g.push(h('p', null, 'Connected', sync.email() ? ' as ' + sync.email() : '', '. Data is saved in the ', h('b', null, 'Steward'), ' folder in your Google Drive.'),
       h('p', { class: 'sub', id: 'sync-line' }, syncLine()),
@@ -236,7 +237,8 @@ function viewSettings(main) {
     card('Google account and sync', g),
     card('Reminders', h('p', { class: 'sub' }, 'These apply on all your devices.'),
       settings.get('remindersPaused') && h('div', { class: 'banner' }, 'Steward’s reminders are on hold so they do not double up with Todoist. ', btn('Turn reminders on', () => { settings.set('remindersPaused', false); if (sync.connected()) sync.run(); again(); }, 'tiny primary')),
-      h('label', { class: 'inline' }, auto, ' Remind me about every task that has a time, ', lead),
+      h('label', { class: 'inline nowrap' }, auto, h('span', { class: 'grow' }, 'Remind me about every task that has a time')),
+      h('label', { class: 'inline block' }, 'When: ', lead),
       h('p', { class: 'sub' }, sync.connected() ? 'Reminders are placed on a Google calendar named "Steward Reminders", so your phone buzzes through Google Calendar even when Steward is closed. Keep notifications on for that calendar in the Google Calendar app.' : 'Until Google is connected, reminders only show while Steward is open.'),
       perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Steward in this browser’s settings.')),
     card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
@@ -306,8 +308,13 @@ function hoursEditor(again) {
   return h('div', { class: 'hours-grid' }, DAYNAMES.map((name, i) => {
     const w = hours[i];
     const on = h('input', { type: 'checkbox', checked: !!w, onchange: () => { hours[i] = on.checked ? { start: '07:00', end: '22:30' } : null; save(); again(); } });
-    const t = k => h('input', { type: 'time', class: 'field slim', value: w?.[k] || '', disabled: !w, onchange: e => { if (e.target.value) { hours[i] = { ...hours[i], [k]: e.target.value }; save(); } } });
-    return [h('span', null, name), h('label', { class: 'inline' }, on, ' plan'), t('start'), t('end')];
+    const t = k => h('input', { type: 'time', class: 'field slim', value: w?.[k] || '', disabled: !w, 'aria-label': `${name} ${k === 'start' ? 'from' : 'until'}`, onchange: e => {
+      if (!e.target.value) return;
+      const next = { ...hours[i], [k]: e.target.value };
+      if (next.end <= next.start) { e.target.value = hours[i][k]; return toast('The end of the day has to be after its start.'); }
+      hours[i] = next; save();
+    } });
+    return h('div', { class: 'hrow' + (w ? '' : ' off') }, h('span', { class: 'hday' }, name), h('label', { class: 'inline' }, on, ' plan'), h('span', { class: 'htimes' }, t('start'), h('span', { class: 'sub' }, 'to'), t('end')));
   }));
 }
 function blocksEditor(again) {
@@ -324,6 +331,7 @@ function blocksEditor(again) {
     const until = h('input', { type: 'date', class: 'field slim', value: b.until || '' });
     const save = () => {
       if (!name.value.trim() || !days.length || !st.value || !en.value) return toast('Give it a name, at least one day, and times');
+      if (en.value <= st.value) return toast('The block has to end after it starts.');
       store.put('blocks', { ...b, name: name.value.trim(), days, start: st.value, end: en.value, every: +every.value, anchor: +every.value > 1 ? anchor.value : null, until: until.value || null });
       close(); again();
     };
@@ -339,7 +347,13 @@ function blocksEditor(again) {
 const semLine = () => !semanticOn() ? 'Off on this device.' : semStatus.error ? (semStatus.error === 'offline' ? 'Waiting for a connection to download the model.' : 'Problem: ' + semStatus.error) : !semStatus.total ? 'Starts a few seconds after Steward opens.' : semStatus.done < semStatus.total ? `Reading your notes and tasks: ${semStatus.done} of ${semStatus.total}` : `Up to date: ${semStatus.total} notes and tasks indexed.`;
 const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? 'Google needs you to reconnect. Tap Sync now.' : sync.status === 'offline' ? sync.message : (sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet') + (sync.attWaiting ? ` · ${sync.attWaiting} attachment${sync.attWaiting === 1 ? '' : 's'} waiting to upload (Steward keeps trying; tasks and notes still sync)` : '');
 
-function applyTheme() { const t = settings.get('theme'); if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t; }
+function applyTheme() {
+  const t = settings.get('theme');
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  // The phone's status bar follows the theme chosen here, not only the phone's own light/dark setting.
+  const dark = t === 'dark' || (t === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelectorAll('meta[name=theme-color]').forEach(m => { m.removeAttribute('media'); m.content = dark ? '#171a15' : '#f6f1e5'; });
+}
 
 // ---- reminders while the app is open -------------------------------------------------------------
 function checkReminders() {
@@ -477,6 +491,7 @@ function bgLine() {
 async function start() {
   applyTheme();
   await store.init();
+  M.repairTasks();
   settings.adoptLocal();
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }
   await sync.loadCachedEvents();
@@ -508,6 +523,8 @@ async function start() {
   const pushSoon = debounce(() => sync.run(), 4000);
   let warned = 0;
   store.on(info => { if (info.storageError && Date.now() - warned > 30000) { warned = Date.now(); toast('Steward could not save to this device (' + info.storageError + '). Free up storage space, then make another change so it retries.', null, null, 15000); } });
+  store.on(info => { if (info.remote) M.repairTasks(); });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   store.on(info => { if (info.ocr) { pushSoon(); semantic.kick(12000); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); if (info.local || info.remote || info.ocr) semantic.kick(info.local ? 6000 : 12000); });
   ocr.kick(15000);
   semantic.kick(20000);

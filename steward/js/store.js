@@ -235,7 +235,9 @@ export const store = {
   },
   importAll(obj) {
     let n = 0;
-    for (const t of TYPES) for (const x of obj[t] || []) { if (x && x.id) { data[t].set(x.id, { ...x, updatedAt: Date.now() }); touchItem(t, x.id); n++; } }
+    // A restore must win over what is in Drive: stamp every field as changed now (old per-field times would lose).
+    const now = Date.now();
+    for (const t of TYPES) for (const x of obj[t] || []) { if (x && x.id) { const { _f, ...rest } = x; data[t].set(x.id, { ...rest, updatedAt: now }); touchItem(t, x.id); n++; } }
     for (const f of Object.keys(FILES)) localStorage.setItem('steward.dirty.' + f, '1');
     this.flush().catch(() => {}); this.emit({});
     return n;

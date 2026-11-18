@@ -64,7 +64,7 @@ export function mdToHtml(md) {
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|\W)\*(?!\s)(.+?)\*/g, '$1<i>$2</i>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>')
-    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2">$2</a>');
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]*[^\s<).,;:!?])/g, '$1<a href="$2">$2</a>');
   const out = []; let list = null;
   const close = () => { if (list) { out.push(`</${list.tag}>`); list = null; } };
   for (const raw of String(md || '').split(/\r?\n/)) {

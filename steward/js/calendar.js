@@ -40,7 +40,7 @@ function layout(timed) {
     if (cluster.length && it.start >= clusterEnd) { flush(); clusterEnd = -1; }
     let c = cols.findIndex(end => end <= it.start);
     if (c < 0) c = cols.length;
-    cols[c] = Math.max(it.end, it.start + 25); it.col = c; cluster.push(it); clusterEnd = Math.max(clusterEnd, cols[c]);
+    cols[c] = Math.max(it.end, it.start + Math.ceil(24 / HOUR * 60)); /* a short item is still drawn about 22px tall */ it.col = c; cluster.push(it); clusterEnd = Math.max(clusterEnd, cols[c]);
   }
   flush();
   return timed;
@@ -140,7 +140,8 @@ export function editEvent(ev) {
     cal.value = ev.calId || cals.find(c => c.primary)?.id || cals[0]?.id || '';
     const rep = h('select', { class: 'field' }, REPEATS.map(([v, l]) => h('option', { value: v }, l)));
     const loc = h('input', { class: 'field', placeholder: 'Location', value: ev.location || '' });
-    const desc = h('textarea', { class: 'field', rows: 3, placeholder: 'Notes', value: (ev.description || '').replace(/<[^>]+>/g, '') });
+    const desc0 = (ev.description || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
+    const desc = h('textarea', { class: 'field', rows: 3, placeholder: 'Notes', value: desc0 });
     const evOnly = h('div', { class: 'form' }, h('label', null, 'Ends', h('div', { class: 'row gap' }, ed, et)), h('label', null, 'Calendar', cal), isNew && h('label', null, 'Repeat', rep), h('label', null, 'Location', loc), h('label', null, 'Notes', desc));
     const sync1 = () => { st.hidden = et.hidden = allDay.checked; evOnly.hidden = kind !== 'event'; };
     allDay.addEventListener('change', sync1);
@@ -151,7 +152,8 @@ export function editEvent(ev) {
       if (!title.value.trim() || busy) return title.focus();
       if (kind === 'task') { M.addTask({ content: title.value.trim(), due: { date: sd.value, time: allDay.checked ? null : st.value, recur: null } }); toast('Task added'); return close(); }
       busy = true;
-      const out = { id: ev.id, calId: cal.value, title: title.value.trim(), allDay: allDay.checked, location: loc.value, description: desc.value, rrule: isNew ? rep.value : '' };
+      // notes left untouched keep their original formatting (links from invitations and the like)
+      const out = { id: ev.id, calId: cal.value, title: title.value.trim(), allDay: allDay.checked, location: loc.value, description: desc.value === desc0 ? (ev.description || '') : desc.value, rrule: isNew ? rep.value : '' };
       if (allDay.checked) { out.start = sd.value; out.end = addDays(ed.value < sd.value ? sd.value : ed.value, 1); }
       else { out.start = new Date(`${sd.value}T${st.value}:00`).toISOString(); let en = new Date(`${ed.value}T${et.value}:00`); if (en <= new Date(out.start)) en = new Date(new Date(out.start).getTime() + 3600000); out.end = en.toISOString(); }
       try {

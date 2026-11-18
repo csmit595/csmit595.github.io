@@ -1,6 +1,6 @@
 // Business rules shared by the screens and by sync (completing, repeating, reminders, changes sent by Claude).
-import { store, settings } from './store.js';
-import { today, uid, mdToHtml, sanitize, esc } from './util.js';
+import { store, settings, TYPES, SHARED } from './store.js';
+import { today, mdToHtml, sanitize, esc } from './util.js';
 import { nextOccurrence, parseDue, looksRepeating } from './dates.js';
 
 export const COLORS = { green: '#3f7d4e', moss: '#7a8f3c', teal: '#2f8f8a', blue: '#3b74c4', indigo: '#5b5fc7', plum: '#8e4fa8', rose: '#c2527a', red: '#c8473b', orange: '#d17a2a', gold: '#b8962e', stone: '#7b756a', slate: '#55606e' };
@@ -94,27 +94,63 @@ export const allTags = () => { const m = new Map(); for (const n of liveNotes())
 // ---- changes written by Claude (files dropped in the Drive "inbox" folder) --
 function dueFrom(v) {
   if (v === null) return null;
-  if (typeof v === 'string') return parseDue(v)?.due || null;
-  if (v && v.date) return { date: v.date, time: v.time || null, recur: v.recur ? (typeof v.recur === 'string' ? parseDue(v.recur)?.due.recur || null : v.recur) : null };
+  if (typeof v === 'string') { const p = parseDue(v); return p ? p.due : v.trim() ? undefined : null; } // words that are not a date are reported, not treated as "no date"
+  if (v && v.date) return { date: String(v.date), time: v.time || null, recur: v.recur ? (typeof v.recur === 'string' ? parseDue(v.recur)?.due.recur || null : v.recur) : null };
   return undefined;
 }
-const dateOnly = v => (v === null ? null : typeof v === 'string' ? (/^\d{4}-\d{2}-\d{2}$/.test(v) ? v : parseDue(v)?.due.date || undefined) : v?.date || undefined);
+const realDate = s => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); if (!m) return false; const d = new Date(+m[1], +m[2] - 1, +m[3]); return d.getFullYear() === +m[1] && d.getMonth() === +m[2] - 1 && d.getDate() === +m[3]; };
+const realTime = s => /^([01]\d|2[0-3]):[0-5]\d$/.test(s || '');
+const dateOnly = v => { const d = v === null ? null : typeof v === 'string' ? (/^\d{4}-\d{2}-\d{2}$/.test(v) ? v : parseDue(v)?.due.date || undefined) : v?.date || undefined; return d && !realDate(d) ? undefined : d; };
+/** Labels as a clean list of names, whatever shape they arrived in ("promise", "@a, b", ["a", "@b"]). */
+const labelList = v => [...new Set((Array.isArray(v) ? v : String(v ?? '').split(/[,\s]+/)).map(x => String(x ?? '').trim().replace(/^@/, '').replace(/\s+/g, '-')).filter(Boolean))];
+/**
+ * Put a task's fields into the shapes the screens rely on. Returns only the fields that had to change, or null.
+ * One wrong shape (labels as a word instead of a list, a date that does not exist) used to stop Search, filters
+ * and whole screens from drawing.
+ */
+export function taskFixes(t, partial = false) {
+  const f = {};
+  if (typeof t.content !== 'string' && !(partial && t.content === undefined)) f.content = String(t.content ?? '').trim() || 'Untitled';
+  if (t.description != null && typeof t.description !== 'string') f.description = String(t.description);
+  if (t.labels != null && (!Array.isArray(t.labels) || t.labels.some(l => typeof l !== 'string' || !l || l[0] === '@'))) f.labels = labelList(t.labels);
+  if (t.priority != null && ![1, 2, 3, 4].includes(t.priority)) { const p = Math.round(Number(t.priority)); f.priority = p >= 1 && p <= 4 ? p : 4; }
+  if (t.duration != null && (typeof t.duration !== 'number' || !(t.duration > 0))) { const n = Math.round(Number(t.duration)); f.duration = n > 0 && n <= 1440 ? n : null; }
+  if (t.reminders != null && !Array.isArray(t.reminders)) f.reminders = [];
+  if (t.due != null) {
+    if (typeof t.due !== 'object' || !realDate(t.due.date)) f.due = null;
+    else if (t.due.time != null && !realTime(t.due.time)) f.due = { ...t.due, time: null };
+  }
+  if (t.deadline != null && !realDate(t.deadline)) f.deadline = null;
+  return Object.keys(f).length ? f : null;
+}
+/** Mend any stored task with a wrong shape (run when Steward starts and after data arrives from Drive). */
+export function repairTasks() {
+  let n = 0;
+  for (const t of store.all('tasks')) { const f = taskFixes(t); if (f) { store.patch('tasks', t.id, f, { silent: true, noHistory: true }); n++; } }
+  return n;
+}
 /** Apply a list of changes. Returns one line per change; lines starting with "problem" need attention. */
 export function applyOps(ops) {
   const results = [];
   const BY = { by: 'Claude' };
   for (const [i, o] of (ops || []).entries()) {
+    if (!o || typeof o !== 'object') { results.push(`problem #${i + 1}: not a change (expected {"op": ...})`); continue; }
     const where = `#${i + 1} (${o.op || '?'} ${o.type || 'task'}${o.item?.content ? ' "' + String(o.item.content).slice(0, 60) + '"' : o.id ? ' ' + o.id : ''})`;
     try {
-      const type = (o.type || 'task').toLowerCase();
-      if (o.op === 'complete') { if (!store.get('tasks', o.id)) throw new Error('no task with that id'); completeTask(o.id); results.push('ok ' + where); continue; }
+      const type = String(o.type || 'task').toLowerCase();
+      if (!['upsert', 'complete', 'uncomplete', 'restore', 'delete'].includes(o.op)) throw new Error(`unknown op "${o.op ?? ''}"; nothing was changed (use upsert, complete, uncomplete, restore or delete)`);
+      if (o.op === 'upsert' && (!o.item || typeof o.item !== 'object' || Array.isArray(o.item))) throw new Error('an upsert needs an "item"');
+      if (o.op === 'complete') { const t = store.get('tasks', o.id); if (!t) throw new Error('no task with that id'); if (t.completedAt) { results.push('ok ' + where + ' (already done)'); continue; } completeTask(o.id); results.push('ok ' + where); continue; }
       if (o.op === 'uncomplete') { if (!store.rawGet('tasks', o.id)) throw new Error('no task with that id'); uncompleteTask(o.id); results.push('ok ' + where); continue; }
       if (o.op === 'restore') { const x = store.rawGet('tasks', o.id); if (!x?.was) throw new Error('nothing to restore'); store.put('tasks', { ...x.was }, BY); results.push('ok ' + where); continue; }
       if (o.op === 'delete') {
+        const kind = type === 'task' ? 'tasks' : type === 'doc' || type === 'document' ? 'docs' : type + 's';
+        if (!TYPES.includes(kind)) throw new Error(`cannot delete a "${type}"`);
+        if (!store.get(kind, o.id)) throw new Error(`no ${type} with that id; nothing was deleted`);
         if (type === 'task') deleteTask(o.id);
         else if (type === 'project') deleteProject(o.id);
-        else if (type === 'note') store.patch('notes', o.id, { trashed: true });
-        else store.remove(type + 's', o.id);
+        else if (kind === 'notes' || kind === 'docs') store.patch(kind, o.id, { trashed: true });
+        else store.remove(kind, o.id);
         results.push('ok ' + where);
         continue;
       }
@@ -130,13 +166,19 @@ export function applyOps(ops) {
           else { it.due = d; if (raw && looksRepeating(raw) && !d?.recur) results.push(`problem ${where}: the repeat in "${raw}" was not understood, so it was saved as a one-time date`); }
         }
         if (it.deadline !== undefined) { const d = dateOnly(it.deadline); if (d === undefined) { results.push(`problem ${where}: could not read the deadline`); delete it.deadline; } else it.deadline = d; }
+        if (it.id != null && !/^[\w-]{1,80}$/.test(String(it.id))) throw new Error('a task id may only use letters, digits and hyphens');
+        if (it.due && !realDate(it.due.date)) { results.push(`problem ${where}: "${it.due.date}" is not a real date; date left unchanged`); delete it.due; }
+        else if (it.due?.time && !realTime(it.due.time)) { results.push(`problem ${where}: "${it.due.time}" is not a time (use HH:MM); saved without a time`); it.due = { ...it.due, time: null }; }
+        if (it.parentId && !store.get('tasks', it.parentId)) { results.push(`problem ${where}: no parent task with id ${it.parentId}; saved as a top-level task`); it.parentId = null; }
+        Object.assign(it, taskFixes(it, true) || {});
         if (it.labels) ensureLabels(it.labels);
         if (it.id && !cur && store.rawGet('tasks', it.id)?.deleted) throw new Error('that task was deleted; use {"op":"restore"} first');
         // A change to a task this device does not have (yet) must never create a blank copy under that id: the copy's
         // empty name, project and labels would be newer than the real task's and overwrite it everywhere.
         if (it.id && !cur && !String(it.content || '').trim()) throw new Error('no task with that id on this device yet; nothing was changed (to create a new task, include its content)');
+        if (!cur && !String(it.content || '').trim()) throw new Error('a new task needs "content"');
         if (cur) store.put('tasks', { ...cur, ...it, remindedFor: it.due ? null : cur.remindedFor }, BY);
-        else addTask({ content: 'Untitled', ...it }, BY);
+        else addTask(it, BY);
       } else if (type === 'note') {
         const cur = it.id ? store.get('notes', it.id) : null;
         // Same rule as tasks: adding to, or patching, a note this device does not hold would build a blank note that
@@ -170,6 +212,7 @@ export function applyOps(ops) {
         store.put('docs', cur ? { ...cur, ...it } : { kind: 'other', footnotes: {}, meta: {}, trashed: false, title: 'Untitled', body: '<p><br></p>', ...it });
       } else if (type === 'source') {
         const cur = it.id ? store.get('sources', it.id) : null;
+        if (!cur && !String(it.title || '').trim()) throw new Error('a new source needs a title');
         store.put('sources', cur ? { ...cur, ...it } : { type: 'book', ...it });
       } else if (type === 'project') {
         const cur = it.id ? store.get('projects', it.id) : store.all('projects').find(p => p.name.toLowerCase() === String(it.name || '').toLowerCase());
@@ -178,10 +221,24 @@ export function applyOps(ops) {
         // a fixed block: {name, days:[0-6], start:"HH:MM", end:"HH:MM", every:1|2, anchor:"YYYY-MM-DD", until:"YYYY-MM-DD"}
         const cur = it.id ? store.get('blocks', it.id) : store.all('blocks').find(b => b.name.toLowerCase() === String(it.name || '').toLowerCase());
         const b = { every: 1, ...(cur || {}), ...it, id: cur?.id || it.id || undefined };
-        if (!b.name || !Array.isArray(b.days) || !/^\d\d:\d\d$/.test(b.start || '') || !/^\d\d:\d\d$/.test(b.end || '')) throw new Error('a block needs name, days, start and end');
+        if (!b.name || !Array.isArray(b.days) || !realTime(b.start) || !realTime(b.end)) throw new Error('a block needs name, days, start and end (HH:MM)');
+        b.days = [...new Set(b.days.map(Number))].filter(d => d >= 0 && d <= 6 && Number.isInteger(d)).sort();
+        if (!b.days.length) throw new Error('a block needs at least one day (0 = Sunday … 6 = Saturday)');
+        if (b.end <= b.start) throw new Error('a block must end after it starts (same day)');
+        if (b.anchor && !realDate(b.anchor)) throw new Error('anchor must be a real YYYY-MM-DD date');
+        if (b.until && !realDate(b.until)) throw new Error('until must be a real YYYY-MM-DD date');
+        b.every = b.every === 2 || b.every === '2' ? 2 : 1;
         store.put('blocks', b);
       } else if (type === 'prefs' || type === 'settings') {
         const cur = store.get('prefs', 'shared');
+        if (it.hours !== undefined) {
+          const okDay = w => w === null || (w && realTime(w.start) && realTime(w.end) && w.end > w.start);
+          if (!Array.isArray(it.hours) || it.hours.length !== 7 || !it.hours.every(okDay)) throw new Error('hours must list 7 days (Sunday first), each null or {start:"HH:MM", end:"HH:MM"} with end after start');
+        }
+        if (it.restDay !== undefined && ![-1, 0, 1, 2, 3, 4, 5, 6].includes(it.restDay)) throw new Error('restDay must be 0 (Sunday) to 6, or -1 for none');
+        if (it.remindLead !== undefined && !(Number(it.remindLead) >= 0)) throw new Error('remindLead must be minutes, 0 or more');
+        const bad = Object.keys(it).filter(k => k !== 'id' && !SHARED.includes(k));
+        if (bad.length) throw new Error(`unknown setting${bad.length > 1 ? 's' : ''}: ${bad.join(', ')}`);
         store.put('prefs', { ...(cur || {}), ...it, id: 'shared' });
       } else if (type === 'ocr') {
         // text Claude read from a photo or PDF already attached to a note: {id: attachment id, text}
@@ -189,11 +246,17 @@ export function applyOps(ops) {
         const cur = store.rawGet('ocr', it.id);
         store.put('ocr', { ...(cur && !cur.deleted ? cur : {}), id: it.id, text: it.text.slice(0, 30000), by: 'claude', failed: false, needsReading: false });
       } else if (type === 'comment') {
-        store.put('comments', { taskId: it.taskId, text: it.text || '', author: it.author || 'Claude', ...it });
+        if (!it.id && !store.get('tasks', it.taskId)) throw new Error('no task with that taskId; the comment was not added');
+        if (!it.id && !String(it.text || '').trim()) throw new Error('a comment needs text');
+        const curC = it.id ? store.get('comments', it.id) : null;
+        store.put('comments', { ...(curC || {}), taskId: it.taskId, text: String(it.text ?? curC?.text ?? ''), author: it.author || curC?.author || 'Claude', ...it });
       } else if (['section', 'label', 'filter', 'notebook'].includes(type)) {
         const cur = it.id ? store.get(type + 's', it.id) : null;
+        if (!cur && !String(it.name || '').trim()) throw new Error(`a new ${type} needs a name`);
+        if (!cur && type === 'filter' && !String(it.query || '').trim()) throw new Error('a new filter needs a query');
+        if (type === 'label' && it.name) it.name = labelList(it.name)[0] || it.name;
         store.put(type + 's', cur ? { ...cur, ...it } : it);
-      }
+      } else throw new Error(`unknown type "${type}"; nothing was changed`);
       results.push('ok ' + where);
     } catch (e) { results.push(`problem ${where}: ${e.message}`); }
   }

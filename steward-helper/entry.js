@@ -64,7 +64,10 @@ export function run(env) {
     try { env.upload(form, body); } catch (e) { log.push('report failed: ' + e.message); }
   };
   let applied = 0;
+  // Files applied on an earlier run whose move to the trash did not go through: finish the move, never apply twice.
+  const done = new Set(JSON.parse(env.props.get('applied') || '[]'));
   for (const f of fresh) {
+    if (done.has(f.id)) { trash(f.id); done.delete(f.id); env.props.set('applied', JSON.stringify([...done])); continue; }
     let ops;
     try {
       const url = f.mimeType === 'application/vnd.google-apps.document' ? `${DRIVE}/files/${f.id}/export?mimeType=text/plain` : `${DRIVE}/files/${f.id}?alt=media`;
@@ -80,7 +83,7 @@ export function run(env) {
     if (ops.some(needsApp)) { log.push(`left for the app: ${f.name}`); deferred.add(f.id); env.props.set('deferred', JSON.stringify([...deferred].filter(id => files.some(x => x.id === id)))); continue; }
     const results = applyOps(ops);
     const problems = results.filter(x => x.startsWith('problem'));
-    if (problems.length) report(f.name, [`${results.length - problems.length} applied, ${problems.length} with problems:`, ...problems]);
+    if (problems.length) report(f.name, [`${results.filter(x => x.startsWith('ok')).length} applied, ${problems.length} with problems:`, ...problems]);
     applied++;
     log.push(`applied ${f.name}: ${results.length - problems.length} ok, ${problems.length} problems`);
     pendingTrash.push(f.id);
@@ -91,7 +94,11 @@ export function run(env) {
     if (now.version !== meta.version) store.merge('tasks', JSON.parse(api(`${DRIVE}/files/${d.tasks}?alt=media`, {}, true)));
     const r = api(`${UPLOAD}/files/${d.tasks}?uploadType=media&fields=id,version`, { method: 'PATCH', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(store.snapshot('tasks')) });
     env.props.set('tasksVersion', r.version);
-    for (const id of pendingTrash.splice(0)) trash(id); // only once the tasks are safely in Drive
+    // only once the tasks are safely in Drive; remembered first, so a failed move is finished next run, not re-applied
+    const ids = pendingTrash.splice(0);
+    env.props.set('applied', JSON.stringify([...done, ...ids]));
+    for (const id of ids) { trash(id); done.delete(id); }
+    env.props.set('applied', JSON.stringify([...done].filter(id => !ids.includes(id))));
   } else env.props.set('tasksVersion', meta.version);
 
   // ---- 2. phone reminders ----

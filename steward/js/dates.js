@@ -55,7 +55,11 @@ export function nextOccurrence(due, now = today()) {
     }
     if (r.unit === 'month' && r.nth) { const d = fromYmd(base); const t = new Date(d.getFullYear(), d.getMonth() + n, 1); return nthWeekday(t.getFullYear(), t.getMonth(), r.nth, r.dow); }
     if (r.unit === 'month') return addMonths(base, n, r.dom);
-    if (r.unit === 'year') { const d = fromYmd(base); d.setFullYear(d.getFullYear() + n); return ymd(d); }
+    if (r.unit === 'year') {
+      const d = fromYmd(base), a = r.anchor ? fromYmd(r.anchor) : d, y = d.getFullYear() + n;
+      const last = new Date(y, a.getMonth() + 1, 0).getDate();
+      return ymd(new Date(y, a.getMonth(), Math.min(a.getDate(), last)));
+    }
     return addDays(base, 1);
   };
   let next = step(r.fromDone ? now : due.date);
@@ -63,6 +67,14 @@ export function nextOccurrence(due, now = today()) {
   while (!r.fromDone && next <= now && guard++ < 2000) next = step(next);
   return next;
 }
+
+// "John 3:16", "1 Cor 13:4-7", "Ps 23:1" are verses, not times of day.
+const BOOKS = 'gen(?:esis)?|ex(?:od(?:us)?)?|lev(?:iticus)?|num(?:bers)?|deut(?:eronomy)?|josh(?:ua)?|judg(?:es)?|ruth|sam(?:uel)?|kings|kgs|chr(?:on(?:icles)?)?|ezra|neh(?:emiah)?|esth(?:er)?|job|ps(?:a|alm|alms)?|prov(?:erbs)?|eccl(?:es(?:iastes)?)?|song(?: of (?:songs|solomon))?|isa(?:iah)?|jer(?:emiah)?|lam(?:entations)?|ezek(?:iel)?|dan(?:iel)?|hos(?:ea)?|joel|amos|obad(?:iah)?|jonah|mic(?:ah)?|nah(?:um)?|hab(?:akkuk)?|zeph(?:aniah)?|hag(?:gai)?|zech(?:ariah)?|mal(?:achi)?|matt(?:hew)?|mt|mark|mk|luke|lk|john|jn|acts|rom(?:ans)?|cor(?:inthians)?|gal(?:atians)?|eph(?:esians)?|phil(?:ippians)?|col(?:ossians)?|thess(?:alonians)?|tim(?:othy)?|tit(?:us)?|philem(?:on)?|phlm|heb(?:rews)?|jam(?:es)?|jas|pet(?:er)?|jude|rev(?:elation)?';
+const VERSE_BEFORE = new RegExp(`\\b(?:${BOOKS})\\.?\\s*$`, 'i');
+/** A bare "3:16" is a verse when a book of the Bible comes right before it, or a verse range or list follows ("2:42-47", "5:3,10"). */
+const isVerse = (text, m) => VERSE_BEFORE.test(text.slice(0, m.index)) || /^\s*(?:[-–—]\s*\d|,\s*\d|ff\b)/.test(text.slice(m.index + m[0].length));
+/** "at 14 Oak St" is an address, not 2 PM: a bare "at 3" is not a time when a capitalised word follows it, or a 24-hour number is followed by any word. */
+const isAddress = (n, after) => /^\s+[A-Z][a-z]/.test(after) || (n > 12 && /^\s+[a-z]/i.test(after) && !/^\s+(?:p[1-4]|for|on|by|with|and|every|ev)\b/i.test(after));
 
 function parseTime(text, partOk = false) {
   let m;
@@ -72,8 +84,8 @@ function parseTime(text, partOk = false) {
     let H = +m[1] % 12; if (/^p/i.test(m[3])) H += 12;
     if (+m[1] <= 12) return { time: `${pad(H)}:${m[2] || '00'}`, rest: cut(m) };
   }
-  if ((m = text.match(/\b(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d)\b/))) return { time: `${pad(+m[1])}:${m[2]}`, rest: cut(m) };
-  if ((m = text.match(/\bat\s+(\d{1,2})\b(?!\s*[\/.-]\d)/i)) && +m[1] <= 23) {
+  for (const s of text.matchAll(/\b(at\s+)?([01]?\d|2[0-3]):([0-5]\d)\b/gi)) { if (!s[1] && isVerse(text, s)) continue; return { time: `${pad(+s[2])}:${s[3]}`, rest: cut(s) }; }
+  if ((m = text.match(/\bat\s+(\d{1,2})\b(?!\s*[\/.:-]\d)/i)) && +m[1] <= 23 && !isAddress(+m[1], text.slice(m.index + m[0].length))) {
     let H = +m[1]; if (H >= 1 && H <= 6) H += 12; // "at 3" means 3 PM for working hours
     return { time: `${pad(H)}:00`, rest: cut(m) };
   }
@@ -98,7 +110,7 @@ function isFraction(text, m) {
 }
 
 /** Words that mean a task repeats. Used to warn when a repeat was asked for but not understood. */
-export const looksRepeating = text => /\b(every|ev|daily|weekly|monthly|yearly|annually|biweekly|fortnightly|quarterly)\b/i.test(text || '');
+export const looksRepeating = text => new RegExp(`\\b(?:(?:every|ev)!?\\s+(?:other\\b|\\d|a\\s|an\\s|few\\b|couple\\b|single\\s+(?:day|week)|(?:first|second|third|fourth|last|1st|2nd|3rd|4th)\\b|day|week|month|quarter|year|morning|afternoon|evening|night|${DAY_RE}\\b)|daily|weekly|monthly|yearly|annually|biweekly|fortnightly|quarterly)`, 'i').test(text || '') && !/\b(?:every|ev)\s+(?:day|week|month|year)s?\s+(?:that|we|i|he|she|they|it|is|was)\b/i.test(text || '');
 
 function parseRecur(text) {
   let m0;
@@ -115,6 +127,7 @@ function parseRecur(text) {
   if ((m0 = text.match(/\b(?:(?:every|ev)\s+month|monthly)\s+on\s+the\s+(\d{1,2})(?:st|nd|rd|th)?\b/i))) {
     return { recur: { n: 1, unit: 'month', dom: Math.min(31, +m0[1]), text: m0[0].trim().replace(/\s+/g, ' ') }, rest: text.slice(0, m0.index) + ' ' + text.slice(m0.index + m0[0].length) };
   }
+  if ((m0 = text.match(/\b(?:every|ev)\s+quarter\b/i))) return { recur: { n: 3, unit: 'month', text: m0[0].trim().replace(/\s+/g, ' ') }, rest: text.slice(0, m0.index) + ' ' + text.slice(m0.index + m0[0].length) };
   const re = new RegExp(`\\b(?:(?<ev>every!?|ev)\\s+(?:(?<other>other)\\s+|(?<num>\\d+)(?<ord>st|nd|rd|th)?(?:\\s+|$))?(?<unit>days?|weeks?|months?|years?|weekdays?|workdays?|weekends?|${DAY_RE}(?:\\s*(?:,|and|&)\\s*${DAY_RE})*)?|(?<word>daily|weekly|biweekly|fortnightly|monthly|quarterly|yearly|annually))(?![\\w])`, 'i');
   const m = text.match(re);
   if (!m) return null;

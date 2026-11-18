@@ -70,14 +70,16 @@ export function docs() {
   for (const t of store.all('tasks')) out.push({ kind: 'task', item: t, title: t.content, meta: (t.labels || []).map(l => '@' + l).join(' ') + ' ' + M.projectName(t.projectId), body: (t.description || '') + (comments.get(t.id) || ''), atts: [], when: t.updatedAt });
   for (const n of M.liveNotes()) out.push({ kind: 'note', item: n, title: n.title || 'Untitled', meta: (n.tags || []).join(' ') + ' ' + (store.get('notebooks', n.notebookId)?.name || '') + ' ' + (n.attachments || []).map(a => a.name).join(' '), body: noteBody(n), atts: attText(n), when: n.updatedAt });
   for (const w of liveDocs()) out.push({ kind: 'doc', item: w, title: w.title || 'Untitled', meta: (w.kind || '') + ' writing ' + (w.meta?.course || ''), body: docBody(w), atts: [], when: w.updatedAt });
+  // sources saved for papers (author, title, publisher…) are found too
+  for (const s of store.all('sources')) out.push({ kind: 'source', item: s, title: String(s.title || s.shortTitle || 'Untitled source'), meta: 'source writing ' + (s.type || ''), body: Object.entries(s).filter(([k, v]) => !['id', 'title', 'type', '_f', 'hist', 'createdAt', 'updatedAt'].includes(k) && (typeof v === 'string' || typeof v === 'number')).map(([, v]) => v).join(' · '), atts: [], when: s.updatedAt });
   return out;
 }
 const docCache = new Map();
 function docBody(w) { const c = docCache.get(w.id); if (c && c.at === w.updatedAt) return c.text; const text = docText(w); docCache.set(w.id, { at: w.updatedAt, text }); return text; }
 function passesOps(d, ops) {
   const any = (list, f) => !list || list.some(f);
-  if (ops.in && !ops.in.some(v => v.startsWith(d.kind) || (d.kind === 'doc' && /^(writ|paper|sermon)/.test(v)))) return false;
-  if (d.kind === 'doc') return !(ops.tag || ops.notebook || ops.label || ops.project || ops.is || ops.has);
+  if (ops.in && !ops.in.some(v => v.startsWith(d.kind) || ((d.kind === 'doc' || d.kind === 'source') && /^(writ|paper|sermon|doc|source)/.test(v)))) return false;
+  if (d.kind === 'doc' || d.kind === 'source') return !(ops.tag || ops.notebook || ops.label || ops.project || ops.is || ops.has);
   if (d.kind === 'task') {
     const t = d.item;
     if (ops.tag || ops.notebook) return false;
@@ -94,8 +96,17 @@ function passesOps(d, ops) {
   }
   return true;
 }
-function scoreDoc(d, q, fuzzy) {
+const normCache = new Map();
+function fields(d) {
+  const key = d.kind + '|' + d.item.id, sig = `${d.when}|${d.title.length}|${d.meta}|${d.body.length}|${d.atts.length}|${d.atts.reduce((n, a) => n + a.text.length, 0)}`;
+  const c = normCache.get(key);
+  if (c && c.sig === sig) return c.f;
   const f = { title: norm(d.title), meta: norm(d.meta), body: norm(d.body), att: norm(d.atts.map(a => a.text).join(' ')) };
+  normCache.set(key, { sig, f });
+  return f;
+}
+function scoreDoc(d, q, fuzzy) {
+  const f = fields(d);
   for (const x of q.not) if (f.title.includes(x) || f.meta.includes(x) || f.body.includes(x) || f.att.includes(x)) return 0;
   let total = 0; const where = new Set();
   for (const term of q.terms) {
@@ -114,7 +125,7 @@ function scoreDoc(d, q, fuzzy) {
 export function search(query, opts = {}) {
   const q = parseQuery(query);
   if (!q.terms.length && !q.not.length && !Object.keys(q.ops).length) return { q, results: [], fuzzy: false };
-  const pool = docs().filter(d => (!opts.kind || d.kind === opts.kind) && (!opts.filter || opts.filter(d.item)) && passesOps(d, q.ops));
+  const pool = docs().filter(d => (!opts.kind || d.kind === opts.kind || (opts.kind === 'doc' && d.kind === 'source')) && (!opts.filter || opts.filter(d.item)) && passesOps(d, q.ops));
   const run = fuzzy => pool.map(d => { const r = scoreDoc(d, q, fuzzy); return r ? { ...d, ...r } : null; }).filter(Boolean).sort((a, b) => b.score - a.score);
   let results = run(false), fuzzy = false;
   if (results.length < 3 && q.terms.some(t => t.length >= 4)) { const loose = run(true); if (loose.length > results.length) { results = loose; fuzzy = true; } }

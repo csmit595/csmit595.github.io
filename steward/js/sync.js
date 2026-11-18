@@ -139,7 +139,7 @@ export const sync = {
       let r;
       try { r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + tok, ...(opts.headers || {}) } }); }
       catch (e) { if (safe && attempt < 2 && navigator.onLine) { await wait(600 * 3 ** attempt); continue; } throw e; }
-      if (r.status === 401) { ls.del('token'); throw new Error('auth'); }
+      if (r.status === 401) { ls.del('token'); if (attempt === 0 && this.staysSignedIn()) continue; throw new Error('auth'); }
       if (!r.ok) {
         const e = new Error(`Google said ${r.status}`); e.status = r.status; try { e.detail = (await r.json()).error?.message; } catch {}
         // Google asks apps to slow down and try again when busy; only repeat requests that cannot create a duplicate.
@@ -265,6 +265,12 @@ export const sync = {
       } else localNewer = false;
     }
     if (!id || localNewer || store.isDirty(file)) {
+      // Look once more right before saving: if the Google helper or another device saved in the last moment, fold
+      // that in first, so this upload never wipes out changes (Claude's included) it has not seen.
+      if (id) {
+        const again = await this.api(`${DRIVE}/files/${id}?fields=version`);
+        if (again.version !== versions[file]) { store.merge(file, await (await this.api(`${DRIVE}/files/${id}?alt=media`, {}, true)).json()); versions[file] = again.version; }
+      }
       store.clearDirty(file);
       try {
         const r = await this.upload(id, FILE_NAMES[file], d.root, 'text/plain', JSON.stringify(store.snapshot(file)));
@@ -390,8 +396,13 @@ export const sync = {
       await this.upload(null, `report-${name.replace(/\.json$/i, '')}.txt`, d.inbox, 'text/plain', body).catch(e => console.warn('report', e));
     };
     let applied = 0;
+    const trash = id => this.api(`${DRIVE}/files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
+    // Change files already applied here whose move to the trash did not go through: finish the move, never apply twice.
+    const doneIds = ls.get('inboxDone', []).filter(id => r.files.some(f => f.id === id));
     for (const f of r.files) {
       if (/^(failed-|report-)/.test(f.name) || f.mimeType === 'application/vnd.google-apps.folder') continue;
+      if (doneIds.includes(f.id)) { await trash(f.id); doneIds.splice(doneIds.indexOf(f.id), 1); ls.set('inboxDone', doneIds); continue; }
+      let did = false;
       try {
         const url = f.mimeType === 'application/vnd.google-apps.document' ? `${DRIVE}/files/${f.id}/export?mimeType=text/plain` : `${DRIVE}/files/${f.id}?alt=media`;
         let text = await (await this.api(url, {}, true)).text();
@@ -402,12 +413,17 @@ export const sync = {
         // Notes and documents need the page's HTML tools: a change file with any is left for when Steward is opened.
         if (this.background && ops.some(o => o && o.op !== 'delete' && ['note', 'doc', 'document'].includes(String(o.type || '').toLowerCase()))) continue;
         const results = applyOps(ops);
-        applied++;
+        applied++; did = true;
+        doneIds.push(f.id); ls.set('inboxDone', doneIds);
+        await store.flush().catch(() => {});
         const problems = results.filter(x => x.startsWith('problem'));
-        if (problems.length) await report(f.name, [`${results.length - problems.length} applied, ${problems.length} with problems:`, ...problems]);
-        await this.api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
+        if (problems.length) await report(f.name, [`${results.filter(x => x.startsWith('ok')).length} applied, ${problems.length} with problems:`, ...problems]);
+        await trash(f.id);
+        doneIds.splice(doneIds.indexOf(f.id), 1); ls.set('inboxDone', doneIds);
       } catch (e) {
-        if (e.message === 'auth' || e instanceof TypeError) throw e;
+        // No signal, sign-in, or Google having a bad moment: the file is fine, so leave it and try again next sync.
+        if (e.message === 'auth' || e.message === 'offline' || e instanceof TypeError || e.status) { if (did) { this.again = true; return applied; } throw e; }
+        if (did) { console.warn('inbox', e); continue; }
         await this.api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'failed-' + f.name }) }).catch(() => {});
         await report(f.name, ['Nothing was applied: ' + (e.message || 'the file could not be read')]);
       }

@@ -26,7 +26,14 @@ const TEMPLATES = {
   'Meeting notes': '<h2>Who was there</h2><div><br></div><h2>Discussed</h2><ul><li><br></li></ul><h2>To do</h2><ul class="todo"><li><br></li></ul>',
 };
 
-export function leaveNotes() { mounted?.save(true); mounted?.urls.forEach(u => URL.revokeObjectURL(u)); mounted = null; }
+// Notes started with "New note" on this device and never typed in: thrown away on leaving, like closing a blank page.
+const fresh = new Set();
+const isBlank = n => !String(n.title || '').trim() && !(n.attachments || []).length && !/<(img|audio|table|hr)\b/i.test(n.body || '') && !stripHtml(n.body || '').trim();
+export function leaveNotes(nextId) {
+  const was = mounted;
+  mounted?.save(true); mounted?.urls.forEach(u => URL.revokeObjectURL(u)); mounted = null;
+  if (was && was.id !== nextId && fresh.has(was.id)) { fresh.delete(was.id); const n = store.get('notes', was.id); if (n && isBlank(n)) store.remove('notes', was.id); }
+}
 
 export function renderNotes(route, main, info = {}) {
   if (route.view === 'notes') scope = route.scope || { kind: 'all' };
@@ -65,6 +72,7 @@ function scopeTitle() {
 }
 export function newNote(extra = {}) {
   const n = M.addNote({ notebookId: scope.kind === 'nb' ? scope.id : undefined, notebook: 'Notes', tags: scope.kind === 'tag' ? [scope.id] : [], ...extra });
+  if (isBlank(n)) fresh.add(n.id);
   go('#/note/' + n.id);
   return n;
 }
@@ -117,7 +125,7 @@ export async function filesToAttachments(files) {
 
 // ---- editor ------------------------------------------------------------------------
 function mountEditor(pane, id) {
-  leaveNotes();
+  leaveNotes(id);
   if (String(id).startsWith('en:')) { openEvernoteLink(id.slice(3)); return; }
   const n0 = store.get('notes', id);
   if (!n0) { fill(pane, h('div', { class: 'empty' }, h('strong', null, 'Note not found'), h('p', null, 'It may have been deleted on another device.'))); return; }
