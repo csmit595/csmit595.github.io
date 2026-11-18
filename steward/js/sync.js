@@ -1,8 +1,9 @@
-// Google sign-in, Google Drive sync, Google Calendar, and phone reminders (through a "Steward Reminders" calendar).
+// Google sign-in, Google Drive sync, Google Calendar, and reminder notifications on the phone and the Mac (sent by
+// the Google helper through Web Push; the old "Steward Reminders" calendar is kept only until they are proven).
 import { store, settings, BUNDLES, ITEMWISE } from './store.js';
 import { applyOps, buildSummary, reminderTimes, openTasks, reminderKey } from './model.js';
 import { pad } from './util.js';
-import { snapshot, backgroundIsNewer } from './lsmirror.js';
+import { snapshot, backgroundIsNewer, kvGet } from './lsmirror.js';
 
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar';
 const DRIVE = 'https://www.googleapis.com/drive/v3';
@@ -16,6 +17,12 @@ const WINDOW = 10 * 60000; // re-list files changed this long before the last on
 const itemName = (t, id) => `${t}.${id}.json`;
 const parseName = n => { const m = /^([a-z]+)\.(.+)\.json$/.exec(n || ''); return m && ITEMWISE.includes(m[1]) ? { t: m[1], id: m[2] } : null; };
 const wait = ms => new Promise(r => setTimeout(r, ms));
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+const inWorker = typeof window === 'undefined';
+/** What this device is called in notifications ("Reminders will show on this phone"). */
+export const deviceName = () => { const u = navigator.userAgent; return /Android|iPhone/i.test(u) ? 'phone' : /iPad/i.test(u) ? 'iPad' : /Macintosh/i.test(u) ? 'Mac' : /Windows/i.test(u) ? 'PC' : 'computer'; };
+export const pushSupported = () => typeof Notification !== 'undefined' && typeof PushManager !== 'undefined' && (inWorker ? !!self.registration : 'serviceWorker' in navigator);
 /** Run fn over items, n at a time. Stops starting new work after the first failure, then reports it. */
 async function pool(items, n, fn) {
   let i = 0, err = null;
@@ -126,7 +133,7 @@ export const sync = {
     const t = ls.get('token'), rt = ls.get('refresh');
     if (rt) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(rt), { method: 'POST' }).catch(() => {});
     else if (t && window.google?.accounts) try { google.accounts.oauth2.revoke(t.access_token, () => {}); } catch {}
-    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email']) ls.del(k);
+    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email', 'pushKey', 'pushFile', 'pushDevs', 'pushActive']) ls.del(k);
     store.driveClear().catch(() => {});
     this.set('off');
   },
@@ -226,6 +233,7 @@ export const sync = {
       if (await this.pushAttachments(d)) wrote = (await this.syncLibrary(d)) || wrote;
       if (wrote || !d.files.summary) await this.writeSummary(d);
       ls.set('drive', d);
+      await this.syncPush(d).catch(e => { if (e.message === 'auth') throw e; console.warn('notifications', e); });
       await this.syncReminders().catch(e => console.warn('reminders', e));
       await this.refreshEvents().catch(e => console.warn('calendar', e));
       await this.shareSecret(d).catch(e => { if (e.message === 'auth') throw e; console.warn('login file', e); });
@@ -542,24 +550,109 @@ export const sync = {
     await this.refreshEvents();
   },
 
-  // ---- phone reminders: mirrored into a Google calendar so the phone buzzes even when Steward is closed ----
+  // ---- notifications on this device ---------------------------------------------------------------------------
+  // The Google helper (Apps Script, every minute) sends reminders by Web Push to every device listed in
+  // Steward/notifications. Here this device subscribes with the helper's public key (key.json), lists itself in
+  // device-<id>.json, and marks itself confirmed once the helper's test notification has arrived.
+  pushInfo() {
+    return { supported: pushSupported(), permission: typeof Notification !== 'undefined' ? Notification.permission : 'unsupported', wanted: ls.get('pushWanted', true),
+      helper: !!ls.get('pushKey'), mine: ls.get('pushFile', null), devices: ls.get('pushDevs', {}), active: !!ls.get('pushActive', false), name: deviceName() };
+  },
+  setPushWanted(on) { ls.set('pushWanted', !!on); },
+  async syncPush(d) {
+    if (!pushSupported()) return;
+    // the helper's folder and public key
+    if (!d.push) { const f = await this.find('notifications', d.root, true); if (!f) { ls.set('pushActive', false); ls.del('pushKey'); return; } d.push = f.id; }
+    const list = async q => (await this.api(`${DRIVE}/files?q=${encodeURIComponent(`'${d.push}' in parents and trashed=false and ${q}`)}&fields=files(id,name,version)&pageSize=100`)).files || [];
+    let files;
+    try { files = await list(`(name='key.json' or name contains 'device-')`); }
+    catch (e) { if (e.status === 404) { delete d.push; return; } throw e; }
+    const keyF = files.find(f => f.name === 'key.json');
+    let key = ls.get('pushKey');
+    if (!keyF) { ls.set('pushActive', false); ls.del('pushKey'); return; }
+    if (!key || key.v !== keyF.version) { const j = await (await this.api(`${DRIVE}/files/${keyF.id}?alt=media`, {}, true)).json(); key = { v: keyF.version, pub: j.publicKey }; ls.set('pushKey', key); }
+    if (!key.pub) return;
+
+    // this device's subscription
+    const reg = inWorker ? self.registration : await navigator.serviceWorker.ready;
+    const want = Notification.permission === 'granted' && ls.get('pushWanted', true);
+    let sub = await reg.pushManager.getSubscription();
+    const sameKey = s => { const k = s?.options?.applicationServerKey; return !!k && b64u(k) === key.pub; };
+    if (sub && (!want || !sameKey(sub))) { await sub.unsubscribe().catch(() => {}); sub = null; }
+    if (!sub && want) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: unb64u(key.pub) });
+
+    // this device's file
+    let devId = ls.get('deviceId'); if (!devId) { devId = Math.random().toString(36).slice(2, 10); ls.set('deviceId', devId); }
+    const name = `device-${devId}.json`;
+    let mine = ls.get('pushFile', null);
+    if (mine && !files.some(f => f.id === mine.id)) mine = null; // removed from Drive (here or by the helper)
+    if (!sub) {
+      if (mine) await this.api(`${DRIVE}/files/${mine.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => {});
+      ls.del('pushFile');
+    } else {
+      const js = sub.toJSON();
+      const ok = await kvGet('pushOk').catch(() => null); // set by the service worker when a notification arrives
+      const confirmedAt = ok?.endpoint === js.endpoint ? ok.at : (mine?.endpoint === js.endpoint ? mine.confirmedAt || 0 : 0);
+      const body = JSON.stringify({ about: 'Lets the Steward helper send reminders to this device.', name: deviceName(), endpoint: js.endpoint, keys: js.keys, vapid: key.pub, confirmedAt });
+      if (!mine || mine.body !== body) {
+        const r = await this.upload(mine?.id || null, name, d.push, 'text/plain', body);
+        mine = { id: r.id, endpoint: js.endpoint, confirmedAt, body };
+        ls.set('pushFile', mine);
+        files = files.filter(f => f.id !== r.id).concat({ id: r.id, name, version: r.version });
+      }
+    }
+
+    // every device's state: notifications are proven once every device listed has shown its test
+    const old = ls.get('pushDevs', {}), devs = {};
+    for (const f of files.filter(x => x.name.startsWith('device-'))) {
+      if (old[f.id] && old[f.id].v === f.version) { devs[f.id] = old[f.id]; continue; }
+      if (mine && f.id === mine.id) { const j = JSON.parse(mine.body); devs[f.id] = { v: f.version, name: j.name, confirmedAt: j.confirmedAt, mine: true }; continue; }
+      try { const j = await (await this.api(`${DRIVE}/files/${f.id}?alt=media`, {}, true)).json(); devs[f.id] = { v: f.version, name: j.name || 'device', confirmedAt: j.confirmedAt || 0 }; }
+      catch (e) { if (e.status !== 404) throw e; }
+    }
+    for (const id in devs) devs[id].mine = !!mine && id === mine.id;
+    ls.set('pushDevs', devs);
+    const all = Object.values(devs);
+    ls.set('pushActive', all.length > 0 && all.every(x => x.confirmedAt));
+  },
+  /** Stop this device's notifications and take it off the list (another device's entry: just take it off). */
+  async removeDevice(fileId) {
+    const mine = ls.get('pushFile', null);
+    if (!fileId || fileId === mine?.id) {
+      ls.set('pushWanted', false);
+      const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe().catch(() => {});
+      if (mine) await this.api(`${DRIVE}/files/${mine.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => {});
+      ls.del('pushFile');
+    } else await this.api(`${DRIVE}/files/${fileId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
+    const devs = ls.get('pushDevs', {}); delete devs[fileId || mine?.id]; ls.set('pushDevs', devs);
+    ls.set('pushActive', Object.values(devs).length > 0 && Object.values(devs).every(x => x.confirmedAt));
+  },
+
+  // ---- backup reminders: the "Steward Reminders" Google calendar, used only until notifications are proven on
+  // every device; after that it is emptied and left alone ----
   async syncReminders() {
+    const clearOnly = !!ls.get('pushActive', false);
     let calId = ls.get('remCal');
+    if (clearOnly && ls.get('remCalEmpty', false)) return; // already emptied: nothing more to do
+    if (!clearOnly) ls.del('remCalEmpty');
     if (!calId) {
       const list = await this.api(`${CAL}/users/me/calendarList?minAccessRole=owner`);
       calId = (list.items || []).find(c => c.summary === 'Steward Reminders')?.id;
+      if (!calId && clearOnly) { ls.set('remCalEmpty', true); return; } // no backup calendar to empty
       if (!calId) calId = (await this.api(`${CAL}/calendars`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ summary: 'Steward Reminders', description: 'Task reminders from the Steward app. Managed automatically.' }) })).id;
       ls.set('remCal', calId);
     }
     const now = Date.now(), horizon = now + 60 * 864e5;
     const want = new Map();
-    for (const t of openTasks()) for (const at of reminderTimes(t)) {
+    if (!clearOnly) for (const t of openTasks()) for (const at of reminderTimes(t)) {
       const ms = at.getTime();
       if (ms < now - 60000 || ms > horizon) continue;
       want.set(reminderKey(t.id, at), { summary: '⏰ ' + t.content, at });
     }
     const base = `${CAL}/calendars/${encodeURIComponent(calId)}/events`;
-    const r = await this.api(`${base}?singleEvents=true&maxResults=2500&timeMin=${encodeURIComponent(new Date(now).toISOString())}`);
+    let r;
+    try { r = await this.api(`${base}?singleEvents=true&maxResults=2500&timeMin=${encodeURIComponent(new Date(now).toISOString())}`); }
+    catch (e) { if (e.status === 404) { ls.del('remCal'); if (clearOnly) ls.set('remCalEmpty', true); return; } throw e; }
     const have = new Map((r.items || []).filter(e => e.status !== 'cancelled').map(e => [e.id, e]));
     const json = { 'Content-Type': 'application/json' };
     // Reminders Claude made while Steward was closed carry "steward-task:<id>" in their description.
@@ -581,6 +674,7 @@ export const sync = {
       try { await this.api(base, { method: 'POST', headers: json, body: body(id, w) }); }
       catch (err) { if (err.status === 409) await this.api(`${base}/${id}`, { method: 'PUT', headers: json, body: body(id, w) }).catch(() => {}); else throw err; }
     }
+    if (clearOnly) ls.set('remCalEmpty', true);
   },
 };
 

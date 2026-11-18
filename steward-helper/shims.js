@@ -6,4 +6,14 @@ if (typeof globalThis.localStorage === 'undefined') globalThis.localStorage = {
 };
 // store.js schedules saves to IndexedDB with a timer; here everything is uploaded to Drive at the end instead.
 if (typeof globalThis.setTimeout === 'undefined') { globalThis.setTimeout = () => 0; globalThis.clearTimeout = () => {}; }
-if (typeof globalThis.crypto === 'undefined') globalThis.crypto = { getRandomValues: a => { for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256); return a; } };
+// Random numbers: the notification keys need real randomness. Apps Script's UUIDs come from Java's SecureRandom, so
+// each batch of bytes is a SHA-256 of two fresh UUIDs (244 random bits).
+const secure = typeof Utilities !== 'undefined' && Utilities.getUuid && Utilities.computeDigest;
+if (typeof globalThis.crypto === 'undefined') globalThis.crypto = { getRandomValues: a => {
+  const bytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+  for (let i = 0; i < bytes.length;) {
+    const chunk = secure ? Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, Utilities.getUuid() + Utilities.getUuid() + Date.now()) : Array.from({ length: 32 }, () => Math.floor(Math.random() * 256));
+    for (const b of chunk) { if (i >= bytes.length) break; bytes[i++] = b & 255; }
+  }
+  return a;
+} };

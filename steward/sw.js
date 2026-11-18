@@ -1,7 +1,8 @@
 // Service worker: makes Steward open with no connection, receives things shared from other apps, and syncs with
 // Google Drive in the background while Steward is closed (loaded as a module: register('sw.js', { type: 'module' })).
 import { bgSync } from './js/bg.js';
-const VERSION = 'steward-3.8.0';
+import { kvSet } from './js/lsmirror.js';
+const VERSION = 'steward-3.9.0';
 // Tools (PDF reader, Word tools, page reader, search model) are kept in their own cache, so an update to Steward
 // never throws them away and they keep working with no signal. Bump only when a file in vendor/ changes.
 const TOOLS = 'steward-tools-1';
@@ -78,7 +79,33 @@ self.addEventListener('fetch', e => {
   })());
 });
 self.addEventListener('message', e => { if (e.data?.steward === 'skip-waiting') self.skipWaiting(); });
-self.addEventListener('notificationclick', e => { e.notification.close(); e.waitUntil(self.clients.matchAll({ type: 'window' }).then(cs => (cs[0] ? cs[0].focus() : self.clients.openWindow('./')))); });
+// Reminders sent by the Steward helper (Google Apps Script) through Web Push: they arrive even while Steward is closed.
+self.addEventListener('push', e => {
+  let m = {};
+  try { m = e.data ? e.data.json() : {}; } catch { m = { body: e.data?.text() || '' }; }
+  e.waitUntil((async () => {
+    await self.registration.showNotification(m.title || 'Steward reminder', {
+      body: m.body || '', icon: 'icons/icon-192.png', tag: m.tag || undefined, renotify: !!m.tag, timestamp: Date.now(),
+      requireInteraction: !m.test, // a reminder stays on screen (Mac) until dealt with; the test does not
+      data: { taskId: m.taskId || null },
+    });
+    // Remember that notifications work on this device; the next sync tells the helper (and the other devices).
+    const sub = await self.registration.pushManager.getSubscription().catch(() => null);
+    await kvSet('pushOk', { at: Date.now(), endpoint: sub?.endpoint || '' }).catch(() => {});
+    if (m.test) await bgSync('push-test');
+  })());
+});
+// The browser renewed this device's push address: subscribe again and update Drive.
+self.addEventListener('pushsubscriptionchange', e => { e.waitUntil(bgSync('push-renew')); });
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const id = e.notification.data?.taskId;
+  e.waitUntil((async () => {
+    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (cs[0]) { await cs[0].focus().catch(() => {}); if (id) cs[0].postMessage({ steward: 'open-task', id }); return; }
+    await self.clients.openWindow(id ? './#/task/' + encodeURIComponent(id) : './');
+  })());
+});
 
 // Chrome wakes Steward every so often (it decides how often) to sync while closed.
 self.addEventListener('periodicsync', e => { if (e.tag === 'steward-sync') e.waitUntil(bgSync('periodic')); });

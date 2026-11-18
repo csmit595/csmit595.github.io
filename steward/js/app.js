@@ -16,7 +16,7 @@ import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 
-const VERSION = '3.8.0';
+const VERSION = '3.9.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -47,6 +47,7 @@ function render(info = {}) {
   else if (route.view === 'search') viewSearch(main);
   else if (route.view === 'settings') { viewSettings(main); if (route.id === 'blocks') setTimeout(() => document.getElementById('blocks-card')?.scrollIntoView({ block: 'start' }), 30); }
   else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
+  else if (route.view === 'task') { location.replace('#/' + settings.get('home')); const id = decodeURIComponent(route.id || ''); setTimeout(() => { if (store.get('tasks', id)) openTask(id); }, 80); return; }
   else if (['today', 'upcoming', 'inbox', 'project', 'label', 'filter', 'filters', 'completed'].includes(route.view)) { renderTasks(route, main); const acts = main.querySelector('.vhead > .row'); if (acts && isMobile()) acts.prepend(iconBtn('search', 'Search', () => { location.hash = '#/search'; }, 'hsearch')); }
   else { location.hash = '#/today'; return; }
   main.scrollTop = y; lastRouteKey = key;
@@ -207,7 +208,6 @@ function viewSettings(main) {
   const auto = h('input', { type: 'checkbox', checked: settings.get('autoRemind'), onchange: () => { settings.set('autoRemind', auto.checked); if (sync.connected()) sync.run(); } });
   const lead = h('select', { class: 'field slim', onchange: () => { settings.set('remindLead', +lead.value); if (sync.connected()) sync.run(); } }, [[0, 'at the due time'], [10, '10 minutes before'], [30, '30 minutes before'], [60, '1 hour before']].map(([v, l]) => h('option', { value: v }, l)));
   lead.value = settings.get('remindLead');
-  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
   // Calendars
   const hidden = settings.get('hidden');
   const cals = sync.calendars().filter(c => c.summary !== 'Steward Reminders');
@@ -243,8 +243,7 @@ function viewSettings(main) {
       settings.get('remindersPaused') && h('div', { class: 'banner' }, 'Steward’s reminders are on hold so they do not double up with Todoist. ', btn('Turn reminders on', () => { settings.set('remindersPaused', false); if (sync.connected()) sync.run(); again(); }, 'tiny primary')),
       h('label', { class: 'inline nowrap' }, auto, h('span', { class: 'grow' }, 'Remind me about every task that has a time')),
       h('label', { class: 'inline block' }, 'When: ', lead),
-      h('p', { class: 'sub' }, sync.connected() ? 'Reminders are placed on a Google calendar named "Steward Reminders", so your phone buzzes through Google Calendar even when Steward is closed. Keep notifications on for that calendar in the Google Calendar app.' : 'Until Google is connected, reminders only show while Steward is open.'),
-      perm === 'default' && btn('Allow notifications on this device', () => Notification.requestPermission().then(again), 'tiny', 'bell'), perm === 'denied' && h('p', { class: 'sub' }, 'Notifications are blocked for Steward in this browser’s settings.')),
+      pushPanel(again)),
     card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
       h('label', { class: 'inline' }, 'Week starts on ', ws)),
     card('Day plan', h('p', { class: 'sub' }, 'Today and Upcoming add up the time on each day’s tasks (and, on Today, anything overdue) and compare it with the hours you can plan in, after your fixed blocks and calendar events. These settings apply on all your devices.'),
@@ -372,6 +371,36 @@ function applyTheme() {
   // The phone's status bar follows the theme chosen here, not only the phone's own light/dark setting.
   const dark = t === 'dark' || (t === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.querySelectorAll('meta[name=theme-color]').forEach(m => { m.removeAttribute('media'); m.content = dark ? '#171a15' : '#f6f1e5'; });
+}
+
+// ---- notifications on this device (Settings → Reminders) -------------------------------------------
+let pushAgain = null;
+function pushPanel(again) {
+  pushAgain = again;
+  const p = sync.pushInfo();
+  const out = [];
+  if (!sync.connected()) return h('p', { class: 'sub', id: 'push-panel' }, 'Connect Google first. Until then, reminders only show while Steward is open.');
+  const turnOn = async () => {
+    if (Notification.permission !== 'granted' && (await Notification.requestPermission()) !== 'granted') { toast('Notifications were not allowed. Allow them for Steward in this browser’s settings, then try again.', null, null, 8000); return again(); }
+    sync.setPushWanted(true); toast('Turning on… a test notification should arrive within about a minute.', null, null, 6000);
+    await sync.run(true); again();
+  };
+  const here = p.mine && p.devices[p.mine.id];
+  if (!p.supported) out.push(h('p', { class: 'sub' }, 'This browser cannot show Steward’s notifications. Open Steward in Chrome.'));
+  else if (!p.helper) out.push(h('p', { class: 'sub' }, 'Steward’s Google helper has not been updated for notifications yet, so reminders still come through the "Steward Reminders" calendar.'));
+  else if (p.permission === 'denied') out.push(h('p', { class: 'sub' }, 'Notifications are blocked for Steward on this device. Allow them in the browser’s site settings for Steward (on the Mac, also System Settings → Notifications → Google Chrome), then come back here.'));
+  else if (!p.mine || p.permission !== 'granted' || !p.wanted) out.push(h('p', { class: 'sub' }, `Get reminders on this ${p.name} straight from Steward, even when Steward is closed.`), btn(`Turn on notifications on this ${p.name}`, turnOn, 'primary', 'bell'));
+  else out.push(h('p', null, here?.confirmedAt || p.mine.confirmedAt ? `✓ Notifications are on for this ${p.name}.` : `Waiting for the test notification on this ${p.name} (it comes within about a minute)…`),
+    h('div', { class: 'row gap wrap' }, btn('Check again', () => sync.run(true).then(again), 'tiny', 'sync'), btn(`Turn off on this ${p.name}`, async () => { await sync.removeDevice(); again(); }, 'tiny link')));
+  const devs = Object.entries(p.devices);
+  if (devs.length) out.push(h('p', { class: 'sub' }, 'Devices that get reminders:'), h('div', null, devs.map(([id, d]) => h('div', { class: 'row gap' },
+    h('span', { class: 'grow' }, (d.confirmedAt ? '✓ ' : '… ') + (d.mine ? `This ${d.name}` : d.name[0].toUpperCase() + d.name.slice(1)) + (d.confirmedAt ? '' : ' (waiting for its test notification)')),
+    !d.mine && btn('Remove', async () => { if (await confirmDlg(`Stop sending reminders to the ${d.name}?`, 'Remove')) { await sync.removeDevice(id).catch(e => toast('Could not remove: ' + e.message)); again(); } }, 'tiny link')))));
+  if (p.helper) out.push(h('p', { class: 'sub' }, p.active
+    ? 'Reminders now come from Steward itself, not Google Calendar. The "Steward Reminders" calendar is no longer used; you can delete it in Google Calendar if you like.'
+    : 'Until every device in the list has shown its test notification, Steward also keeps the "Steward Reminders" Google calendar as a backup.'));
+  if (p.supported && /Mac/.test(p.name)) out.push(h('p', { class: 'sub' }, 'On the Mac, Chrome must be running to show reminders (no window needs to be open). If none appear, check System Settings → Notifications → Google Chrome.'));
+  return h('div', { id: 'push-panel' }, out);
 }
 
 // ---- reminders while the app is open -------------------------------------------------------------
@@ -599,7 +628,7 @@ async function start() {
     // updateViaCache 'none': the phone always asks GitHub for a fresh sw.js (and its imports) instead of a saved copy.
     navigator.serviceWorker.register('sw.js', { type: 'module', updateViaCache: 'none' }).then(reg => { watchForUpdates(reg); return setupBackground(reg); }).catch(e => console.warn('sw', e));
     // The background sync asks an open, visible Steward to sync itself rather than doing it behind its back.
-    navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); });
+    navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); if (e.data?.steward === 'open-task' && store.get('tasks', e.data.id)) openTask(e.data.id); });
   }
   // The background sync ran while this window was hidden: take its work (settings, then data) before syncing again.
   sync.onStale = async () => {
@@ -632,6 +661,7 @@ async function start() {
   semantic.on(() => { const l = $('#sem-line'); if (l) l.textContent = semLine(); });
   sync.on(() => { drawSidebar(parseRoute()); const l = $('#sync-line'); if (l) l.textContent = syncLine(); });
   sync.on(() => { if (sync.status === 'idle') offline.keepSoon(); });
+  sync.on(() => { const el = $('#push-panel'); if (el && sync.status === 'idle' && pushAgain) el.replaceWith(pushPanel(pushAgain)); });
   offline.keepSoon(20000);
   if (!(await intake())) render();
   document.body.classList.add('ready');

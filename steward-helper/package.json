@@ -1,0 +1,13 @@
+{
+  "name": "steward-helper",
+  "private": true,
+  "description": "Builds the Steward Google helper (Apps Script). See README.md.",
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

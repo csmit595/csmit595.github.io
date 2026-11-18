@@ -27,6 +27,9 @@ async function withKv(mode, fn) {
   } finally { db.close(); }
 }
 export const readMirror = () => withKv('readonly', (st, set) => { const g = st.get(KEY); g.onsuccess = () => set(g.result || null); });
+/** Small values the service worker and the page both need (e.g. "a notification just arrived on this device"). */
+export const kvGet = k => withKv('readonly', (st, set) => { const g = st.get('_' + k); g.onsuccess = () => set(g.result ?? null); });
+export const kvSet = (k, v) => withKv('readwrite', st => { st.put(v, '_' + k); });
 
 // ---- in the open app ---------------------------------------------------------------------------------------------
 const pageAt = () => Number(localStorage.getItem(AT) || 0);
