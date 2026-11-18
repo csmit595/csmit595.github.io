@@ -190,6 +190,15 @@ mark { background: var(--hl); color: inherit; border-radius: 3px; padding: 0 1px
 .nfilter { margin-bottom: 8px; } .nfilter .slim { flex: none; }
 .nitem { display: block; padding: 10px; border-radius: 8px; color: var(--text); text-decoration: none; border-bottom: 1px solid var(--line2); }
 .nitem:hover { background: var(--line2); } .nitem.on { background: var(--soft); }
+/* phones: swipe a note right to move it to the trash */
+.nswipe { position: relative; overflow: hidden; border-radius: 8px; }
+.nswipe .nitem { position: relative; background: var(--bg); transition: transform .18s ease; }
+.nswipe .nitem.on { background: var(--soft); }
+@media (pointer: coarse) { .nitem { touch-action: pan-y; } }
+.nitem.swiping { transition: none; }
+.nswipe:has(> .nitem[data-swipe])::before { content: "🗑 Delete"; position: absolute; inset: 0; display: flex; align-items: center; padding-left: 18px; font-weight: 700; font-size: 13px;
+  background: color-mix(in srgb, var(--danger) 18%, var(--bg)); color: var(--danger); }
+.nswipe:has(> .nitem[data-swipe=del])::before { background: var(--danger); color: #fff; }
 .ntitle { font-weight: 650; display: flex; gap: 5px; align-items: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nsnip { color: var(--muted); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .nmeta { display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--muted); margin-top: 3px; }

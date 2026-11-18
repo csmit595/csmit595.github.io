@@ -87,13 +87,49 @@ function drawList(el, route) {
       scope.kind === 'trash' ? (list.length > 0 && btn('Empty trash', async () => { if (await confirmDlg(`Permanently delete ${list.length} notes?`)) for (const n of list) destroy(n); }, 'tiny danger'))
         : h('div', { class: 'row' }, iconBtn('more', 'New from template', e => menu(e.currentTarget, Object.keys(TEMPLATES).map(k => ({ label: k + ' template', icon: 'note', onclick: () => newNote({ title: k, body: TEMPLATES[k] }) })))), btn('New note', () => newNote(), 'primary', 'plus'))),
     h('div', { class: 'row gap nfilter' }, search, sort),
-    h('div', { class: 'nitems' }, list.map(n => h('a', { class: 'nitem' + (route.view === 'note' && route.id === n.id ? ' on' : ''), href: '#/note/' + n.id },
-      h('div', { class: 'ntitle' }, n.pinned && icon('pin', 13), n.title || 'Untitled'),
-      h('div', { class: 'nsnip' }, textOf(n).slice(0, 110)),
-      h('div', { class: 'nmeta' }, new Date(n.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: new Date(n.updatedAt).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }),
-        (n.attachments || []).length > 0 && h('span', null, icon('clip', 11), n.attachments.length), (n.tags || []).slice(0, 3).map(t => h('span', { class: 'ntag' }, t))))),
+    h('div', { class: 'nitems' }, list.map(n => {
+      const a = h('a', { class: 'nitem' + (route.view === 'note' && route.id === n.id ? ' on' : ''), href: '#/note/' + n.id },
+        h('div', { class: 'ntitle' }, n.pinned && icon('pin', 13), n.title || 'Untitled'),
+        h('div', { class: 'nsnip' }, textOf(n).slice(0, 110)),
+        h('div', { class: 'nmeta' }, new Date(n.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: new Date(n.updatedAt).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }),
+          (n.attachments || []).length > 0 && h('span', null, icon('clip', 11), n.attachments.length), (n.tags || []).slice(0, 3).map(t => h('span', { class: 'ntag' }, t))));
+      if (scope.kind !== 'trash' && !window.matchMedia('(pointer: fine)').matches) swipeDelete(a, n);
+      return h('div', { class: 'nswipe' }, a);
+    }),
     !list.length && h('div', { class: 'empty' }, h('strong', null, query ? 'No notes match' : scope.kind === 'trash' ? 'Trash is empty' : 'No notes here yet'), h('p', null, query ? 'Try fewer words.' : scope.kind === 'trash' ? '' : 'Tap New note to start one.'))));
   if (hadFocus) { const s = el.querySelector('.nsearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+}
+/** Phones: swipe a note right to move it to the trash, with Undo at the bottom of the screen. */
+function swipeDelete(row, n) {
+  row.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) return;
+    const s = e.touches[0]; let dx = 0, on = false, dead = false;
+    const move = ev => {
+      const p = ev.touches[0], x = p.clientX - s.clientX, y = p.clientY - s.clientY;
+      if (dead) return;
+      if (!on) { if (Math.abs(y) > 10 && Math.abs(y) > Math.abs(x)) { dead = true; return; } if (x < 14) return; on = true; row.classList.add('swiping'); }
+      dx = Math.max(0, Math.min(160, x));
+      row.style.transform = `translateX(${dx}px)`;
+      row.dataset.swipe = dx > 90 ? 'del' : 'del-pre';
+    };
+    const end = () => {
+      document.removeEventListener('touchmove', move); document.removeEventListener('touchend', end); document.removeEventListener('touchcancel', end);
+      if (!on) return;
+      const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+      row.addEventListener('click', swallow, { capture: true, once: true }); setTimeout(() => row.removeEventListener('click', swallow, true), 400);
+      row.classList.remove('swiping');
+      if (dx <= 90) { row.style.transform = ''; delete row.dataset.swipe; return; }
+      navigator.vibrate?.(10);
+      row.classList.add('gone'); row.style.transform = 'translateX(110%)';
+      setTimeout(() => {
+        const open = location.hash === '#/note/' + n.id;
+        store.patch('notes', n.id, { trashed: true });
+        toast(`“${(n.title || 'Untitled').slice(0, 40)}” moved to trash`, 'Undo', () => store.patch('notes', n.id, { trashed: false }), 8000);
+        if (open) go('#/notes');
+      }, 180);
+    };
+    document.addEventListener('touchmove', move, { passive: true }); document.addEventListener('touchend', end); document.addEventListener('touchcancel', end);
+  }, { passive: true });
 }
 async function destroy(n) { for (const a of n.attachments || []) { await store.delBlob(a.id).catch(() => {}); store.remove('ocr', a.id, { silent: true }); } store.remove('notes', n.id); }
 
