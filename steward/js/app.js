@@ -16,7 +16,7 @@ import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 
-const VERSION = '4.0.0';
+const VERSION = '4.0.1';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
