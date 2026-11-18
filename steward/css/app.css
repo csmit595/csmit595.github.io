@@ -401,7 +401,14 @@ body.side-hidden .writer .wbar { padding-left: 52px; }
   #tabs a { display: grid; justify-items: center; gap: 1px; padding: 7px 0 6px; font-size: 10.5px; color: var(--muted); text-decoration: none; }
   #tabs a.on { color: var(--accent); font-weight: 650; }
   #fab { display: grid; place-items: center; position: fixed; right: 16px; bottom: calc(70px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 18px; border: 0; background: var(--accent); color: var(--on-accent); box-shadow: 0 6px 18px rgba(20, 40, 24, .35); z-index: 30; }
-  body[data-view=calendar] #fab, body[data-view=settings] #fab { display: none; }
+  /* swipe the plus left to turn it into Add task */
+  #fab { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; transition: transform .18s ease-out, background-color .15s, color .15s; }
+  #fab.swiping { transition: background-color .15s, color .15s; }
+  #fab .fab-task { display: none; }
+  #fab.task-mode { background: var(--on-accent); color: var(--accent); box-shadow: 0 0 0 2.5px var(--accent), 0 6px 18px rgba(20, 40, 24, .35); }
+  #fab.task-mode .fab-plus { display: none; } #fab.task-mode .fab-task { display: block; }
+  #fab .fab-label { position: absolute; right: calc(100% + 10px); top: 50%; transform: translateY(-50%); white-space: nowrap; background: var(--accent); color: var(--on-accent); font-size: 13.5px; font-weight: 650; padding: 6px 11px; border-radius: 999px; box-shadow: 0 4px 12px rgba(20, 40, 24, .3); opacity: 0; pointer-events: none; transition: opacity .12s; }
+  #fab.task-mode .fab-label { opacity: 1; }
   #toasts { bottom: calc(76px + env(safe-area-inset-bottom)); }
   .only-mobile { display: inline-grid; } .only-desktop { display: none !important; }
   body.side-hidden #side { display: block; } body.side-hidden #side-show { display: none; }

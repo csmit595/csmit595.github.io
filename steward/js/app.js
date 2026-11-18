@@ -15,7 +15,7 @@ import { semantic, enabled as semanticOn, status as semStatus } from './semantic
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 
-const VERSION = '3.4.0';
+const VERSION = '3.5.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -489,6 +489,46 @@ function bgLine() {
   return '';
 }
 
+// Phone plus button. Tap: a new note (inside a note: add a photo or file). Swipe it left: it turns into
+// "Add task" with a double buzz; let go there to open Add task. Slide back before letting go to cancel.
+function fabGestures() {
+  const fab = $('#fab'), ARM = 44, MAX = 96;
+  let g = null, swallowClick = false;
+  const buzz = p => { try { navigator.vibrate?.(p); } catch {} };
+  const reset = () => { fab.classList.remove('swiping', 'task-mode'); fab.style.transform = ''; };
+  fab.addEventListener('pointerdown', e => {
+    if (parseRoute().view === 'note') e.preventDefault(); // keep the keyboard and cursor where they are
+    if (e.button > 0) return;
+    g = { id: e.pointerId, x: e.clientX, y: e.clientY, far: 0, armed: false };
+    try { fab.setPointerCapture(e.pointerId); } catch {}
+  });
+  fab.addEventListener('pointermove', e => {
+    if (!g || e.pointerId !== g.id) return;
+    const dx = e.clientX - g.x, dy = e.clientY - g.y;
+    g.far = Math.max(g.far, Math.hypot(dx, dy));
+    if (g.far < 8) return;
+    fab.classList.add('swiping');
+    fab.style.transform = `translateX(${Math.max(-MAX, Math.min(0, dx))}px)`;
+    const armed = dx < -ARM && Math.abs(dy) < 70;
+    if (armed !== g.armed) {
+      g.armed = armed; fab.classList.toggle('task-mode', armed);
+      buzz(armed ? [18, 45, 18] : 8); // two pulses: you're on "Add task"; one tiny tick: back to note
+    }
+  });
+  const end = e => {
+    if (!g || e.pointerId !== g.id) return;
+    const { armed, far } = g; g = null; reset();
+    if (armed || far > 20) { swallowClick = true; setTimeout(() => { swallowClick = false; }, 450); }
+    if (armed && e.type === 'pointerup') { closeDrawer(); openQuickAdd(defaultsForRoute()); }
+  };
+  fab.addEventListener('pointerup', end);
+  fab.addEventListener('pointercancel', end);
+  fab.addEventListener('click', e => {
+    if (swallowClick) { swallowClick = false; return; }
+    parseRoute().view === 'note' ? noteAddMenu(e.currentTarget) : newNote();
+  });
+}
+
 async function start() {
   applyTheme();
   await store.init();
@@ -511,9 +551,7 @@ async function start() {
     store.emit({ remote: true, events: true });
   };
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (parseRoute().view === 'settings') render({ force: true }); });
-  // Phone plus button: starts a new note; inside a note it adds a photo or file. (Tasks: the "Add task" rows and the menu.)
-  $('#fab').addEventListener('pointerdown', e => { if (parseRoute().view === 'note') e.preventDefault(); }); // keep the keyboard and cursor where they are
-  $('#fab').addEventListener('click', e => (parseRoute().view === 'note' ? noteAddMenu(e.currentTarget) : newNote()));
+  fabGestures();
   $('#menu-btn').addEventListener('click', e => { e.preventDefault(); document.body.classList.toggle('drawer'); });
   $('#scrim').addEventListener('click', closeDrawer);
   try { if (localStorage.getItem('steward.sideHidden')) document.body.classList.add('side-hidden'); } catch {}
