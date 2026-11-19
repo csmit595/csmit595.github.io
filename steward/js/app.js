@@ -9,6 +9,7 @@ import { renderNotes, leaveNotes, newNote, dictateNote, noteAddMenu, createClip,
 import { canDictate, dictEngine, setDictEngine } from './dictate.js';
 import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
+import { renderGoals, activeGoals } from './goals.js';
 import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
@@ -19,8 +20,8 @@ import * as offline from './offline.js';
 import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.5.0';
-const WHATS_NEW = `Steward updated to ${VERSION}. New: every note keeps a version history (note menu → Version history), and emptied trash can be brought back for 30 days. Writing was removed; notes are unchanged.`;
+const VERSION = '4.6.0';
+const WHATS_NEW = `Steward updated to ${VERSION}. New: Goals. Six identities in your order, 90-day goals under them, tasks linked from task details or by typing goal:name, and “This quarter” on Today. Menu → Goals.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -47,6 +48,7 @@ function render(info = {}) {
   if (route.view === 'calendar') renderCalendar(route, main);
   else if (route.view === 'search') viewSearch(main);
   else if (route.view === 'settings') { viewSettings(main); if (route.id === 'blocks') setTimeout(() => document.getElementById('blocks-card')?.scrollIntoView({ block: 'start' }), 30); }
+  else if (['goals', 'goal'].includes(route.view)) renderGoals(route, main);
   else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
   else if (route.view === 'task') { location.replace('#/' + settings.get('home')); const id = decodeURIComponent(route.id || ''); setTimeout(() => { if (store.get('tasks', id)) openTask(id); }, 80); return; }
   else if (['today', 'upcoming', 'inbox', 'project', 'label', 'filter', 'filters', 'completed'].includes(route.view)) { renderTasks(route, main); const acts = main.querySelector('.vhead > .row'); if (acts && isMobile()) acts.prepend(iconBtn('search', 'Search', () => { location.hash = '#/search'; }, 'hsearch')); }
@@ -99,6 +101,8 @@ function drawSidebar(route) {
       link('#/calendar', 'cal', 'Calendar'),
       link('#/filters', 'filter', 'Filters & labels'),
       link('#/completed', 'done', 'Completed'),
+      sec('plan', 'Goals & review', null,
+        link('#/goals', 'flag', 'Goals', activeGoals().length)),
       favs.length > 0 && sec('favs', 'Favorites', null, favs),
       sec('projects', 'Projects', iconBtn('plus', 'New project', () => editProject(), 'mini'),
         projects.map(p => h('div', { style: { paddingLeft: p.depth * 14 + 'px' } }, link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => t.projectId === p.id).length))),
@@ -121,9 +125,9 @@ function defaultsForRoute() {
 const closeDrawer = () => document.body.classList.remove('drawer');
 // Keyboard: "g" then a letter jumps to a screen; "?" shows every shortcut.
 let goPending = 0;
-const GO = { t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', s: '#/settings' };
+const GO = { o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', s: '#/settings' };
 function shortcuts() {
-  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['Esc', 'Close a window'], ['?', 'This list']];
+  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['Esc', 'Close a window'], ['?', 'This list']];
   modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
 }
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
@@ -406,18 +410,22 @@ function blocksEditor(again) {
     every.value = b.every || 1;
     const anchor = h('input', { type: 'date', class: 'field slim', value: b.anchor || today() });
     const until = h('input', { type: 'date', class: 'field slim', value: b.until || '' });
+    // which identity this time belongs to (a Family block offers to start the family timer when it begins)
+    const idSel = h('select', { class: 'field slim' }, h('option', { value: '' }, 'Nothing in particular'), M.identities().map(i => h('option', { value: i.id }, i.name)));
+    idSel.value = b.identityId && store.get('identities', b.identityId) ? b.identityId : '';
     const save = () => {
       if (!name.value.trim() || !days.length || !st.value || !en.value) return toast('Give it a name, at least one day, and times');
       if (en.value <= st.value) return toast('The block has to end after it starts.');
-      store.put('blocks', { ...b, name: name.value.trim(), days, start: st.value, end: en.value, every: +every.value, anchor: +every.value > 1 ? anchor.value : null, until: until.value || null });
+      store.put('blocks', { ...b, name: name.value.trim(), days, start: st.value, end: en.value, every: +every.value, anchor: +every.value > 1 ? anchor.value : null, until: until.value || null, identityId: idSel.value || null });
       close(); again();
     };
     return h('div', { class: 'form' }, h('label', null, 'Name', name), h('label', null, 'Days', pick), h('div', { class: 'row gap' }, h('label', null, 'From', st), h('label', null, 'To', en)),
       h('div', { class: 'row gap wrap' }, h('label', null, 'Repeats', every), h('label', null, 'Counting from the week of', anchor), h('label', null, 'Ends (optional)', until)),
+      M.identities().length > 0 && h('label', null, 'This time belongs to', idSel),
       h('div', { class: 'row between' }, b.id ? btn('Delete', async () => { if (await confirmDlg(`Delete "${b.name}"?`)) { store.remove('blocks', b.id); close(); again(); } }, 'tiny danger') : h('span'), h('div', { class: 'row' }, btn('Cancel', close), btn('Save', save, 'primary'))));
   }, { title: b.id ? 'Edit fixed block' : 'New fixed block', cls: 'small' });
   return h('div', null, h('p', { class: 'sub' }, 'Times that are always taken: devotions, classes, family dinner, church, date night. The day plan never counts them as open, and they show faintly on the calendar.'),
-    h('div', { class: 'blocks-list' }, list.map(b => h('div', { class: 'brow' }, h('span', null, h('b', null, b.name), h('br'), h('small', { class: 'sub' }, `${b.days.map(d => DN[d]).join(' ')} · ${fmtTime(b.start)}–${fmtTime(b.end)}${(b.every || 1) > 1 ? ' · every other week' : ''}${b.until ? ' · until ' + fmtDate(b.until) : ''}`)), btn('Edit', () => edit(b), 'tiny')))),
+    h('div', { class: 'blocks-list' }, list.map(b => h('div', { class: 'brow' }, h('span', null, h('b', null, b.name), h('br'), h('small', { class: 'sub' }, `${b.days.map(d => DN[d]).join(' ')} · ${fmtTime(b.start)}–${fmtTime(b.end)}${(b.every || 1) > 1 ? ' · every other week' : ''}${b.until ? ' · until ' + fmtDate(b.until) : ''}${b.identityId && store.get('identities', b.identityId) ? ' · ' + store.get('identities', b.identityId).name : ''}`)), btn('Edit', () => edit(b), 'tiny')))),
     !list.length && h('p', { class: 'sub' }, 'None yet.'), btn('Add a fixed block', () => edit(), 'link', 'plus'));
 }
 
@@ -707,6 +715,7 @@ async function start() {
   // 4.5: the Writing section is gone. Anything it held on this device becomes a note first (never dropped).
   try { const moved = await adoptLocalWriting(); if (moved) setTimeout(() => toast(`Writing was removed. What it held is now ${moved === 1 ? 'a note' : moved + ' notes'} in the notebook “From Writing”.`, null, null, 12000), 1500); } catch (e) { console.warn('writing move', e); }
   M.purgeGone().catch(() => {});
+  M.ensureIdentities();
   M.repairTasks();
   settings.adoptLocal();
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }

@@ -17,7 +17,10 @@ const CAL = 'https://www.googleapis.com/calendar/v3';
 const FOLDER = 'application/vnd.google-apps.folder';
 // (Since Steward 4.5 there is no Writing section: a change that names a document or source is answered with a
 // report saying so, by the shared applyOps, and everything else in the file is applied as usual.)
-const needsApp = o => o && o.op !== 'delete' && ['note', 'orgword'].includes(String(o.type || '').toLowerCase());
+// Identities, goals, sessions and reviews live in steward-goals.json, which only the app reads and writes; a task
+// filed under a goal by its title needs that file too. Those change files are left for the app as well.
+const APP_TYPES = ['note', 'orgword', 'identity', 'goal', 'session', 'review'];
+const needsApp = o => o && ((o.op !== 'delete' && ['note', 'orgword'].includes(String(o.type || '').toLowerCase())) || APP_TYPES.slice(2).includes(String(o.type || '').toLowerCase()) || (o.item && typeof o.item === 'object' && (o.item.goal !== undefined || o.item.goalId)));
 
 /**
  * env.http(url, {method, headers, body}) -> {status, text}  (synchronous)

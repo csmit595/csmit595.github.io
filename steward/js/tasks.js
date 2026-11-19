@@ -8,6 +8,8 @@ import { planCard, planLine } from './dayplan.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu } from './ui.js';
 import { canDictate, listen, spokenTask, splitTasks, saysStop, withoutStop } from './dictate.js';
 import { orgPanel, readOrg, mergeList, hasArea, projectIdByName, orgOn } from './organize.js';
+import { extractGoal } from './goals-core.js';
+import { goalStrip, goalSelect } from './goals.js';
 
 const go = hash => { location.hash = hash; };
 const byDue = (a, b) => ((a.due?.date || '9999') + (a.due?.time || '99')).localeCompare((b.due?.date || '9999') + (b.due?.time || '99')) || (a.priority || 4) - (b.priority || 4) || M.byOrder(a, b);
@@ -83,8 +85,16 @@ function moreMenu(anchor, t) {
     ...[1, 2, 3, 4].map(n => ({ label: n === 4 ? 'No priority' : `Priority ${n}`, icon: 'flag', onclick: () => store.patch('tasks', t.id, { priority: n }) })),
     '-',
     { label: 'Open details', icon: 'edit', onclick: () => openTask(t.id) },
+    ...goalItems(t),
     { label: 'Delete', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete "${t.content}"?`)) M.deleteTask(t.id); } },
   ]);
+}
+/** Menu lines for a task that sits under a goal: choose it as the goal's next task, or open the goal. */
+function goalItems(t) {
+  const g = t.goalId && store.get('goals', t.goalId);
+  if (!g) return [];
+  return [g.nextTaskId === t.id ? { label: 'No longer the goal’s next task', icon: 'star', onclick: () => store.patch('goals', g.id, { nextTaskId: null }) } : { label: 'Make this the goal’s next task', icon: 'star', onclick: () => store.patch('goals', g.id, { nextTaskId: t.id }) },
+    { label: 'Open goal', icon: 'flag', onclick: () => go('#/goal/' + g.id) }];
 }
 /** Phones: swipe a task right to complete it, left to give it a new day. */
 function swipe(row, t) {
@@ -178,6 +188,7 @@ function taskRow(t, o = {}) {
         nComments > 0 && h('span', { class: 'meta' }, icon('comment', 12), nComments),
         (t.reminders || []).length > 0 && h('span', { class: 'meta' }, icon('bell', 12)),
         t.noteId && store.get('notes', t.noteId) && h('span', { class: 'meta' }, icon('note', 12)),
+        t.goalId && store.get('goals', t.goalId) && h('span', { class: 'meta goal', title: 'Goal' }, icon('flag', 11), store.get('goals', t.goalId).title),
         (t.labels || []).map(l => h('span', { class: 'meta label' + (l === 'promise' ? ' promise' : '') }, '@' + l)),
         o.showProject && h('span', { class: 'meta proj' }, h('span', { class: 'pdot', style: { background: M.COLORS[store.get('projects', t.projectId)?.color] || 'var(--line)' } }), M.projectName(t.projectId)))),
     !done && finePointer() && h('div', { class: 'tacts' },
@@ -192,7 +203,7 @@ function taskRow(t, o = {}) {
   const shownKids = kids.filter(k => !k.completedAt || o.showDone);
   return h('div', { class: 'titem', dataset: { id: t.id } }, row, shownKids.length > 0 && h('div', { class: 'kids' }, shownKids.map(k => taskRow(k, { ...o, drag: false }))));
 }
-function taskList(tasks, o = {}) {
+export function taskList(tasks, o = {}) {
   const list = h('div', { class: 'tlist' }, tasks.map(t => taskRow(t, o)));
   if (o.drag) list._dnd = { tasks, onDrop: o.onDrop };
   if (o.drag) {
@@ -244,6 +255,7 @@ function viewToday(main) {
   const d = new Date(), n = todays.length + overdue.length;
   main.append(header('Today', `${d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}${n ? ` · ${n} task${n === 1 ? '' : 's'}` : ''}`));
   main.append(planCard(now, { openTask, editHours: () => go('#/settings') }));
+  const strip = goalStrip(); if (strip) main.append(strip);
   if (overdue.length) main.append(group(`Overdue (${overdue.length})`, taskList(overdue, { showProject: true, flat: true }),
     btn('Move all to today', () => { for (const t of overdue) store.patch('tasks', t.id, { due: { ...t.due, date: now } }, { silent: true }); store.emit({ local: true }); }, 'link')));
   main.append(group('Today', h('div', null, todays.length ? taskList(todays, { showProject: true, flat: true }) : (!overdue.length && empty('Nothing due today', 'Add a task, or enjoy the margin.')), addRow('Add task', { due: { date: now, time: null, recur: null } }))));
@@ -403,7 +415,8 @@ export function openQuickAdd(defaults = {}) {
     drawTools();
     // Like Todoist: tap the date chip when Steward mistook words in the name for a date ("full sun", "3/4 gravel").
     let keepDate = false;
-    const parse = () => parseQuickAdd(input.value, M.ctx(), { keepDate });
+    // "goal:<name>" files the task under a goal (dictation: "goal <name>")
+    const parse = () => { const g = extractGoal(input.value, store.all('goals')); const p = parseQuickAdd(g ? g.rest : input.value, M.ctx(), { keepDate }); if (g) { p.goalId = g.goalId; p.chips.push('⚑ goal: ' + g.title); } return p; };
     const refresh = () => {
       if (!input.value.trim()) keepDate = false;
       const p = parse();
@@ -416,6 +429,7 @@ export function openQuickAdd(defaults = {}) {
       if (pick.priority && p.priority === 4) list.push(h('span', { class: 'chip' }, 'Priority ' + pick.priority));
       if (pick.duration && !p.duration) list.push(h('span', { class: 'chip' }, mins(pick.duration)));
       for (const l of defaults.labels || []) list.push(h('span', { class: 'chip' }, '@' + l));
+      if (defaults.goalId && !p.goalId && store.get('goals', defaults.goalId)) list.push(h('span', { class: 'chip' }, '⚑ goal: ' + store.get('goals', defaults.goalId).title));
       fill(chips, list);
       if (p.projectId) proj.value = picked = p.projectId;
       org.refresh();
@@ -432,7 +446,7 @@ export function openQuickAdd(defaults = {}) {
       const learnText = [p.content, desc.value.trim()].filter(Boolean).join('. ');
       M.addTask({ ...p, projectId, sectionId: p.sectionId || (projectId === (defaults.projectId || 'inbox') ? defaults.sectionId : null), due: p.due || pick.due || null,
         priority: p.priority !== 4 ? p.priority : (pick.priority || 4), duration: p.duration || pick.duration || null,
-        deadline: p.deadline || defaults.deadline || null, parentId: defaults.parentId || null, labels, description: desc.value.trim(), noteId: defaults.noteId || null });
+        deadline: p.deadline || defaults.deadline || null, parentId: defaults.parentId || null, labels, description: desc.value.trim(), noteId: defaults.noteId || null, goalId: p.goalId || defaults.goalId || null });
       if (fin) org.commit(learnText);
       org.reset();
       input.value = ''; desc.value = ''; keepDate = false; pick = { due: defaults.due || null, priority: null, duration: null }; typed = ''; heard = ''; heardNow = ''; added++;
@@ -441,7 +455,7 @@ export function openQuickAdd(defaults = {}) {
     };
     // ---- dictation: speak the task; say "next task" to add it and start another, "that's all" to stop ----
     let typed = '', heard = '', heardNow = '', added = 0;
-    const names = () => ({ projects: store.all('projects').filter(p => !p.deleted).map(p => p.name), labels: store.all('labels').filter(l => !l.deleted).map(l => l.name) });
+    const names = () => ({ projects: store.all('projects').filter(p => !p.deleted).map(p => p.name), labels: store.all('labels').filter(l => !l.deleted).map(l => l.name), goals: store.all('goals') });
     const show = () => { const said = spokenTask([heard, heardNow].filter(Boolean).join(' '), names()); input.value = [typed, said].filter(Boolean).join(' '); refresh(); };
     const dictStatus = h('b', { class: 'qa-dict-status' });
     const dictLine = h('div', { class: 'qa-dict', hidden: true }, h('span', { class: 'dict-dot' }), h('span', null, 'Listening. Say the task the way you would type it, like ', h('i', null, '“call Linda Friday at 8 a.m. priority one”'), '. Say ', h('b', null, '“next task”'), ' to add it and start another, ', h('b', null, '“that’s all”'), ' to add the last one and stop. Tap the microphone to stop without adding.', dictStatus));
@@ -478,7 +492,7 @@ export function openQuickAdd(defaults = {}) {
     return h('div', { class: 'form qa-form' }, h('div', { class: 'qa-line' }, input, micBtn), dictLine, chips, org.el, toolbar, desc,
       h('div', { class: 'row between qa-foot' },
         h('details', { class: 'qa-help' }, h('summary', null, 'Typing shortcuts'),
-          h('p', { class: 'hint' }, 'Write it the way you would say it: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@promise'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline. If a word is mistaken for a date, tap the date chip to keep it in the name.')),
+          h('p', { class: 'hint' }, 'Write it the way you would say it: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@promise'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline, ', h('code', null, 'goal:name'), ' a goal. If a word is mistaken for a date, tap the date chip to keep it in the name.')),
         h('div', { class: 'row' }, btn('Close', close), btn('Add task', () => add(), 'primary'))));
   }, { title: defaults.parentId ? 'Add sub-task' : 'Add task', cls: 'qa', onClose: () => dict?.stop() });
 }
@@ -509,7 +523,7 @@ export function openTask(id) {
       const labels = h('div', null, h('div', { class: 'chips' }, (t.labels || []).map(l => h('span', { class: 'chip' }, '@' + l, h('button', { 'aria-label': 'Remove label', onclick: () => { set({ labels: t.labels.filter(x => x !== l) }); draw(); } }, '×')))), labelIn,
         h('datalist', { id: 'label-list' }, store.all('labels').map(l => h('option', { value: l.name }))));
       const deadlineIn = h('input', { type: 'date', class: 'field', value: t.deadline || '', onchange: () => { set({ deadline: deadlineIn.value || null }); draw(); } });
-      const FIELD_NAMES = { content: 'name', description: 'details', due: 'date', deadline: 'deadline', priority: 'priority', labels: 'labels', projectId: 'project', sectionId: 'section', duration: 'time needed', reminders: 'reminders', completedAt: 'done', parentId: 'parent', noteId: 'note' };
+      const FIELD_NAMES = { goalId: 'goal', content: 'name', description: 'details', due: 'date', deadline: 'deadline', priority: 'priority', labels: 'labels', projectId: 'project', sectionId: 'section', duration: 'time needed', reminders: 'reminders', completedAt: 'done', parentId: 'parent', noteId: 'note' };
       const histRows = [...(t.hist || [])].reverse().slice(0, 10).map(e => h('div', { class: 'hrow' },
         h('span', null, new Date(e.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), e.by ? ' · ' + e.by : '', ' — changed ', Object.keys(e.old).map(k => FIELD_NAMES[k] || k).join(', ')),
         btn('Undo', () => { set({ ...e.old }); toast('Put back how it was'); draw(); }, 'tiny')));
@@ -544,6 +558,7 @@ export function openTask(id) {
         prop('upcoming', 'Date', dueText, h('div', { class: 'row wrap seg-chips' }, quick('Today', today()), quick('Tomorrow', addDays(today(), 1)), quick('Next week', nextDow(1)), t.due && btn('None', () => { set({ due: null }); draw(); }, 'tiny')), h('div', { class: 'row gap dt-row' }, dateIn, timeIn)),
         prop('flag', 'Deadline', h('div', { class: 'row gap' }, deadlineIn, t.deadline && btn('Clear', () => { set({ deadline: null }); draw(); }, 'tiny'))),
         prop('flag', 'Priority', pri),
+        store.all('goals').length > 0 && prop('flag', 'Goal', goalSelect(t.goalId, v => { set({ goalId: v }); draw(); }), t.goalId && store.get('goals', t.goalId) && h('a', { class: 'sub', href: '#/goal/' + t.goalId, onclick: close }, 'Open goal')),
         prop('clock', 'Time needed', durPick),
         prop('tag', 'Labels', labels),
         prop('bell', 'Reminders', remList, remAdd),

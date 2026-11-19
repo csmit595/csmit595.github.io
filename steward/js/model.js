@@ -4,6 +4,7 @@ import { today, mdToHtml, sanitize, esc } from './util.js';
 import { nextOccurrence, parseDue, looksRepeating } from './dates.js';
 import { snapshot as snapNote, forget as forgetVersions } from './versions.js';
 import { goneExpired } from './versions-core.js';
+import * as GC from './goals-core.js';
 
 export const COLORS = { green: '#3f7d4e', moss: '#7a8f3c', teal: '#2f8f8a', blue: '#3b74c4', indigo: '#5b5fc7', plum: '#8e4fa8', rose: '#c2527a', red: '#c8473b', orange: '#d17a2a', gold: '#b8962e', stone: '#7b756a', slate: '#55606e' };
 export const PRI_COLORS = { 1: '#c8473b', 2: '#d17a2a', 3: '#3b74c4', 4: 'var(--muted)' };
@@ -39,7 +40,7 @@ export function addTask(f, opts) {
   return store.put('tasks', {
     ...(f.id ? { id: f.id } : {}), content: f.content, description: f.description || '', projectId: f.projectId || 'inbox', sectionId: f.sectionId || null,
     parentId: f.parentId || null, priority: f.priority || 4, labels: f.labels || [], due: f.due || null, deadline: f.deadline || null,
-    duration: f.duration || null, reminders: f.reminders || [], noteId: f.noteId || null, order: Date.now(), completedAt: null,
+    duration: f.duration || null, reminders: f.reminders || [], noteId: f.noteId || null, goalId: f.goalId || null, order: Date.now(), completedAt: null,
   }, opts);
 }
 export function childrenOf(id) { return store.all('tasks').filter(t => t.parentId === id); }
@@ -49,7 +50,8 @@ export function completeTask(id) {
   if (!t) return;
   if (t.due?.recur) {
     const next = nextOccurrence(t.due);
-    store.put('tasks', { ...t, due: { ...t.due, date: next }, lastDoneAt: Date.now(), doneCount: (t.doneCount || 0) + 1, remindedFor: null });
+    // doneLog: when each round of a repeating task was finished (newest 60), so the week's stats can count them
+    store.put('tasks', { ...t, due: { ...t.due, date: next }, lastDoneAt: Date.now(), doneCount: (t.doneCount || 0) + 1, doneLog: [...(t.doneLog || []).slice(-59), Date.now()], remindedFor: null });
     for (const c of childrenOf(id)) if (c.completedAt) store.patch('tasks', c.id, { completedAt: null }, { silent: true });
     return { recurring: true, next };
   }
@@ -81,6 +83,37 @@ export function reminderTimes(t) {
   }
   if (!out.length && t.due?.time && settings.get('autoRemind')) out.push(new Date(dueAt.getTime() - (settings.get('remindLead') || 0) * 60000));
   return out.filter(d => !isNaN(d));
+}
+
+// ---- identities and goals ------------------------------------------------------
+export const identities = () => store.all('identities').sort(GC.byOrder);
+export const liveGoals = () => store.all('goals');
+export const goalCtx = () => ({ identities: store.all('identities'), goals: store.all('goals'), tasks: store.all('tasks') });
+/** The identity a task belongs to (its goal, project, labels or area decide; see goals-core.js). */
+export const identityOfTask = (t, ctx = goalCtx()) => GC.identityOf(t, ctx);
+/**
+ * The six starting identities, added once. They carry the oldest possible edit time, so a device that seeds them
+ * later never overwrites what he has already changed on another device; one he deleted stays deleted.
+ */
+export function ensureIdentities() {
+  let n = 0;
+  for (const seed of GC.SEED_IDENTITIES) { if (store.rawGet('identities', seed.id)) continue; store.put('identities', { ...seed, createdAt: 1, updatedAt: 1 }, { silent: true, keepTimes: true }); n++; }
+  return n;
+}
+export function addGoal(f) {
+  const q = GC.quarterRange(today());
+  return store.put('goals', { ...(f.id ? { id: f.id } : {}), identityId: f.identityId, title: String(f.title || '').trim() || 'Untitled goal', why: f.why || '', start: f.start || q.start, end: f.end || q.end,
+    kind: GC.KINDS[f.kind] ? f.kind : 'milestones', target: f.target ?? null, unit: f.unit || '', manual: f.manual || 0, tags: f.tags || [], status: f.status || 'active', order: f.order ?? Date.now(), doneAt: f.doneAt || null, nextTaskId: f.nextTaskId || null });
+}
+/** Deleting a goal unlinks its tasks (they stay) and its sessions keep their identity. */
+export function deleteGoal(id) {
+  for (const t of store.all('tasks')) if (t.goalId === id) store.patch('tasks', t.id, { goalId: null }, { silent: true, noHistory: true });
+  store.remove('goals', id);
+}
+export function deleteIdentity(id) {
+  for (const g of store.all('goals')) if (g.identityId === id) deleteGoal(g.id);
+  for (const b of store.all('blocks')) if (b.identityId === id) store.patch('blocks', b.id, { identityId: null }, { silent: true });
+  store.remove('identities', id);
 }
 
 // ---- notes -----------------------------------------------------------------
@@ -168,6 +201,8 @@ export function applyOps(ops) {
       if (o.op === 'delete') {
         if (['doc', 'document', 'source'].includes(type)) throw new Error(WRITING_GONE);
         const kind = type === 'task' ? 'tasks' : type + 's';
+        if (type === 'identity') { if (!store.get('identities', o.id)) throw new Error('no identity with that id; nothing was deleted'); deleteIdentity(o.id); results.push('ok ' + where); continue; }
+        if (type === 'goal') { if (!store.get('goals', o.id)) throw new Error('no goal with that id; nothing was deleted'); deleteGoal(o.id); results.push('ok ' + where); continue; }
         if (!TYPES.includes(kind)) throw new Error(`cannot delete a "${type}"`);
         if (!store.get(kind, o.id)) throw new Error(`no ${type} with that id; nothing was deleted`);
         if (type === 'task') deleteTask(o.id);
@@ -192,6 +227,12 @@ export function applyOps(ops) {
         if (it.id != null && !/^[\w-]{1,80}$/.test(String(it.id))) throw new Error('a task id may only use letters, digits and hyphens');
         if (it.due && !realDate(it.due.date)) { results.push(`problem ${where}: "${it.due.date}" is not a real date; date left unchanged`); delete it.due; }
         else if (it.due?.time && !realTime(it.due.time)) { results.push(`problem ${where}: "${it.due.time}" is not a time (use HH:MM); saved without a time`); it.due = { ...it.due, time: null }; }
+        if (it.goal !== undefined) { // a goal by its title
+          const g = it.goal ? store.all('goals').find(x => x.title.toLowerCase() === String(it.goal).toLowerCase()) : null;
+          if (it.goal && !g) results.push(`problem ${where}: no goal named "${it.goal}"; saved without a goal`); else it.goalId = g ? g.id : null;
+          delete it.goal;
+        }
+        if (it.goalId && !store.get('goals', it.goalId) && store.all('goals').length) { results.push(`problem ${where}: no goal with id ${it.goalId}; saved without a goal`); it.goalId = null; }
         if (it.parentId && !store.get('tasks', it.parentId)) { results.push(`problem ${where}: no parent task with id ${it.parentId}; saved as a top-level task`); it.parentId = null; }
         Object.assign(it, taskFixes(it, true) || {});
         if (it.labels) ensureLabels(it.labels);
@@ -232,6 +273,30 @@ export function applyOps(ops) {
         else addNote(it);
       } else if (['doc', 'document', 'source'].includes(type)) {
         throw new Error(WRITING_GONE);
+      } else if (type === 'identity') {
+        // a role he lives in: {name, color, icon, purpose, areas:[...], labels:[...], firstTags:[...], projectIds, notebookIds, weeklyTargetMin, timed, order}
+        const cur = it.id ? store.get('identities', it.id) : store.all('identities').find(x => x.name.toLowerCase() === String(it.name || '').toLowerCase());
+        if (!cur && !String(it.name || '').trim()) throw new Error('a new identity needs a name');
+        if (it.color != null && !COLORS[it.color]) throw new Error(`color must be one of ${Object.keys(COLORS).join(', ')}`);
+        const AREAS = ['cs-outdoors', 'seminary', 'church', 'home-family', 'personal'];
+        if (it.areas !== undefined) { if (!Array.isArray(it.areas) || it.areas.some(a => !AREAS.includes(a))) throw new Error(`areas must be a list from ${AREAS.join(', ')}`); }
+        for (const k of ['labels', 'firstTags']) if (it[k] !== undefined) it[k] = labelList(it[k]).map(t => t.toLowerCase());
+        if (it.weeklyTargetMin != null && !(Number(it.weeklyTargetMin) >= 0)) throw new Error('weeklyTargetMin must be minutes, 0 or more');
+        if (it.weeklyTargetMin != null) it.weeklyTargetMin = Math.round(Number(it.weeklyTargetMin)) || null;
+        store.put('identities', cur ? { ...cur, ...it, id: cur.id } : { color: 'stone', icon: 'star', purpose: '', areas: [], labels: [], order: Date.now(), ...it });
+      } else if (type === 'goal') {
+        // a 90-day goal: {title, identity (name) or identityId, why, start, end, kind: milestones|count|hours, target, unit, manual, tags, status: active|done|dropped}
+        const cur = it.id ? store.get('goals', it.id) : store.all('goals').find(x => x.title.toLowerCase() === String(it.title || '').toLowerCase());
+        if (it.identity !== undefined) { const i = store.all('identities').find(x => x.name.toLowerCase() === String(it.identity).toLowerCase() || x.name.toLowerCase().startsWith(String(it.identity).toLowerCase())); if (!i) throw new Error(`no identity named "${it.identity}"`); it.identityId = i.id; delete it.identity; }
+        if (it.identityId !== undefined && !store.get('identities', it.identityId)) throw new Error('no identity with that identityId');
+        if (!cur && !String(it.title || '').trim()) throw new Error('a new goal needs a title');
+        if (!cur && !it.identityId) throw new Error('a new goal needs an identity (its name, or identityId)');
+        if (it.kind != null && !GC.KINDS[it.kind]) throw new Error('kind must be milestones, count or hours');
+        if (it.status != null && !['active', 'done', 'dropped'].includes(it.status)) throw new Error('status must be active, done or dropped');
+        for (const k of ['start', 'end']) if (it[k] != null) { const d = dateOnly(it[k]); if (!d) throw new Error(`could not read the ${k} date`); it[k] = d; }
+        if (it.tags !== undefined) it.tags = labelList(it.tags).map(t => t.toLowerCase());
+        if (it.status === 'done' && !(cur?.doneAt) && !it.doneAt) it.doneAt = Date.now();
+        if (cur) store.put('goals', { ...cur, ...it, id: cur.id }); else addGoal(it);
       } else if (type === 'project') {
         const cur = it.id ? store.get('projects', it.id) : store.all('projects').find(p => p.name.toLowerCase() === String(it.name || '').toLowerCase());
         store.put('projects', cur ? { ...cur, ...it, id: cur.id } : { color: 'green', order: Date.now(), ...it });
@@ -316,7 +381,8 @@ export const reminderKey = (taskId, at) => `st${Array.from(String(taskId), c => 
 export function buildSummary() {
   const now = today();
   const tasks = openTasks().filter(t => !t.parentId);
-  const line = t => `- ${t.content}${t.due ? ` — due ${t.due.date}${t.due.time ? ' ' + t.due.time : ''}${t.due.recur ? ' (repeats ' + t.due.recur.text + ')' : ''}` : ''}${t.deadline ? ' — deadline ' + t.deadline : ''}${t.duration ? ' — ' + t.duration + 'm' : ''} — p${t.priority || 4} — ${projectName(t.projectId)}${(t.labels || []).length ? ' — @' + t.labels.join(' @') : ''} [id:${t.id}]`;
+  const goalTitle = id => store.get('goals', id)?.title;
+  const line = t => `- ${t.content}${t.due ? ` — due ${t.due.date}${t.due.time ? ' ' + t.due.time : ''}${t.due.recur ? ' (repeats ' + t.due.recur.text + ')' : ''}` : ''}${t.deadline ? ' — deadline ' + t.deadline : ''}${t.duration ? ' — ' + t.duration + 'm' : ''} — p${t.priority || 4} — ${projectName(t.projectId)}${(t.labels || []).length ? ' — @' + t.labels.join(' @') : ''}${t.goalId && goalTitle(t.goalId) ? ' — goal: ' + goalTitle(t.goalId) : ''} [id:${t.id}]`;
   const sortDue = (a, b) => (a.due.date + (a.due.time || '')).localeCompare(b.due.date + (b.due.time || ''));
   const overdue = tasks.filter(t => t.due && t.due.date < now).sort(sortDue);
   const tod = tasks.filter(t => t.due?.date === now).sort(sortDue);
@@ -328,6 +394,19 @@ export function buildSummary() {
   for (const t of none) { const k = projectName(t.projectId); if (!byProj.has(k)) byProj.set(k, []); byProj.get(k).push(t); }
   for (const [k, list] of byProj) out.push(`### ${k}`, ...list.map(line));
   out.push('', '## Projects', ...store.all('projects').map(p => `- ${p.name} [id:${p.id}]`), '', '## Notebooks', ...store.all('notebooks').map(n => `- ${n.name} (${liveNotes().filter(x => x.notebookId === n.id).length} notes) [id:${n.id}]`));
+  // identities and this quarter's goals (God and family first, as everywhere)
+  const allTasks = store.all('tasks'), sess = store.all('sessions');
+  const idList = identities();
+  if (idList.length) {
+    out.push('', '## Identities and goals');
+    for (const i of idList) {
+      out.push(`### ${i.name}${i.weeklyTargetMin ? ` (weekly target ${Math.round(i.weeklyTargetMin / 6) / 10} h${i.timed ? ', timed, Monday–Saturday' : ''})` : ''} [id:${i.id}]`);
+      for (const g of GC.sortGoals(store.all('goals').filter(x => x.identityId === i.id && x.status === 'active'), i)) {
+        const p = GC.goalProgress(g, { tasks: allTasks, sessions: sess }), nt = GC.nextTask(g, allTasks);
+        out.push(`- ${g.title}: ${p.label}, ${GC.goalPace(g, p, now).replace('-', ' ')}, ${g.start} to ${g.end}${nt ? ` — next: ${nt.content}` : ''} [id:${g.id}]`);
+      }
+    }
+  }
   const DAYN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   out.push('', '## Fixed blocks (never schedule over these)', ...store.all('blocks').filter(b => !b.paused).map(b => `- ${b.name}: ${(b.days || []).map(d => DAYN[d]).join(' ')} ${b.start}–${b.end}${(b.every || 1) > 1 ? ` every ${b.every} weeks from ${b.anchor}` : ''}${b.until ? ' until ' + b.until : ''} [id:${b.id}]`));
   const toRead = [];

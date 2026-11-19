@@ -9,12 +9,14 @@ export const FILES = {
   // what the organizer has learned (confirmed suggestions) and the names it knows: one small synced file, so the
   // phone and the Mac train the same model and suggest the same things
   organize: ['lessons', 'orgwords'],
+  // identities (the roles he lives in), 90-day goals under them, focus and family-time sessions, weekly reviews
+  goals: ['identities', 'goals', 'sessions', 'reviews'],
 };
 export const TYPES = Object.values(FILES).flat();
 // Synced to Drive as one file per item (folder Steward/library), so editing one note uploads only that note.
 export const ITEMWISE = ['notebooks', 'notes', 'ocr', 'versions'];
 // Synced as one combined file (small and changes often).
-export const BUNDLES = { tasks: FILES.tasks, organize: FILES.organize };
+export const BUNDLES = { tasks: FILES.tasks, organize: FILES.organize, goals: FILES.goals };
 const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
 
 const data = Object.fromEntries(TYPES.map(t => [t, new Map()]));
@@ -50,7 +52,7 @@ export function mergeFields(l, r) {
   if (l.hist || r.hist) { const seen = new Map(); for (const e of [...(l.hist || []), ...(r.hist || [])]) seen.set(e.at + '|' + Object.keys(e.old || {}).join(','), e); out.hist = [...seen.values()].sort((a, b) => a.at - b.at).slice(-15); }
   return out;
 }
-const HIST_SKIP = new Set(['order', 'remindedFor', 'lastDoneAt', 'doneCount']);
+const HIST_SKIP = new Set(['order', 'remindedFor', 'lastDoneAt', 'doneCount', 'doneLog']);
 const listeners = new Set();
 let db = null;
 const pending = new Map(); // "type|id" -> [type, id]: only changed items are written to disk

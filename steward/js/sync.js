@@ -26,7 +26,7 @@ function checkScopes(granted) {
 }
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
-const FILE_NAMES = { tasks: 'steward-tasks.json', organize: 'steward-organize.json' };
+const FILE_NAMES = { tasks: 'steward-tasks.json', organize: 'steward-organize.json', goals: 'steward-goals.json' };
 // Before 2.4, notes were one whole-section file. Any still found is read in once, then moved to the trash.
 const OLD_FILES = { 'steward-notes.json': ['notebooks', 'notes', 'ocr'] };
 const LIB = 'library';

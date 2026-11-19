@@ -6,6 +6,7 @@
 // For tasks, spoken words are turned into Steward's typing shortcuts ("priority one" → p1, "project Hanel" → #Hanel,
 // "label promise" → @promise, "deadline friday" → {friday}, "8 a.m." → 8am), and "next task" starts another task.
 import { h } from './util.js';
+import { spokenGoal } from './goals-core.js';
 import { parseDue } from './dates.js';
 import { icon } from './ui.js';
 import { deviceListen } from './listen-device.js';
@@ -183,6 +184,8 @@ export function spokenTask(raw, names = {}) {
     }
     return all;
   });
+  // "goal nursery ready" / "for the goal read twelve sermons" → goal:<title>, only for goals that exist
+  if (names.goals?.length) s = spokenGoal(s, names.goals);
   s = s.replace(/\s{2,}/g, ' ').trim().replace(/[.!]+$/, '');
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
