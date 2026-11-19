@@ -203,3 +203,45 @@ ok(a2.ok && JSON.parse(aiCalls[aiCalls.length - 1].payload).model === 'claude-so
 ok(!post('STEWARD', { action: 'ai', model: 'opus', messages: [{ role: 'user', content: 'x' }] }).ok, 'ai: only Haiku and Sonnet');
 ok(!aiCalls.some(c => c.headers.Authorization), 'ai: no Google pass sent to Anthropic');
 ok(post('STEWARD', { action: 'aiKey', clear: true }).hasKey === false, 'aiKey: key removed');
+
+{
+// ---- Steward 4.5–4.7: Writing removed, goals left for the app, focus and family-time alerts ----
+const goalFile = mk('claude-2026-11-19-goal.json', inbox, JSON.stringify({ ops: [{ op: 'upsert', type: 'goal', item: { title: 'Nursery ready', identity: 'Family' } }, { op: 'upsert', type: 'task', item: { id: 'cl-crib', content: 'Assemble crib' } }] }));
+const goalTask = mk('claude-2026-11-19-goaltask.json', inbox, JSON.stringify({ ops: [{ op: 'upsert', type: 'task', item: { content: 'Paint', goal: 'Nursery ready' } }] }));
+const docFile = mk('claude-2026-11-19-doc.json', inbox, JSON.stringify({ ops: [{ op: 'upsert', type: 'doc', item: { title: 'Sermon', markdown: 'text' } }, { op: 'delete', type: 'source', id: 's1' }, { op: 'upsert', type: 'task', item: { id: 'cl-after-doc', content: 'Still applied' } }] }));
+logs.length = 0; vm.runInContext('syncSteward()', ctx);
+const tasksNow = () => JSON.parse(files.get(tasksId).body);
+ok(!files.get(goalFile).trashed && !files.get(goalTask).trashed && !tasksNow().tasks.some(x => x.id === 'cl-crib'), 'goal changes (and tasks filed under a goal by name) are left whole for the app');
+ok(files.get(docFile).trashed && tasksNow().tasks.some(x => x.id === 'cl-after-doc'), 'a file naming a Writing document: everything else in it is applied');
+const docReport = [...files.values()].find(f => f.name === 'report-claude-2026-11-19-doc.txt');
+ok(docReport && /Writing \(documents and sources\) was removed/.test(docReport.body) && /1 applied, 2 with problems/.test(docReport.body), 'and a report says Writing was removed');
+ok(post('STEWARD', { action: 'inbox' }).files.some(f => f.id === goalFile), 'the goal file is handed to the app');
+
+const nowF = new Date(), startHM = `${pad(nowF.getHours())}:${pad(nowF.getMinutes())}`, endHM = nowF.getHours() === 23 ? '23:59' : `${pad(nowF.getHours() + 1)}:${pad(nowF.getMinutes())}`;
+const tjA = tasksNow();
+tjA.blocks = [...(tjA.blocks || []), { id: 'b-dinner', name: 'Family dinner', days: [0, 1, 2, 3, 4, 5, 6], start: startHM, end: endHM, every: 1, identityId: 'id-family', updatedAt: Date.now(), createdAt: Date.now() }, { id: 'b-class', name: 'SCH 601', days: [0, 1, 2, 3, 4, 5, 6], start: startHM, end: endHM, every: 1, updatedAt: Date.now(), createdAt: Date.now() }];
+files.get(tasksId).body = JSON.stringify(tjA); files.get(tasksId).version = String(+files.get(tasksId).version + 1);
+const mkSess = (id, f) => ({ id, kind: 'focus', taskId: 't-old', goalId: null, identityId: 'id-seminary', startedAt: Date.now() - 50 * 60000, endsAt: Date.now() + 5000, pauses: [], endedAt: null, plannedMin: 50, format: 'standard', updatedAt: Date.now(), createdAt: Date.now(), ...f });
+const goalsBody = extra => JSON.stringify({ app: 'steward', format: 1, identities: [{ id: 'id-family', name: 'Family', timed: true, updatedAt: 1, createdAt: 1 }, { id: 'id-seminary', name: 'Seminary & Church', updatedAt: 1, createdAt: 1 }], goals: [], reviews: [],
+  sessions: [mkSess('s-run'), mkSess('s-paused', { pauses: [{ at: Date.now() - 60000, until: null }], endsAt: null }), mkSess('s-done', { endedAt: Date.now() - 1000 }), mkSess('s-later', { endsAt: Date.now() + 9 * 3600e3 }), ...(extra || [])] });
+const goalsId = mk('steward-goals.json', root, goalsBody());
+props.delete('goalsLooked'); // the helper looks for a new goals file every 10 minutes
+pushes.length = 0; logs.length = 0; vm.runInContext('sendReminders()', ctx);
+let got = pushes.filter(p => p.url.endsWith('/abc')).map(open);
+if (process.env.DBG) console.log('DBG', logs.join(' | '), props.get('drive'), props.get('focusPlan'), props.get('goalsLooked'), pushes.length);
+const fsMsg = got.find(x => x.title === 'Focus session done'), fbMsg = got.find(x => /Family time/.test(x.title));
+ok(fsMsg && /Existing task/.test(fsMsg.body) && fsMsg.url === '#/focus' && fsMsg.tag === 'fs-s-run', 'focus session end alert sent with the task name: ' + JSON.stringify(fsMsg));
+ok(got.filter(x => x.title === 'Focus session done').length === 1, 'paused, finished and far-off sessions send nothing');
+ok(fbMsg && fbMsg.url === '#/family-start' && /Family dinner/.test(fbMsg.body), 'a Family block starting offers the timer: ' + JSON.stringify(fbMsg));
+ok(!got.some(x => /SCH 601/.test(x.body || '')), 'blocks of other kinds send nothing');
+pushes.length = 0; vm.runInContext('sendReminders()', ctx);
+ok(pushes.length === 0, 'timer alerts are not sent twice');
+// with the family timer already running, no "start the timer?" for a block
+const tj2 = tasksNow(); tj2.blocks.push({ id: 'b-date', name: 'Date night', days: [0, 1, 2, 3, 4, 5, 6], start: startHM, end: endHM, every: 1, identityId: 'id-family', updatedAt: Date.now(), createdAt: Date.now() });
+files.get(tasksId).body = JSON.stringify(tj2); files.get(tasksId).version = String(+files.get(tasksId).version + 1);
+files.get(goalsId).body = goalsBody([{ id: 's-fam', kind: 'family', identityId: 'id-family', startedAt: Date.now() - 600000, endsAt: null, pauses: [], endedAt: null, plannedMin: null, updatedAt: Date.now(), createdAt: Date.now() }]); files.get(goalsId).version = '2';
+pushes.length = 0; vm.runInContext('sendReminders()', ctx);
+ok(!pushes.map(open).some(x => /Date night/.test(x.body || '')), 'no prompt while the family timer is running');
+files.get(goalsId).trashed = true; pushes.length = 0; logs.length = 0; vm.runInContext('sendReminders()', ctx);
+ok(!JSON.parse(props.get('drive')).goals, 'a missing goals file is forgotten without an error: ' + logs.join(' | '));
+}

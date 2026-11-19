@@ -2,12 +2,12 @@
 // Google Drive in the background while Steward is closed (loaded as a module: register('sw.js', { type: 'module' })).
 import { bgSync } from './js/bg.js';
 import { kvSet } from './js/lsmirror.js';
-const VERSION = 'steward-4.6.0';
+const VERSION = 'steward-4.7.0';
 // Tools (PDF reader, page reader, search model) are kept in their own cache, so an update to Steward
 // never throws them away and they keep working with no signal. Bump only when a file in vendor/ changes.
 const TOOLS = 'steward-tools-1';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'css/app.css', 'icons/icon-192.png', 'icons/mark.png', 'icons/icon-512.png',
-  'js/boot.js', 'js/lsmirror.js', 'js/bg.js', 'js/app.js', 'js/util.js', 'js/store.js', 'js/model.js', 'js/dates.js', 'js/filters.js', 'js/sync.js', 'js/ui.js', 'js/tasks.js', 'js/notes.js', 'js/calendar.js', 'js/ocr.js', 'js/search.js', 'js/semantic.js', 'js/semantic-worker.js', 'js/dayplan.js', 'js/import-todoist.js', 'js/offline.js', 'js/dictate.js', 'js/listen-device.js', 'js/whisper-worker.js', 'js/mic-worklet.js', 'js/organize.js', 'js/organize-core.js', 'js/ai.js', 'js/versions.js', 'js/versions-core.js', 'js/migrate.js', 'js/legacy-writing.js', 'js/goals-core.js', 'js/goals.js', 'js/focus.js', 'icons/icon-maskable-512.png', 'privacy.html'];
+  'js/boot.js', 'js/lsmirror.js', 'js/bg.js', 'js/app.js', 'js/util.js', 'js/store.js', 'js/model.js', 'js/dates.js', 'js/filters.js', 'js/sync.js', 'js/ui.js', 'js/tasks.js', 'js/notes.js', 'js/calendar.js', 'js/ocr.js', 'js/search.js', 'js/semantic.js', 'js/semantic-worker.js', 'js/dayplan.js', 'js/import-todoist.js', 'js/offline.js', 'js/dictate.js', 'js/listen-device.js', 'js/whisper-worker.js', 'js/mic-worklet.js', 'js/organize.js', 'js/organize-core.js', 'js/ai.js', 'js/versions.js', 'js/versions-core.js', 'js/migrate.js', 'js/legacy-writing.js', 'js/goals-core.js', 'js/goals.js', 'js/focus.js', 'js/session-core.js', 'icons/icon-maskable-512.png', 'privacy.html'];
 
 self.addEventListener('install', e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {
@@ -87,7 +87,7 @@ self.addEventListener('push', e => {
     await self.registration.showNotification(m.title || 'Steward reminder', {
       body: m.body || '', icon: 'icons/icon-192.png', tag: m.tag || undefined, renotify: !!m.tag, timestamp: Date.now(),
       requireInteraction: !m.test, // a reminder stays on screen (Mac) until dealt with; the test does not
-      data: { taskId: m.taskId || null },
+      data: { taskId: m.taskId || null, url: typeof m.url === 'string' && /^#\/[\w-]+$/.test(m.url) ? m.url : null },
     });
     // Remember that notifications work on this device; the next sync tells the helper (and the other devices).
     const sub = await self.registration.pushManager.getSubscription().catch(() => null);
@@ -99,11 +99,11 @@ self.addEventListener('push', e => {
 self.addEventListener('pushsubscriptionchange', e => { e.waitUntil(bgSync('push-renew')); });
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const id = e.notification.data?.taskId;
+  const id = e.notification.data?.taskId, url = e.notification.data?.url; // url: a screen to open (a finished focus session, the family timer)
   e.waitUntil((async () => {
     const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    if (cs[0]) { await cs[0].focus().catch(() => {}); if (id) cs[0].postMessage({ steward: 'open-task', id }); return; }
-    await self.clients.openWindow(id ? './#/task/' + encodeURIComponent(id) : './');
+    if (cs[0]) { await cs[0].focus().catch(() => {}); if (id) cs[0].postMessage({ steward: 'open-task', id }); else if (url) cs[0].postMessage({ steward: 'go', url }); return; }
+    await self.clients.openWindow(id ? './#/task/' + encodeURIComponent(id) : url ? './' + url : './');
   })());
 });
 

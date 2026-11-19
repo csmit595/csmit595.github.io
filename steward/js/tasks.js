@@ -10,6 +10,7 @@ import { canDictate, listen, spokenTask, splitTasks, saysStop, withoutStop } fro
 import { orgPanel, readOrg, mergeList, hasArea, projectIdByName, orgOn } from './organize.js';
 import { extractGoal } from './goals-core.js';
 import { goalStrip, goalSelect } from './goals.js';
+import { openFocusStart, todayStarts } from './focus.js';
 
 const go = hash => { location.hash = hash; };
 const byDue = (a, b) => ((a.due?.date || '9999') + (a.due?.time || '99')).localeCompare((b.due?.date || '9999') + (b.due?.time || '99')) || (a.priority || 4) - (b.priority || 4) || M.byOrder(a, b);
@@ -85,6 +86,7 @@ function moreMenu(anchor, t) {
     ...[1, 2, 3, 4].map(n => ({ label: n === 4 ? 'No priority' : `Priority ${n}`, icon: 'flag', onclick: () => store.patch('tasks', t.id, { priority: n }) })),
     '-',
     { label: 'Open details', icon: 'edit', onclick: () => openTask(t.id) },
+    { label: 'Focus on this', icon: 'clock', onclick: () => openFocusStart({ taskId: t.id }) },
     ...goalItems(t),
     { label: 'Delete', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete "${t.content}"?`)) M.deleteTask(t.id); } },
   ]);
@@ -255,6 +257,7 @@ function viewToday(main) {
   const d = new Date(), n = todays.length + overdue.length;
   main.append(header('Today', `${d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}${n ? ` · ${n} task${n === 1 ? '' : 's'}` : ''}`));
   main.append(planCard(now, { openTask, editHours: () => go('#/settings') }));
+  main.append(todayStarts());
   const strip = goalStrip(); if (strip) main.append(strip);
   if (overdue.length) main.append(group(`Overdue (${overdue.length})`, taskList(overdue, { showProject: true, flat: true }),
     btn('Move all to today', () => { for (const t of overdue) store.patch('tasks', t.id, { due: { ...t.due, date: now } }, { silent: true }); store.emit({ local: true }); }, 'link')));
@@ -575,9 +578,10 @@ export function openTask(id) {
         if (cIn.value.trim()) store.put('comments', { taskId: id, text: cIn.value.trim() });
         close(); toast('Saved');
       };
+      const focusBtn = !t.completedAt && btn('Focus', () => { close(); openFocusStart({ taskId: id }); }, '', 'clock');
       const saveBtn = btn('Save', save, 'primary', 'check');
       saveBtn.addEventListener('pointerdown', e => e.preventDefault());
-      fill(body, h('div', { class: 'td-savebar' }, h('span', { class: 'sub' }, 'Changes save as you go — tap Save to finish.'), saveBtn), h('div', { class: 'td-layout' },
+      fill(body, h('div', { class: 'td-savebar' }, h('span', { class: 'sub grow' }, 'Changes save as you go — tap Save to finish.'), focusBtn, saveBtn), h('div', { class: 'td-layout' },
         h('div', { class: 'td-head' },
         parent && h('button', { class: 'crumb', onclick: () => { close(); openTask(parent.id); } }, icon('back', 14), parent.content),
         h('div', { class: 'td-top' }, h('button', { class: `check big pri${t.priority || 4}${t.completedAt ? ' on' : ''}`, 'aria-label': 'Complete', onclick: () => { if (t.completedAt) { M.uncompleteTask(id); draw(); } else { toggle(t); close(); } } }, icon('check', 15)), content),

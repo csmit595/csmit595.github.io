@@ -8,7 +8,8 @@
 // Change files that touch notes are left for the app (they need its HTML tools).
 import './shims.js'; // must stay first
 import { store } from '../steward/js/store.js';
-import { applyOps, openTasks, reminderTimes, reminderKey, projectName } from '../steward/js/model.js';
+import { applyOps, openTasks, reminderTimes, reminderKey, projectName, blocksOn } from '../steward/js/model.js';
+import { isRunning, isPaused, dayOf } from '../steward/js/session-core.js';
 import { newKeys, request } from './push.js';
 
 const DRIVE = 'https://www.googleapis.com/drive/v3';
@@ -214,6 +215,31 @@ function planFrom(version) {
   return { v: version, at: now, items: items.slice(0, 30) };
 }
 
+/** What to send about timers in the next few hours: focus sessions ending, and family blocks beginning. */
+function focusPlanFrom(gVersion, tVersion, now) {
+  const items = [], sessions = store.all('sessions'), title = id => { const t = id && store.rawGet('tasks', id); return t && !t.deleted ? t.content : ''; };
+  for (const s of sessions) {
+    if (!isRunning(s) || isPaused(s) || s.kind === 'family' || !s.endsAt) continue;
+    if (s.endsAt < now - LATE || s.endsAt > now + PLAN_AHEAD) continue;
+    const what = title(s.taskId) || store.get('goals', s.goalId)?.title || store.get('identities', s.identityId)?.name || '';
+    items.push({ k: 'fs-' + s.id, at: s.endsAt, title: 'Focus session done', body: (what ? String(what).slice(0, 90) + ' · ' : '') + 'time to check in', url: '#/focus' });
+  }
+  // a block that belongs to an identity counted with a timer: offer the timer when it starts, unless one is running
+  const timed = new Set(store.all('identities').filter(i => i.timed).map(i => i.id));
+  const going = sessions.some(s => isRunning(s) && s.kind === 'family');
+  if (timed.size && !going) {
+    const day = dayOf(now), [y, m, dd] = day.split('-').map(Number);
+    for (const x of blocksOn(day)) {
+      if (!timed.has(x.b.identityId)) continue;
+      const at = new Date(y, m - 1, dd, Math.floor(x.start / 60), x.start % 60).getTime();
+      if (at < now - LATE || at > now + PLAN_AHEAD) continue;
+      items.push({ k: `fb-${x.b.id}-${day}`, at, title: 'Family time: start the timer?', body: String(x.b.name).slice(0, 80) + ' · tap to start counting', url: '#/family-start' });
+    }
+  }
+  items.sort((a, b) => a.at - b.at);
+  return { g: gVersion, t: tVersion, at: now, items: items.slice(0, 20) };
+}
+
 /**
  * Runs every minute. Cheap when nothing is due: one look at the task file's version and one at the notifications
  * folder. Sends each reminder once, up to 15 minutes late if Google ran the timer late.
@@ -265,12 +291,38 @@ export function tick(env) {
   }
   const now = Date.now();
   const sent = Object.fromEntries(Object.entries(readJson(env.props.get('pushSent'), {})).filter(([, at]) => at > now - 2 * LATE));
-  const due = plan.items.filter(x => x.at <= now + 30000 && x.at > now - LATE && !sent[x.k]);
-  for (const r of due) {
-    const ids = Object.keys(devs);
-    const results = ids.map(id => send(id, { title: r.title, body: r.body || 'Steward reminder', tag: r.k, taskId: r.id }));
-    if (!ids.length || results.some(x => x === 'ok' || x === 'gone') || results.every(x => x !== 'error')) sent[r.k] = r.at;
-    log.push(`reminder "${r.title}" → ${ids.map((id, i) => `${devs[id]?.name || 'device'} ${results[i]}`).join(', ') || 'no devices'}`);
+  const deliver = (list, what) => {
+    for (const r of list.filter(x => x.at <= now + 30000 && x.at > now - LATE && !sent[x.k])) {
+      const ids = Object.keys(devs);
+      const results = ids.map(id => send(id, { title: r.title, body: r.body || 'Steward reminder', tag: r.k, ...(r.id ? { taskId: r.id } : {}), ...(r.url ? { url: r.url } : {}) }));
+      if (!ids.length || results.some(x => x === 'ok' || x === 'gone') || results.every(x => x !== 'error')) sent[r.k] = r.at;
+      log.push(`${what} "${r.title}" → ${ids.map((id, i) => `${devs[id]?.name || 'device'} ${results[i]}`).join(', ') || 'no devices'}`);
+    }
+  };
+  deliver(plan.items, 'reminder');
+
+  // ---- focus sessions and family time (steward-goals.json, written by the app) ----
+  // The end of a running focus session, and "start the timer?" when a fixed block of a timed identity (family dinner,
+  // date night) begins. One more look at a file version each minute; the file is read only when it has changed.
+  if (!d.goals && now - Number(env.props.get('goalsLooked') || 0) > 10 * 60000) {
+    env.props.set('goalsLooked', String(now));
+    const f = find('steward-goals.json', d.root);
+    if (f) { d.goals = f.id; env.props.set('drive', JSON.stringify(d)); }
+  }
+  if (d.goals) {
+    let gmeta = null;
+    try { gmeta = api(`${DRIVE}/files/${d.goals}?fields=version,trashed`); } catch (e) { if (e.status !== 404) throw e; }
+    if (!gmeta || gmeta.trashed) { delete d.goals; env.props.set('drive', JSON.stringify(d)); }
+    else {
+      let fp = readJson(env.props.get('focusPlan'), null);
+      if (!fp || fp.g !== gmeta.version || fp.t !== meta.version || now - fp.at > 50 * 60000) {
+        store.merge('tasks', JSON.parse(api(`${DRIVE}/files/${d.tasks}?alt=media`, {}, true)));
+        store.merge('goals', JSON.parse(api(`${DRIVE}/files/${d.goals}?alt=media`, {}, true)));
+        fp = focusPlanFrom(gmeta.version, meta.version, now);
+        env.props.set('focusPlan', JSON.stringify(fp));
+      }
+      deliver(fp.items, 'timer');
+    }
   }
   env.props.set('pushSent', JSON.stringify(sent));
   env.props.set('pushDevices', JSON.stringify(devs));

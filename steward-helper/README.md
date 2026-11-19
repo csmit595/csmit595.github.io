@@ -8,6 +8,7 @@ Runs in the owner's Google account ("Steward helper" project at script.google.co
   Every request must carry a Google pass issued to the Steward client for this same Google account (checked with
   Google's tokeninfo and Drive `about`). The helper saves its web-app address in Steward's shared settings
   (`helperUrl` in `steward-tasks.json`) so each device finds it.
+- every minute (`sendReminders`), since Steward 4.7 also: "Focus session done" when a running focus session reaches its `endsAt`, and "Family time: start the timer?" when a fixed block of a timed identity begins (read from `steward-goals.json`, which only the app writes; one extra look at that file's version each minute). Change files with `identity`, `goal`, `session` or `review` ops, or a task filed under a goal, are left for the app.
 - every minute (`sendReminders`): sends reminders that are due to every device listed in `Steward/notifications` by Web Push
   (RFC 8291 encryption, RFC 8292 VAPID; see `push.js`). The sender key's secret half lives only in the script's properties;
   `notifications/key.json` holds the public half. Each device writes `device-<id>.json` and gets a test notification first.

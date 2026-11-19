@@ -10,6 +10,7 @@ import { canDictate, dictEngine, setDictEngine } from './dictate.js';
 import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
 import { renderGoals, activeGoals } from './goals.js';
+import { renderFocus, leaveFocus, initFocus, startFamily, openFocusStart, runningSession, familyIdentity } from './focus.js';
 import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
@@ -20,8 +21,8 @@ import * as offline from './offline.js';
 import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.6.0';
-const WHATS_NEW = `Steward updated to ${VERSION}. New: Goals. Six identities in your order, 90-day goals under them, tasks linked from task details or by typing goal:name, and “This quarter” on Today. Menu → Goals.`;
+const VERSION = '4.7.0';
+const WHATS_NEW = `Steward updated to ${VERSION}. New: focus sessions and the family-time timer. Start one from Today, a task, a goal, or by holding the plus button. It warns before running into a fixed block, and time is counted even if Steward is closed.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -43,12 +44,15 @@ function render(info = {}) {
   if (route.view === 'settings' && key === lastRouteKey && !info.force && main.querySelector('.settings')) return;
   if (route.view === 'search' && key === lastRouteKey && main.querySelector('.results')) return drawResults();
   leaveNotes();
+  if (route.view !== 'focus') leaveFocus();
   const y = key === lastRouteKey ? main.scrollTop : 0;
   main.className = ''; fill(main, );
   if (route.view === 'calendar') renderCalendar(route, main);
   else if (route.view === 'search') viewSearch(main);
   else if (route.view === 'settings') { viewSettings(main); if (route.id === 'blocks') setTimeout(() => document.getElementById('blocks-card')?.scrollIntoView({ block: 'start' }), 30); }
   else if (['goals', 'goal'].includes(route.view)) renderGoals(route, main);
+  else if (route.view === 'focus') renderFocus(route, main);
+  else if (route.view === 'family-start') { location.replace('#/focus'); setTimeout(() => startFamily(), 60); return; }
   else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
   else if (route.view === 'task') { location.replace('#/' + settings.get('home')); const id = decodeURIComponent(route.id || ''); setTimeout(() => { if (store.get('tasks', id)) openTask(id); }, 80); return; }
   else if (['today', 'upcoming', 'inbox', 'project', 'label', 'filter', 'filters', 'completed'].includes(route.view)) { renderTasks(route, main); const acts = main.querySelector('.vhead > .row'); if (acts && isMobile()) acts.prepend(iconBtn('search', 'Search', () => { location.hash = '#/search'; }, 'hsearch')); }
@@ -102,7 +106,8 @@ function drawSidebar(route) {
       link('#/filters', 'filter', 'Filters & labels'),
       link('#/completed', 'done', 'Completed'),
       sec('plan', 'Goals & review', null,
-        link('#/goals', 'flag', 'Goals', activeGoals().length)),
+        link('#/goals', 'flag', 'Goals', activeGoals().length),
+        link('#/focus', 'clock', 'Focus', runningSession() ? h('span', { class: 'badge' }, 'on') : 0)),
       favs.length > 0 && sec('favs', 'Favorites', null, favs),
       sec('projects', 'Projects', iconBtn('plus', 'New project', () => editProject(), 'mini'),
         projects.map(p => h('div', { style: { paddingLeft: p.depth * 14 + 'px' } }, link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => t.projectId === p.id).length))),
@@ -125,9 +130,9 @@ function defaultsForRoute() {
 const closeDrawer = () => document.body.classList.remove('drawer');
 // Keyboard: "g" then a letter jumps to a screen; "?" shows every shortcut.
 let goPending = 0;
-const GO = { o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', s: '#/settings' };
+const GO = { f: '#/focus', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', s: '#/settings' };
 function shortcuts() {
-  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['Esc', 'Close a window'], ['?', 'This list']];
+  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then F', 'Focus'], ['Esc', 'Close a window'], ['?', 'This list']];
   modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
 }
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
@@ -631,12 +636,14 @@ function fabGestures() {
     try { fab.setPointerCapture(e.pointerId); } catch {}
     // Press and hold: speak a note or tasks instead of typing.
     const mine = g;
-    if (canDictate()) mine.timer = setTimeout(() => {
+    mine.timer = setTimeout(() => {
       if (g !== mine || mine.far >= 8) return;
       mine.long = true; buzz(15);
       menu(fab, [
-        { label: 'Speak a note', icon: 'mic', onclick: () => { closeDrawer(); dictateNote(); } },
-        { label: 'Speak tasks', icon: 'check', onclick: () => { closeDrawer(); openQuickAdd({ ...defaultsForRoute(), dictate: true }); } },
+        canDictate() && { label: 'Speak a note', icon: 'mic', onclick: () => { closeDrawer(); dictateNote(); } },
+        canDictate() && { label: 'Speak tasks', icon: 'check', onclick: () => { closeDrawer(); openQuickAdd({ ...defaultsForRoute(), dictate: true }); } },
+        familyIdentity() && { label: 'Start family time', icon: 'pin', onclick: () => { closeDrawer(); startFamily(); } },
+        { label: 'Start a focus session', icon: 'clock', onclick: () => { closeDrawer(); openFocusStart({}); } },
       ]);
     }, 450);
   });
@@ -724,7 +731,7 @@ async function start() {
     // updateViaCache 'none': the phone always asks GitHub for a fresh sw.js (and its imports) instead of a saved copy.
     navigator.serviceWorker.register('sw.js', { type: 'module', updateViaCache: 'none' }).then(reg => { watchForUpdates(reg); return setupBackground(reg); }).catch(e => console.warn('sw', e));
     // The background sync asks an open, visible Steward to sync itself rather than doing it behind its back.
-    navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); if (e.data?.steward === 'open-task' && store.get('tasks', e.data.id)) openTask(e.data.id); });
+    navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); if (e.data?.steward === 'open-task' && store.get('tasks', e.data.id)) openTask(e.data.id); if (e.data?.steward === 'go' && /^#\/[\w-]+$/.test(e.data.url || '')) location.hash = e.data.url; });
   }
   // The background sync ran while this window was hidden: take its work (settings, then data) before syncing again.
   sync.onStale = async () => {
@@ -752,6 +759,7 @@ async function start() {
   store.on(info => { if (info.remote) { M.repairTasks(); M.purgeGone().catch(() => {}); } });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   store.on(info => { if (info.ocr) { pushSoon(); semantic.kick(12000); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); if (info.local || info.remote || info.ocr) semantic.kick(info.local ? 6000 : 12000); });
+  initFocus();
   ocr.kick(15000);
   semantic.kick(20000);
   orgWarmUp();

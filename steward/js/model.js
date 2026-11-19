@@ -5,6 +5,7 @@ import { nextOccurrence, parseDue, looksRepeating } from './dates.js';
 import { snapshot as snapNote, forget as forgetVersions } from './versions.js';
 import { goneExpired } from './versions-core.js';
 import * as GC from './goals-core.js';
+import { manual as manualSession, dayOf } from './session-core.js';
 
 export const COLORS = { green: '#3f7d4e', moss: '#7a8f3c', teal: '#2f8f8a', blue: '#3b74c4', indigo: '#5b5fc7', plum: '#8e4fa8', rose: '#c2527a', red: '#c8473b', orange: '#d17a2a', gold: '#b8962e', stone: '#7b756a', slate: '#55606e' };
 export const PRI_COLORS = { 1: '#c8473b', 2: '#d17a2a', 3: '#3b74c4', 4: 'var(--muted)' };
@@ -297,6 +298,23 @@ export function applyOps(ops) {
         if (it.tags !== undefined) it.tags = labelList(it.tags).map(t => t.toLowerCase());
         if (it.status === 'done' && !(cur?.doneAt) && !it.doneAt) it.doneAt = Date.now();
         if (cur) store.put('goals', { ...cur, ...it, id: cur.id }); else addGoal(it);
+      } else if (type === 'session') {
+        // time entered for him: {identity (name) or identityId, goal (title) or goalId, minutes, date: YYYY-MM-DD, note}; with an id, patches note/rating
+        const cur = it.id ? store.get('sessions', it.id) : null;
+        if (cur) { const f = {}; for (const k of ['note', 'rating']) if (it[k] !== undefined) f[k] = it[k]; store.put('sessions', { ...cur, ...f }); }
+        else {
+          let i = it.identityId ? store.get('identities', it.identityId) : it.identity ? store.all('identities').find(x => x.name.toLowerCase() === String(it.identity).toLowerCase() || x.name.toLowerCase().startsWith(String(it.identity).toLowerCase())) : null;
+          const g = it.goalId ? store.get('goals', it.goalId) : it.goal ? store.all('goals').find(x => x.title.toLowerCase() === String(it.goal).toLowerCase()) : null;
+          if (it.goal && !g) throw new Error(`no goal named "${it.goal}"`);
+          if (!i && g) i = store.get('identities', g.identityId);
+          if (!i) throw new Error('a session needs an identity (its name, or identityId) or a goal');
+          const min = Math.round(Number(it.minutes));
+          if (!(min > 0) || min > 16 * 60) throw new Error('minutes must be between 1 and 960');
+          const day = it.date == null ? dayOf(Date.now()) : dateOnly(it.date);
+          if (!day) throw new Error('could not read the date');
+          if (day > dayOf(Date.now())) throw new Error('time cannot be logged for a day that has not happened yet');
+          store.put('sessions', { ...(it.id ? { id: it.id } : {}), ...manualSession({ kind: i.timed ? 'family' : 'manual', identityId: i.id, goalId: g?.id || null, minutes: min, day, note: String(it.note || ''), device: 'Claude' }) });
+        }
       } else if (type === 'project') {
         const cur = it.id ? store.get('projects', it.id) : store.all('projects').find(p => p.name.toLowerCase() === String(it.name || '').toLowerCase());
         store.put('projects', cur ? { ...cur, ...it, id: cur.id } : { color: 'green', order: Date.now(), ...it });
