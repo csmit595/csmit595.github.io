@@ -19,8 +19,9 @@ export async function ask(model, opts) { return (await askFull(model, opts)).tex
 /** Same as ask(), but returns { text, stop } so a reply cut off at the length limit can be told apart. */
 export async function askFull(model, { system, messages, max_tokens }) {
   if (!navigator.onLine) throw new Error('No signal');
+  const started = Date.now();
   try {
-    const r = await sync.helper('ai', { model, system, messages, max_tokens });
+    const r = await helperRetrying('ai', { model, system, messages, max_tokens });
     if (r.usage) settings.set('aiUsageSeen', r.usage);
     return { text: r.text || '', stop: r.stop || null };
   } catch (e) {
@@ -28,8 +29,31 @@ export async function askFull(model, { system, messages, max_tokens }) {
     if (/no-key|bad-key/.test(m)) { noKey = true; throw new Error('Claude is not set up yet: add your API key in Settings → Claude.'); }
     if (/no-credit/.test(m)) { downUntil = Date.now() + 30 * 60000; throw new Error('Your Anthropic account is out of credit. Add credit in the Claude Console (Billing).'); }
     if (/unknown request/.test(m)) { downUntil = Date.now() + 60 * 60000; throw new Error('The Steward helper needs updating before it can reach Claude.'); }
+    if (isDropped(e)) throw new Error(`The connection to Claude dropped after ${Math.round((Date.now() - started) / 1000)} seconds (weak signal, or Steward was in the background), even after trying again. Nothing was changed. Try again with Steward open.`);
     downUntil = Date.now() + 3 * 60000; // a hiccup: use the device for a few minutes, then try Claude again
     throw e;
+  }
+}
+// "Failed to fetch": the phone lost the connection mid-request (signal dropped, or Android paused Steward in the
+// background while Claude was still answering). The helper never answered, so ask again: once Steward is back on
+// screen and has signal, up to twice.
+const isDropped = e => e instanceof TypeError || /failed to fetch|load failed|networkerror|network error/i.test(String(e?.message || e));
+const backOnScreen = () => new Promise(res => {
+  const ok = () => !document.hidden && navigator.onLine;
+  if (ok()) return res();
+  const check = () => { if (ok()) { document.removeEventListener('visibilitychange', check); removeEventListener('online', check); clearInterval(t); res(); } };
+  const t = setInterval(check, 2000);
+  document.addEventListener('visibilitychange', check); addEventListener('online', check);
+});
+async function helperRetrying(action, data) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await sync.helper(action, data); }
+    catch (e) {
+      if (!isDropped(e) || attempt >= 2) throw e;
+      console.warn('Claude request dropped; asking again', e);
+      await backOnScreen();
+      await new Promise(r => setTimeout(r, 1500));
+    }
   }
 }
 export const keyStatus = () => sync.helper('aiKey', {}).then(r => { noKey = !r.hasKey; return r; });
