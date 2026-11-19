@@ -5,7 +5,8 @@ import { nextOccurrence, parseDue, looksRepeating } from './dates.js';
 import { snapshot as snapNote, forget as forgetVersions } from './versions.js';
 import { goneExpired } from './versions-core.js';
 import * as GC from './goals-core.js';
-import { manual as manualSession, dayOf } from './session-core.js';
+import { manual as manualSession, dayOf, weekOf } from './session-core.js';
+import { periodStats, plainSummary } from './stats-core.js';
 
 export const COLORS = { green: '#3f7d4e', moss: '#7a8f3c', teal: '#2f8f8a', blue: '#3b74c4', indigo: '#5b5fc7', plum: '#8e4fa8', rose: '#c2527a', red: '#c8473b', orange: '#d17a2a', gold: '#b8962e', stone: '#7b756a', slate: '#55606e' };
 export const PRI_COLORS = { 1: '#c8473b', 2: '#d17a2a', 3: '#3b74c4', 4: 'var(--muted)' };
@@ -425,8 +426,16 @@ export function buildSummary() {
       }
     }
   }
+  // the week so far in plain words (the same lines the weekly review opens with), and the last review
+  if (idList.length) {
+    try { out.push('', `## This week so far (Monday ${weekOf(now)[0]} to Sunday)`, ...plainSummary(periodStats({ days: weekOf(now), today: now, restDay: settings.get('restDay'), identities: idList, goals: store.all('goals'), tasks: allTasks, sessions: sess, blocksOn })).map(l => '- ' + l)); } catch {}
+    const live = sess.filter(s => !s.endedAt);
+    if (live.length) out.push(...live.map(s => `- Running now: ${s.kind === 'family' ? 'family time' : 'a focus session'} since ${new Date(s.startedAt).toString().slice(0, 21)} [id:${s.id}]`));
+    const lastReview = store.all('reviews').sort((a, b) => String(b.weekOf).localeCompare(String(a.weekOf)))[0];
+    if (lastReview) out.push('', `## Last weekly review: week of ${lastReview.weekOf}`, ...(lastReview.top3 || []).map((t, n) => `- Priority ${n + 1}: ${t}`), `- Full text: note [id:${lastReview.noteId}] in the notebook "Weekly reviews"`);
+  }
   const DAYN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  out.push('', '## Fixed blocks (never schedule over these)', ...store.all('blocks').filter(b => !b.paused).map(b => `- ${b.name}: ${(b.days || []).map(d => DAYN[d]).join(' ')} ${b.start}–${b.end}${(b.every || 1) > 1 ? ` every ${b.every} weeks from ${b.anchor}` : ''}${b.until ? ' until ' + b.until : ''} [id:${b.id}]`));
+  out.push('', '## Fixed blocks (never schedule over these)', ...store.all('blocks').filter(b => !b.paused).map(b => `- ${b.name}: ${(b.days || []).map(d => DAYN[d]).join(' ')} ${b.start}–${b.end}${(b.every || 1) > 1 ? ` every ${b.every} weeks from ${b.anchor}` : ''}${b.until ? ' until ' + b.until : ''}${b.identityId && store.get('identities', b.identityId) ? ' — ' + store.get('identities', b.identityId).name : ''} [id:${b.id}]`));
   const toRead = [];
   for (const n of liveNotes()) for (const a of n.attachments || []) { const o = store.get('ocr', a.id); if (o?.needsReading && a.driveId) toRead.push(`- "${a.name}" in note "${n.title || 'Untitled'}" — Drive file ${a.driveId} [attachment:${a.id}]`); }
   if (toRead.length) out.push('', `## Pages for Claude to read (${toRead.length})`, 'Steward could not read these well (handwriting or a poor photo). Transcribe each and send {"op":"upsert","type":"ocr","item":{"id":"<attachment>","text":"..."}}.', ...toRead);

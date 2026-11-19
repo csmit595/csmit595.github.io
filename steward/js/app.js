@@ -10,6 +10,8 @@ import { canDictate, dictEngine, setDictEngine } from './dictate.js';
 import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
 import { renderGoals, activeGoals } from './goals.js';
+import { renderStats } from './stats.js';
+import { renderReview, ensureReviewTask, reviewSettings } from './review.js';
 import { renderFocus, leaveFocus, initFocus, startFamily, openFocusStart, runningSession, familyIdentity } from './focus.js';
 import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
@@ -21,8 +23,8 @@ import * as offline from './offline.js';
 import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.7.0';
-const WHATS_NEW = `Steward updated to ${VERSION}. New: focus sessions and the family-time timer. Start one from Today, a task, a goal, or by holding the plus button. It warns before running into a fixed block, and time is counted even if Steward is closed.`;
+const VERSION = '4.8.0';
+const WHATS_NEW = `Steward updated to ${VERSION}. New: Stats and the weekly review (Menu → Stats, Weekly review). Time with God and family come first on every screen, Sunday never counts against you, and the review ends by showing that next week fits.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -52,6 +54,8 @@ function render(info = {}) {
   else if (route.view === 'settings') { viewSettings(main); if (route.id === 'blocks') setTimeout(() => document.getElementById('blocks-card')?.scrollIntoView({ block: 'start' }), 30); }
   else if (['goals', 'goal'].includes(route.view)) renderGoals(route, main);
   else if (route.view === 'focus') renderFocus(route, main);
+  else if (route.view === 'stats') renderStats(route, main);
+  else if (route.view === 'review') renderReview(route, main);
   else if (route.view === 'family-start') { location.replace('#/focus'); setTimeout(() => startFamily(), 60); return; }
   else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
   else if (route.view === 'task') { location.replace('#/' + settings.get('home')); const id = decodeURIComponent(route.id || ''); setTimeout(() => { if (store.get('tasks', id)) openTask(id); }, 80); return; }
@@ -107,7 +111,9 @@ function drawSidebar(route) {
       link('#/completed', 'done', 'Completed'),
       sec('plan', 'Goals & review', null,
         link('#/goals', 'flag', 'Goals', activeGoals().length),
-        link('#/focus', 'clock', 'Focus', runningSession() ? h('span', { class: 'badge' }, 'on') : 0)),
+        link('#/focus', 'clock', 'Focus', runningSession() ? h('span', { class: 'badge' }, 'on') : 0),
+        link('#/stats', 'board', 'Stats'),
+        link('#/review', 'done', 'Weekly review')),
       favs.length > 0 && sec('favs', 'Favorites', null, favs),
       sec('projects', 'Projects', iconBtn('plus', 'New project', () => editProject(), 'mini'),
         projects.map(p => h('div', { style: { paddingLeft: p.depth * 14 + 'px' } }, link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => t.projectId === p.id).length))),
@@ -130,9 +136,9 @@ function defaultsForRoute() {
 const closeDrawer = () => document.body.classList.remove('drawer');
 // Keyboard: "g" then a letter jumps to a screen; "?" shows every shortcut.
 let goPending = 0;
-const GO = { f: '#/focus', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', s: '#/settings' };
+const GO = { r: '#/review', a: '#/stats', f: '#/focus', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', s: '#/settings' };
 function shortcuts() {
-  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then F', 'Focus'], ['Esc', 'Close a window'], ['?', 'This list']];
+  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then F', 'Focus'], ['G then A', 'Stats'], ['G then R', 'Weekly review'], ['Esc', 'Close a window'], ['?', 'This list']];
   modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
 }
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
@@ -318,6 +324,7 @@ function viewSettings(main) {
     card('Day plan', h('p', { class: 'sub' }, 'Today and Upcoming add up the time on each day’s tasks (and, on Today, anything overdue) and compare it with the hours you can plan in, after your fixed blocks and calendar events. These settings apply on all your devices.'),
       hoursEditor(again), h('label', { class: 'inline block' }, 'Rest day ', restSel)),
     h('section', { class: 'card', id: 'blocks-card' }, h('h3', null, 'Fixed blocks'), blocksEditor(again)),
+    card('Weekly review', reviewSettings(again)),
     card('Use with no signal', h('p', { class: 'sub' }, 'Steward keeps your tasks, notes, documents and calendar on this device, so it opens and works with no connection. Changes you make offline sync when the signal comes back. Adding or changing Google Calendar events still needs a connection.'),
       h('label', { class: 'inline nowrap' }, keepBox, h('span', { class: 'grow' }, 'Keep a copy of every photo, PDF and recording on this device')),
       h('div', { class: 'row gap wrap' }, btn('Download everything to this device', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 140 MB plus your attachments).'); await offline.downloadAll(); offLine(); }, 'primary', 'download')),
@@ -723,6 +730,7 @@ async function start() {
   try { const moved = await adoptLocalWriting(); if (moved) setTimeout(() => toast(`Writing was removed. What it held is now ${moved === 1 ? 'a note' : moved + ' notes'} in the notebook “From Writing”.`, null, null, 12000), 1500); } catch (e) { console.warn('writing move', e); }
   M.purgeGone().catch(() => {});
   M.ensureIdentities();
+  try { ensureReviewTask(); } catch (e) { console.warn('review task', e); }
   M.repairTasks();
   settings.adoptLocal();
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }
