@@ -16,9 +16,10 @@ import { semantic, enabled as semanticOn, status as semStatus } from './semantic
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
+import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.3.2';
+const VERSION = '4.4.0';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -217,6 +218,31 @@ function orgCard(card, again) {
     }, 'danger')));
 }
 
+// Settings → Claude: Haiku sorts new tasks and notes, Sonnet plans the day and helps in Writing. The API key is kept in
+// the Steward helper (his Google Apps Script), never on this device or in Steward's public code.
+function aiCard(card, again) {
+  const intro = h('p', { class: 'sub' }, 'With signal, Claude Haiku sorts each new task and note (area, tags, customer promise, project), and Claude Sonnet can ',
+    h('b', null, 'Plan with Claude'), ' on Today and ', h('b', null, 'Ask Claude'), ' in Writing (More ▾). The words you are working on are sent to Anthropic to answer; nothing is filed or changed until you confirm. With no signal, the on-device organizer does the sorting as before.');
+  if (!sync.helperUrl()) return card('Claude', intro, h('p', null, 'This needs the Steward helper, which connects once Google sync is set up.'));
+  const status = h('p', { class: 'sub' }, 'Checking…');
+  const keyIn = h('input', { class: 'field mono', type: 'password', autocomplete: 'off', placeholder: 'sk-ant-…  (from console.anthropic.com → API keys)' });
+  const on = h('input', { type: 'checkbox', checked: aiOn(), onchange: () => { settings.set('aiOn', on.checked); toast(on.checked ? 'Claude on' : 'Claude off: sorting stays on this device'); } });
+  const keyRow = h('div', { class: 'row gap wrap' }, keyIn, btn('Save key', async () => {
+    const k = keyIn.value.trim(); if (!k) return toast('Paste the key first');
+    try { const r = await saveKey(k); keyIn.value = ''; settings.set('aiOn', true); toast(r.warning || 'Key saved. Claude is on.'); again(); }
+    catch (e) { toast(String(e.message || e).replace(/^Steward helper: /, '')); }
+  }, 'primary'));
+  const extra = h('div');
+  keyStatus().then(r => {
+    if (!status.isConnected) return;
+    const u = r.usage || {};
+    status.textContent = r.hasKey ? `Your key is saved in your Steward helper (shared by your phone and Mac). This month: ${u.calls || 0} request${u.calls === 1 ? '' : 's'}, about $${(u.cost || 0).toFixed(2)}.` : 'No API key yet. Paste one below to turn Claude on.';
+    fill(extra, r.hasKey ? h('div', null, h('label', { class: 'inline block' }, on, h('span', { class: 'grow' }, 'Use Claude when there is signal (on all your devices)')),
+      h('details', null, h('summary', null, 'Replace or remove the key'), keyRow, btn('Remove key', async () => { await clearKey().catch(() => {}); settings.set('aiOn', false); toast('Key removed'); again(); }, 'danger tiny'))) : keyRow);
+  }).catch(e => { if (status.isConnected) status.textContent = /unknown request/.test(e.message) ? 'The Steward helper needs its update before Claude can be used.' : 'The Steward helper could not be reached right now.'; });
+  return card('Claude', intro, status, extra);
+}
+
 function viewSettings(main) {
   const again = () => render({ force: true });
   const card = (title, ...kids) => h('section', { class: 'card' }, h('h3', null, title), kids);
@@ -303,6 +329,7 @@ function viewSettings(main) {
       h('p', { class: 'sub' }, 'Uses a small language model that runs only on this device; nothing you write leaves it. The first use downloads about 35 MB, then it works offline. Each device builds its own index in the background while Steward is open.'),
       h('p', { class: 'sub', id: 'sem-line' }, semLine())),
     orgCard(card, again),
+    aiCard(card, again),
     card('Clip from the web and other apps',
       h('p', null, h('b', null, 'On your Mac, best: the Steward Clipper for Chrome. '), 'Clip the article, text only, the full page, a selection, a bookmark, a screenshot or a PDF, choose the notebook and tags, and add a note to yourself. It also adds “Save to Steward” to the right-click menu, and Option+Shift+S opens it.'),
       h('a', { class: 'btn primary', href: 'clipper/steward-clipper.zip', download: 'steward-clipper.zip' }, 'Download the Steward Clipper'),

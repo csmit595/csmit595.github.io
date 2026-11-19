@@ -775,3 +775,18 @@ body:has(.dictbar) #fab { display: none !important; }
 .tprop-v .org { margin: 0; }
 .orgword { margin-top: 4px; }
 @media (max-width: 640px) { .org-row { flex-direction: column; align-items: stretch; } .org-ok { justify-content: center; } }
+
+/* 4.4: Claude (Plan with Claude, Ask Claude) */
+.aiplan .aip-head { font-weight: 650; font-size: 16px; margin: 0 0 10px; }
+.aip-list { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+.aip-list li { display: flex; gap: 10px; align-items: baseline; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.aip-list li.clash { opacity: .6; }
+.aip-t { font-variant-numeric: tabular-nums; min-width: 66px; font-weight: 600; }
+.aip-warn { color: var(--danger, #b3412f); }
+.aip-tell { border-left: 3px solid var(--accent); padding: 2px 0 2px 10px; margin: 10px 0; }
+.aip-tell ul { margin: 4px 0; padding-left: 18px; }
+.aip-word { font-style: italic; margin: 12px 0; }
+.aiplan h4, .aip-tell h4 { margin: 12px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.aiw-sel { margin: 0 0 10px; padding: 6px 10px; border-left: 3px solid var(--line); color: var(--muted); font-size: 14px; max-height: 120px; overflow: auto; }
+.aiw-out { margin-top: 12px; }
+.aiw-answer { max-height: 50vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; line-height: 1.55; }

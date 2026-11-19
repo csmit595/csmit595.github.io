@@ -1,13 +1,14 @@
 // Organizer, the part you see: the "Suggested" row under a new task or note, with one Confirm button.
 // Nothing is filed until Confirm is pressed. Each confirmation (and each suggestion taken off) is saved as a lesson,
 // synced through Google Drive (steward-organize.json), and every device retrains from the same lessons, so the phone
-// and the Mac learn together. Everything runs on the device; the only thing that leaves it is that small file, to
-// his own Drive.
+// and the Mac learn together. The device's own organizer answers first and always works offline; when Claude is set up
+// and there is signal, Claude Haiku (js/ai.js) refines the suggestion once typing pauses.
 import { h, fill, debounce } from './util.js';
 import { store, settings } from './store.js';
 import { icon, menu, promptDlg, toast } from './ui.js';
 import * as C from './organize-core.js';
 import { embed } from './semantic.js';
+import { sortWithClaude, aiReady } from './ai.js';
 
 export const { AREAS, AREA_IDS, tagName, tagSlug, PROMISE } = C;
 export const orgOn = () => settings.get('orgOn') !== false;
@@ -66,6 +67,8 @@ async function nearest(text) {
 /** Suggestions for a text: instant (rules and learned words), then refined by meaning when that answers. */
 export function suggestNow(text, kind) { return C.suggest(getModel(), text, { kind }); }
 export async function suggestFull(text, kind) { const near = await nearest(text); return C.suggest(getModel(), text, { kind, near }); }
+/** Claude Haiku's suggestion when online and set up (null otherwise: the on-device one stands). */
+export const suggestClaude = (text, kind) => sortWithClaude(getModel(), text, kind);
 
 // ---- what an item already carries -------------------------------------------------------------------------------------
 /** Read an item's current organization from its labels (task) or tags (note). */
@@ -94,7 +97,7 @@ export function learn(kind, text, fin, suggested) {
 export function orgPanel(opts) {
   const kind = opts.kind;
   const el = h('div', { class: 'org', hidden: true });
-  let sug = null, fin = null, touched = false, removed = new Set(), isConfirmed = false, seq = 0, collapsed = false;
+  let sug = null, fin = null, touched = false, removed = new Set(), isConfirmed = false, seq = 0, collapsed = false, thinking = false;
   const blank = () => ({ area: null, tags: [], promise: false, project: null, notebook: null });
   const cur = () => opts.current?.() || blank();
   // Start from what the item already carries, add suggestions on top, never bring back what he took off.
@@ -125,6 +128,20 @@ export function orgPanel(opts) {
     if (!touched) fin = compose(full);
     else { const add = compose(full); for (const t of add.tags) if (!fin.tags.includes(t) && !removed.has('t:' + t)) fin.tags.push(t); }
     draw();
+    // Online: Claude Haiku has the last word, once he pauses typing. Offline or on any trouble the device's stands.
+    if (!aiReady()) return;
+    await new Promise(r => setTimeout(r, now ? 0 : 700));
+    if (my !== seq || isConfirmed) return;
+    thinking = true; draw();
+    const ai = await suggestClaude(text, kind);
+    thinking = false;
+    if (my !== seq || isConfirmed) { draw(); return; }
+    if (!ai) { draw(); return; }
+    sug = ai;
+    if (!touched) fin = compose(ai);
+    else { const add = compose(ai); for (const t of add.tags) if (!fin.tags.includes(t) && !removed.has('t:' + t)) fin.tags.push(t); }
+    draw();
+    opts.onKind?.(ai.kind);
   };
   const later = debounce(() => run(), opts.delay ?? 350);
   const touch = () => { touched = true; isConfirmed = false; draw(); };
@@ -170,7 +187,8 @@ export function orgPanel(opts) {
       h('button', { type: 'button', class: 'ochip-add', title: 'Add a tag', 'aria-label': 'Add a tag', onpointerdown: e => e.preventDefault(), onclick: addTag }, icon('plus', 13)),
     ];
     const ok = h('button', { type: 'button', class: 'org-ok' + (isConfirmed ? ' on' : ''), onpointerdown: e => e.preventDefault(), onclick: () => { if (isConfirmed && !opts.apply) { isConfirmed = false; draw(); } else confirm(); } }, icon('check', 14), isConfirmed ? 'Confirmed' : 'Confirm');
-    fill(el, h('div', { class: 'org-head' }, h('span', { class: 'org-title' }, isConfirmed ? 'Will be filed as' : 'Suggested'), !m.n && !isConfirmed && h('span', { class: 'sub' }, ' · learns from what you confirm')),
+    fill(el, h('div', { class: 'org-head' }, h('span', { class: 'org-title' }, isConfirmed ? 'Will be filed as' : 'Suggested'),
+        !isConfirmed && (thinking ? h('span', { class: 'sub' }, ' · asking Claude…') : sug?.by === 'claude' ? h('span', { class: 'sub' }, ' · by Claude') : !m.n ? h('span', { class: 'sub' }, ' · learns from what you confirm') : null)),
       h('div', { class: 'org-row' + (isConfirmed ? ' confirmed' : '') }, h('div', { class: 'org-chips' }, list), ok));
   };
   return {

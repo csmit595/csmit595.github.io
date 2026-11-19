@@ -36,12 +36,17 @@ function stewardEnv_() {
     const r = UrlFetchApp.fetch(req.url, { method: 'post', headers, contentType, payload, muteHttpExceptions: true });
     return { status: r.getResponseCode(), text: r.getContentText() };
   };
+  // Claude (Anthropic API). The key is passed in from the script properties; no Google pass goes to Anthropic.
+  const anthropic = (key, body) => {
+    const r = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', { method: 'post', contentType: 'application/json', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' }, payload: JSON.stringify(body), muteHttpExceptions: true });
+    return { status: r.getResponseCode(), text: r.getContentText() };
+  };
   // The web app's own /exec address, kept in the script property webAppUrl. Never guess it: on a timer run
   // ScriptApp.getService().getUrl() gives the editor's test address, and turning its /dev into /exec makes an address
   // that does not exist. (4.0 did that, and Steward on every device was sent to a dead address.) doPost saves the real
   // one the first time Steward reaches it.
   const url = /\/exec$/.test(props.getProperty('webAppUrl') || '') ? props.getProperty('webAppUrl') : '';
-  return { http, upload, download, push, url, props: { get: k => props.getProperty(k), set: (k, v) => props.setProperty(k, String(v)) } };
+  return { http, upload, download, push, anthropic, url, props: { get: k => props.getProperty(k), set: (k, v) => props.setProperty(k, String(v)) } };
 }
 
 /** Runs on the timer. */

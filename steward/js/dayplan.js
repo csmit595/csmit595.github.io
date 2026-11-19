@@ -5,6 +5,7 @@ import { store, settings } from './store.js';
 import * as M from './model.js';
 import { sync } from './sync.js';
 import { icon, btn, toast } from './ui.js';
+import { aiReady, planWithClaude } from './ai.js';
 
 export const hm = n => { n = Math.max(0, Math.round(n)); return n >= 60 ? `${Math.floor(n / 60)}h${n % 60 ? ' ' + (n % 60) + 'm' : ''}` : `${n}m`; };
 const toMin = s => { const [a, b] = String(s || '0:0').split(':').map(Number); return a * 60 + (b || 0); };
@@ -137,6 +138,7 @@ export function planCard(day, { openTask, editHours } = {}) {
     !['rest', 'after'].includes(p.state) && p.open > 0 && h('div', { class: 'pl-meter', role: 'img', 'aria-label': `${pct}% of open hours planned` },
       h('div', { class: 'pl-bar' }, h('span', { style: { width: pct + '%' } })),
       h('div', { class: 'pl-legend' }, h('span', null, h('i', { class: 'sw planned' }), hm(p.planned) + ' planned'), h('span', null, h('i', { class: 'sw open' }), hm(Math.max(0, p.margin)) + ' free'), over && h('span', { class: 'pl-over' }, hm(-p.margin) + ' too much'))),
+    aiReady() && p.state !== 'rest' && p.state !== 'after' && (p.count + p.overdue) > 0 && h('div', { class: 'pl-actions' }, btn('Plan with Claude', () => planWithClaude(day, p), 'tiny', 'spark')),
     (after || over) && h('div', { class: 'pl-actions' }, btn(after ? 'Move what’s left to tomorrow' : 'Move unfinished to tomorrow', moveLeft, after ? 'primary tiny' : 'tiny', 'upcoming'),
       over && h('a', { class: 'btn tiny', href: '#/upcoming' }, icon('cal', 14), 'See the week')),
     notes.length ? h('ul', { class: 'pl-notes' }, notes.map(n => h('li', { class: n.quiet ? 'quiet' : '' }, icon(n.ic, 13), h('span', null, n.text)))) : null,

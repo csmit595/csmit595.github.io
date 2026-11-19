@@ -390,6 +390,58 @@ export function web(env, req) {
       }
       return { ok: true, publicKey: keys.public, devices, mine };
     }
+
+    // Claude (Anthropic API). The API key lives only in this script's properties: Steward is public code on GitHub,
+    // so the key can never be inside the app. Steward sends the words, the helper adds the key and asks Claude.
+    case 'aiKey': {
+      if (typeof req.set === 'string') {
+        const k = req.set.trim();
+        if (!/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(k)) return { ok: false, error: 'That does not look like an Anthropic API key (it starts with sk-ant-).' };
+        const test = env.anthropic(k, { model: AI_MODELS.haiku.id, max_tokens: 5, messages: [{ role: 'user', content: 'Reply with OK.' }] });
+        if (test.status === 401 || test.status === 403) return { ok: false, error: 'Anthropic did not accept that key.' };
+        if (test.status >= 300 && !/credit|billing|balance/i.test(test.text)) return { ok: false, error: 'Anthropic answered ' + test.status + '. Try again in a minute.' };
+        env.props.set('anthropicKey', k);
+        if (test.status >= 300) return { ok: true, hasKey: true, warning: 'Key saved, but the account has no credit yet. Add credit in the Claude Console (Billing).' };
+      }
+      if (req.clear) env.props.set('anthropicKey', '');
+      return { ok: true, hasKey: !!env.props.get('anthropicKey'), usage: aiUsage(env) };
+    }
+    case 'ai': {
+      const key = env.props.get('anthropicKey');
+      if (!key) return { ok: false, error: 'no-key' };
+      const m = AI_MODELS[req.model];
+      if (!m) return { ok: false, error: 'unknown model' };
+      const messages = (Array.isArray(req.messages) ? req.messages : []).slice(-12)
+        .filter(x => x && (x.role === 'user' || x.role === 'assistant') && typeof x.content === 'string')
+        .map(x => ({ role: x.role, content: x.content.slice(0, m.maxChars) }));
+      if (!messages.length || messages[messages.length - 1].role !== 'user') return { ok: false, error: 'nothing to ask' };
+      const body = { model: m.id, max_tokens: Math.max(16, Math.min(m.maxOut, Number(req.max_tokens) || m.maxOut)), messages };
+      if (typeof req.system === 'string' && req.system) body.system = req.system.slice(0, 20000);
+      const r = env.anthropic(key, body);
+      let j = null; try { j = JSON.parse(r.text); } catch (e) {}
+      if (r.status >= 300 || !j) {
+        const why = j?.error?.message || ('Anthropic answered ' + r.status);
+        return { ok: false, error: /credit|billing|balance/i.test(why) ? 'no-credit' : r.status === 401 ? 'bad-key' : why.slice(0, 200) };
+      }
+      const text = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+      const u = j.usage || {}, cost = ((u.input_tokens || 0) * m.inPrice + (u.output_tokens || 0) * m.outPrice) / 1e6;
+      const usage = aiUsage(env); usage.calls++; usage.cost = Math.round((usage.cost + cost) * 1e6) / 1e6;
+      usage[req.model] = (usage[req.model] || 0) + 1;
+      env.props.set('aiUsage', JSON.stringify(usage));
+      return { ok: true, text, stop: j.stop_reason, usage };
+    }
   }
   return { ok: false, error: 'unknown request' };
+}
+
+// Claude models Steward may use, with list prices per million tokens (Nov 2026; Haiku's price is for prompts under 100k).
+const AI_MODELS = {
+  haiku: { id: 'claude-haiku-5-5', inPrice: 0.10, outPrice: 0.50, maxOut: 600, maxChars: 20000 },
+  sonnet: { id: 'claude-sonnet-5-5', inPrice: 2, outPrice: 10, maxOut: 4000, maxChars: 120000 },
+};
+// This month's Claude use, kept so Settings can show what it costs.
+function aiUsage(env) {
+  const month = new Date().toISOString().slice(0, 7);
+  const u = readJson(env.props.get('aiUsage'), null);
+  return u && u.month === month ? u : { month, calls: 0, cost: 0 };
 }

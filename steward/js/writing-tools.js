@@ -4,6 +4,7 @@ import { canDictate, listen, listeningBar, insertSpoken } from './dictate.js';
 import { h, fill, uid, esc, debounce, stripHtml, sanitize } from './util.js';
 import { store, settings } from './store.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu } from './ui.js';
+import { aiReady, askAboutWriting } from './ai.js';
 
 const words = t => (t.trim().match(/\S+/g) || []).length;
 const SYMBOLS = ['—', '–', '…', '§', '¶', '†', '‡', '•', '©', '°', '′', '″', '“', '”', '‘', '’', '«', '»', '½', '¼', '¾', '×', '÷', '±', '≈', '≠', '≤', '≥', '→', '←',
@@ -234,7 +235,14 @@ export function installTools(E) {
   };
   const fontSel = h('select', { class: 'field slim wfont', 'aria-label': 'Font', title: 'Font for the selected text', onpointerdown: () => E.keep(), onchange: () => { exec('fontName', fontSel.value); fontSel.value = ''; } }, h('option', { value: '' }, 'Font'), FONTS.map(f => h('option', { value: f }, f)));
   const colorIn = h('input', { type: 'color', hidden: true, onchange: () => exec('foreColor', colorIn.value) });
+  // Claude Sonnet: help with the selected text or the whole document; nothing changes unless he presses Insert.
+  const askClaude = () => {
+    const r = sel(); const selected = r && !r.collapsed ? r.toString().trim() : ''; E.keep();
+    askAboutWriting({ selected, whole: body.innerText || '', title: E.title?.value || E.doc.title || '',
+      insert: html => run(() => { E.restore(); const s = getSelection(); if (s.rangeCount && body.contains(s.anchorNode)) s.collapseToEnd(); document.execCommand('insertHTML', false, html); }) });
+  };
   const more = e => menu(e.currentTarget, [
+    aiReady() && { label: 'Ask Claude…', icon: 'spark', onclick: askClaude }, aiReady() && '-',
     { label: 'Find and replace (Cmd+F)', icon: 'search', onclick: () => openFind(false) },
     '-',
     { label: 'Strikethrough', onclick: () => exec('strikeThrough') }, { label: 'Superscript', onclick: () => exec('superscript') }, { label: 'Subscript', onclick: () => exec('subscript') },

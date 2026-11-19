@@ -51,7 +51,7 @@ function handle(url, o) {
   if (u.pathname === '/upload/drive/v3/files') { const parts = o.payload.split(/--steward\d+/); const meta = JSON.parse(parts[1].split('\r\n\r\n')[1]); return J({ id: mk(meta.name, meta.parents[0], parts[2].split('\r\n\r\n')[1].replace(/\r\n$/, '')) }); }
   throw new Error('unhandled ' + m + ' ' + url);
 }
-const cache = new Map();
+const cache = new Map(), aiCalls = [];
 const props = new Map([['clientId', 'cid'], ['webAppUrl', 'https://script.google.com/macros/s/XYZ/exec']]), logs = [], triggers = [], pushes = [];
 const ctx = {
   console: { log: s => logs.push(s) },
@@ -62,6 +62,7 @@ const ctx = {
   LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
   Utilities: { base64Encode: b => Buffer.from(b.map(x => x & 255)).toString('base64'), base64EncodeWebSafe: b => Buffer.from(b.map(x => x & 255)).toString('base64url'), sleep: () => {}, getUuid: () => nodeCrypto.randomUUID(), DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (a, s) => Array.from(nodeCrypto.createHash('sha256').update(s).digest(), b => (b > 127 ? b - 256 : b)) },
   UrlFetchApp: { fetch: (url, o) => {
+    if (url === 'https://api.anthropic.com/v1/messages') { aiCalls.push(o); const b = JSON.parse(o.payload); const good = o.headers['x-api-key'] === 'sk-ant-api03-GOODKEYGOODKEYGOODKEY'; const r = !good ? [401, { error: { message: 'invalid x-api-key' } }] : [200, { content: [{ type: 'text', text: b.max_tokens === 5 ? 'OK' : '{"area":"cs-outdoors"}' }], stop_reason: 'end_turn', usage: { input_tokens: 1000, output_tokens: 100 } }]; return { getResponseCode: () => r[0], getContentText: () => JSON.stringify(r[1]) }; }
     if (url.startsWith('https://fcm.googleapis.com/')) { pushes.push({ url, o }); const s = url.endsWith('/gone') ? 410 : 201; return { getResponseCode: () => s, getContentText: () => '' }; }
     if (url.startsWith('https://oauth2.googleapis.com/tokeninfo')) { const tk = new URL(url).searchParams.get('access_token'); const good = { STEWARD: 'cid', OTHERAPP: 'zzz', STRANGER: 'cid' }[tk]; return { getResponseCode: () => good ? 200 : 400, getContentText: () => JSON.stringify({ aud: good, expires_in: 3000 }) }; }
     if (url.includes('/drive/v3/about')) { const who = { 'Bearer AT': 'me', 'Bearer STEWARD': 'me', 'Bearer STRANGER': 'someone' }[o.headers.Authorization]; return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ user: { permissionId: who } }) }; }
@@ -185,3 +186,20 @@ ok(ps2.mine === ps.mine && ps2.devices.find(x => x.id === ps.mine).confirmedAt =
 ok(post('STEWARD', { action: 'push', remove: tasksId }).ok && !files.get(tasksId).trashed, 'push: remove never touches files outside notifications');
 const ps3 = post('STEWARD', { action: 'push', remove: ps.mine });
 ok(!ps3.devices.some(x => x.id === ps.mine), 'push: device removed');
+
+// Claude through the helper
+ok(post('STEWARD', { action: 'ai', model: 'haiku', messages: [{ role: 'user', content: 'hi' }] }).error === 'no-key', 'ai: no key, says so');
+ok(!post('STEWARD', { action: 'aiKey', set: 'hello' }).ok, 'aiKey: refuses something that is not a key');
+ok(/did not accept/.test(post('STEWARD', { action: 'aiKey', set: 'sk-ant-api03-BADKEYBADKEYBADKEYBAD' }).error) && !props.get('anthropicKey'), 'aiKey: a key Anthropic refuses is not saved');
+const ks = post('STEWARD', { action: 'aiKey', set: 'sk-ant-api03-GOODKEYGOODKEYGOODKEY' });
+ok(ks.ok && ks.hasKey && !JSON.stringify(ks).includes('GOODKEY'), 'aiKey: key saved and never sent back');
+ok(post('OTHERAPP', { action: 'ai', model: 'haiku', messages: [{ role: 'user', content: 'hi' }] }).error === 'auth', 'ai: another app cannot use the key');
+const a1 = post('STEWARD', { action: 'ai', model: 'haiku', system: 'sys', max_tokens: 99999, messages: [{ role: 'user', content: 'Mulch Hanel' }] });
+const sent = JSON.parse(aiCalls[aiCalls.length - 1].payload);
+ok(a1.ok && a1.text === '{"area":"cs-outdoors"}' && sent.model === 'claude-haiku-5-5' && sent.max_tokens === 600 && sent.system === 'sys', 'ai: Haiku asked, output capped');
+ok(Math.abs(a1.usage.cost - 0.00015) < 1e-9 && a1.usage.calls === 1, 'ai: cost counted');
+const a2 = post('STEWARD', { action: 'ai', model: 'sonnet', messages: [{ role: 'user', content: 'plan' }] });
+ok(a2.ok && JSON.parse(aiCalls[aiCalls.length - 1].payload).model === 'claude-sonnet-5-5' && a2.usage.calls === 2, 'ai: Sonnet asked');
+ok(!post('STEWARD', { action: 'ai', model: 'opus', messages: [{ role: 'user', content: 'x' }] }).ok, 'ai: only Haiku and Sonnet');
+ok(!aiCalls.some(c => c.headers.Authorization), 'ai: no Google pass sent to Anthropic');
+ok(post('STEWARD', { action: 'aiKey', clear: true }).hasKey === false, 'aiKey: key removed');
