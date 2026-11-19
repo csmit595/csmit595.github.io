@@ -9,6 +9,8 @@ import { ocr } from './ocr.js';
 import { search } from './search.js';
 import { canDictate, listen, listeningBar, insertSpoken, caretAtEnd, titleFrom } from './dictate.js';
 import { orgPanel, readOrg, mergeList, hasArea, notebookIdByName } from './organize.js';
+import * as V from './versions.js';
+import { shrunk, diffWords, textOf as plainOf, GONE_DAYS } from './versions-core.js';
 
 const go = hash => { location.hash = hash; };
 let scope = { kind: 'all' }, query = '', sortBy = 'updated';
@@ -40,7 +42,7 @@ export function leaveNotes(nextId) {
 
 export function renderNotes(route, main, info = {}) {
   if (route.view === 'notes') scope = route.scope || { kind: 'all' };
-  if (route.view === 'trash') scope = { kind: 'trash' };
+  if (route.view === 'trash') scope = { kind: route.id === 'deleted' ? 'gone' : 'trash' };
   if (!main.querySelector(':scope > .nlist')) {
     leaveNotes();
     fill(main, h('div', { class: 'nlist' }), h('div', { class: 'neditor' }));
@@ -56,10 +58,11 @@ export function renderNotes(route, main, info = {}) {
 }
 
 function scopeNotes() {
-  let list = scope.kind === 'trash' ? store.all('notes').filter(n => n.trashed) : M.liveNotes();
+  const binned = scope.kind === 'trash' || scope.kind === 'gone';
+  let list = scope.kind === 'trash' ? M.trashedNotes() : scope.kind === 'gone' ? M.goneNotes() : M.liveNotes();
   if (scope.kind === 'nb') list = list.filter(n => n.notebookId === scope.id);
   if (scope.kind === 'tag') list = list.filter(n => (n.tags || []).includes(scope.id));
-  if (query.trim() && scope.kind === 'trash') { const w = query.toLowerCase().split(/\s+/).filter(Boolean); return list.filter(n => w.every(x => ((n.title || '') + ' ' + textOf(n)).toLowerCase().includes(x))); }
+  if (query.trim() && binned) { const w = query.toLowerCase().split(/\s+/).filter(Boolean); return list.filter(n => w.every(x => ((n.title || '') + ' ' + textOf(n)).toLowerCase().includes(x))); }
   if (query.trim()) {
     const ids = new Set(list.map(n => n.id));
     return search(query, { kind: 'note', filter: n => ids.has(n.id) }).results.map(r => r.item).filter(n => ids.has(n.id));
@@ -71,6 +74,7 @@ function scopeTitle() {
   if (scope.kind === 'nb') return store.get('notebooks', scope.id)?.name || 'Notebook';
   if (scope.kind === 'tag') return '#' + scope.id;
   if (scope.kind === 'trash') return 'Trash';
+  if (scope.kind === 'gone') return 'Recently deleted';
   return 'All notes';
 }
 /** Start a new note and begin dictating into it right away. */
@@ -90,7 +94,8 @@ function drawList(el, route) {
   sort.value = sortBy;
   fill(el, 
     h('header', { class: 'vhead' }, h('div', null, h('h1', null, scopeTitle()), h('div', { class: 'sub' }, `${list.length} note${list.length === 1 ? '' : 's'}`)),
-      scope.kind === 'trash' ? (list.length > 0 && btn('Empty trash', async () => { if (await confirmDlg(`Permanently delete ${list.length} notes?`)) for (const n of list) destroy(n); }, 'tiny danger'))
+      scope.kind === 'gone' ? h('a', { class: 'btn tiny', href: '#/trash' }, icon('back', 14), 'Trash')
+        : scope.kind === 'trash' ? (list.length > 0 && btn('Empty trash', async () => { if (await confirmDlg(`Empty the trash (${list.length} note${list.length === 1 ? '' : 's'})? They stay in “Recently deleted” for ${GONE_DAYS} days, then are removed for good.`, 'Empty trash')) { for (const n of list) M.hideNote(n.id); toast('Trash emptied. Notes can be brought back for 30 days.', 'See them', () => go('#/trash/deleted'), 7000); } }, 'tiny danger'))
         : h('div', { class: 'row' }, iconBtn('more', 'New from template', e => menu(e.currentTarget, Object.keys(TEMPLATES).map(k => ({ label: k + ' template', icon: 'note', onclick: () => newNote({ title: k, body: TEMPLATES[k] }) })))), btn('New note', () => newNote(), 'primary', 'plus'))),
     h('div', { class: 'row gap nfilter' }, search, sort),
     h('div', { class: 'nitems' }, list.map(n => {
@@ -99,10 +104,12 @@ function drawList(el, route) {
         h('div', { class: 'nsnip' }, textOf(n).slice(0, 110)),
         h('div', { class: 'nmeta' }, new Date(n.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: new Date(n.updatedAt).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }),
           (n.attachments || []).length > 0 && h('span', null, icon('clip', 11), n.attachments.length), (n.tags || []).slice(0, 3).map(t => h('span', { class: 'ntag' }, t))));
-      if (scope.kind !== 'trash' && !window.matchMedia('(pointer: fine)').matches) swipeDelete(a, n);
+      if (scope.kind !== 'trash' && scope.kind !== 'gone' && !window.matchMedia('(pointer: fine)').matches) swipeDelete(a, n);
       return h('div', { class: 'nswipe' }, a);
     }),
-    !list.length && h('div', { class: 'empty' }, h('strong', null, query ? 'No notes match' : scope.kind === 'trash' ? 'Trash is empty' : 'No notes here yet'), h('p', null, query ? 'Try fewer words.' : scope.kind === 'trash' ? '' : 'Tap New note to start one.'))));
+    !list.length && h('div', { class: 'empty' }, h('strong', null, query ? 'No notes match' : scope.kind === 'trash' ? 'Trash is empty' : scope.kind === 'gone' ? 'Nothing was deleted recently' : 'No notes here yet'), h('p', null, query ? 'Try fewer words.' : scope.kind === 'trash' ? '' : scope.kind === 'gone' ? 'Notes emptied from the trash wait here for 30 days.' : 'Tap New note to start one.')),
+    scope.kind === 'gone' && list.length > 0 && h('p', { class: 'sub gone-note' }, `Notes emptied from the trash are kept here for ${GONE_DAYS} days, with their photos and files, then removed for good. Open one to restore it.`),
+    scope.kind === 'trash' && h('a', { class: 'rowlink gone-link', href: '#/trash/deleted' }, icon('clock', 16), h('span', { class: 'grow' }, 'Recently deleted'), M.goneNotes().length > 0 && h('span', { class: 'count' }, M.goneNotes().length), icon('right', 14))));
   if (hadFocus) { const s = el.querySelector('.nsearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
 }
 /** Phones: swipe a note right to move it to the trash, with Undo at the bottom of the screen. */
@@ -129,7 +136,7 @@ function swipeDelete(row, n) {
       row.classList.add('gone'); row.style.transform = 'translateX(110%)';
       setTimeout(() => {
         const open = location.hash === '#/note/' + n.id;
-        store.patch('notes', n.id, { trashed: true });
+        M.trashNote(n.id);
         toast(`“${(n.title || 'Untitled').slice(0, 40)}” moved to trash`, 'Undo', () => store.patch('notes', n.id, { trashed: false }), 3000);
         if (open) go('#/notes');
       }, 180);
@@ -137,7 +144,6 @@ function swipeDelete(row, n) {
     document.addEventListener('touchmove', move, { passive: true }); document.addEventListener('touchend', end); document.addEventListener('touchcancel', end);
   }, { passive: true });
 }
-async function destroy(n) { for (const a of n.attachments || []) { await store.delBlob(a.id).catch(() => {}); store.remove('ocr', a.id, { silent: true }); } store.remove('notes', n.id); }
 
 // ---- attachments -----------------------------------------------------------------
 const attHtml = a => (a.mime || '').startsWith('image/') ? `<img data-att="${a.id}" alt="${esc(a.name)}">`
@@ -203,15 +209,27 @@ function mountEditor(pane, id) {
   const get = () => store.get('notes', id);
   const title = h('input', { class: 'etitle', placeholder: 'Title', value: n0.title || '', readOnly: trashed });
   const body = h('div', { class: 'ebody', contentEditable: trashed ? 'false' : 'true', html: sanitize(n0.body || '') || '<div><br></div>', spellcheck: true });
-  let dirty = false;
+  let dirty = false, edited = false, idleTimer = 0;
+  // Version history: a copy of the note as it was when this editing session began, a copy whenever a save would cut
+  // the text to less than half, and a copy of how it stands when the session ends (leaving the note, or 2 minutes idle).
+  const sessionCopy = () => { clearTimeout(idleTimer); if (!edited) return; edited = false; const cur = get(); if (cur && !cur.trashed) V.snapshot(cur, 'edit'); };
   const save = now => {
-    if (!dirty) return; dirty = false;
-    const cur = get(); if (!cur) return;
-    store.patch('notes', id, { title: title.value.trim(), body: serialize(body) });
+    if (dirty) {
+      dirty = false;
+      const cur = get(); if (!cur) return;
+      const next = serialize(body);
+      if (shrunk(cur.body, next)) V.snapshot(cur, 'before a large deletion');
+      store.patch('notes', id, { title: title.value.trim(), body: next });
+    }
+    if (now === true) sessionCopy();
   };
   const queue = debounce(() => save(), 700);
   let orgKick = () => {}; // set once the Organize row exists (dictated words count too)
-  const touch = () => { dirty = true; queue(); orgKick(); };
+  const touch = () => {
+    if (!edited) { edited = true; const cur = get(); if (cur) V.snapshot(cur, 'before editing'); }
+    clearTimeout(idleTimer); idleTimer = setTimeout(() => { save(); sessionCopy(); }, 120000);
+    dirty = true; queue(); orgKick();
+  };
   title.addEventListener('input', touch);
   body.addEventListener('input', touch);
   title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); body.focus(); } });
@@ -363,20 +381,22 @@ function mountEditor(pane, id) {
   };
   refreshTasks();
   const more = e => { const n = get(); menu(e.currentTarget, trashed ? [
-    { label: 'Restore note', icon: 'back', onclick: () => { store.patch('notes', id, { trashed: false }); go('#/notes'); } },
-    { label: 'Delete forever', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg('Permanently delete this note and its attachments?')) { mounted = null; await destroy(n); go('#/trash'); } } },
+    { label: 'Restore note', icon: 'back', onclick: () => { M.restoreNote(id); toast('Note restored'); go('#/note/' + id); } },
+    { label: 'Version history', icon: 'clock', onclick: () => versionHistory(id, null) },
+    !n.gone && { label: 'Delete forever', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete this note? It stays in “Recently deleted” for ${GONE_DAYS} days, with its attachments, then is removed for good.`)) { mounted = null; M.hideNote(id); go('#/trash'); } } },
   ] : [
     { label: 'Add a task from this note', icon: 'check', onclick: () => openQuickAdd({ noteId: id }) },
     { label: n.pinned ? 'Unpin' : 'Pin to top', icon: 'pin', onclick: () => store.patch('notes', id, { pinned: !n.pinned }) },
     { label: 'Duplicate', icon: 'note', onclick: () => { save(true); const c = get(); const d = M.addNote({ ...c, id: undefined, title: (c.title || 'Untitled') + ' (copy)' }); go('#/note/' + d.id); } },
     { label: 'Print or save as PDF', icon: 'note', onclick: () => window.print() },
+    { label: 'Version history', icon: 'clock', onclick: () => { save(true); versionHistory(id, () => mountEditor(pane, id)); } },
     '-',
-    { label: 'Move to trash', icon: 'trash', danger: true, onclick: () => { save(true); store.patch('notes', id, { trashed: true }); toast('Note moved to trash', 'Undo', () => store.patch('notes', id, { trashed: false })); go('#/notes'); } },
+    { label: 'Move to trash', icon: 'trash', danger: true, onclick: () => { save(true); M.trashNote(id); toast('Note moved to trash', 'Undo', () => store.patch('notes', id, { trashed: false })); go('#/notes'); } },
   ]); };
   fill(pane, 
-    h('div', { class: 'ebar' }, iconBtn('back', 'Back to notes', () => { save(true); go(scope.kind === 'nb' ? '#/notes/nb/' + scope.id : scope.kind === 'tag' ? '#/notes/tag/' + encodeURIComponent(scope.id) : scope.kind === 'trash' ? '#/trash' : '#/notes'); }, 'only-mobile'),
+    h('div', { class: 'ebar' }, iconBtn('back', 'Back to notes', () => { save(true); go(scope.kind === 'nb' ? '#/notes/nb/' + scope.id : scope.kind === 'tag' ? '#/notes/tag/' + encodeURIComponent(scope.id) : scope.kind === 'trash' ? '#/trash' : scope.kind === 'gone' ? '#/trash/deleted' : '#/notes'); }, 'only-mobile'),
       icon('book', 15), nbSel, h('span', { class: 'grow' }), h('span', { class: 'sub saved' }, 'Edited ' + new Date(n0.updatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), dictBtn, iconBtn('share', 'Share this note', share, 'eshare'), iconBtn('more', 'Note options', more)),
-    trashed && h('div', { class: 'banner' }, 'This note is in the trash.'),
+    trashed && h('div', { class: 'banner' }, n0.gone ? `This note was deleted. It is kept until ${new Date(n0.gone + GONE_DAYS * 864e5).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}. ` : 'This note is in the trash. ', btn('Restore', () => { M.restoreNote(id); toast('Note restored'); go('#/note/' + id); }, 'tiny')),
     !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, !trashed && org.el, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn, photoIn);
   hydrate(body, n0.attachments, urls);
   mounted = { id, save, urls, refreshTasks, addMenu, stopDictation, isDictating: () => !!dict };
@@ -385,6 +405,44 @@ function mountEditor(pane, id) {
 }
 window.addEventListener('pagehide', () => { mounted?.stopDictation?.(); mounted?.save(true); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { mounted?.save(true); store.flush().catch(() => {}); } });
+
+// ---- version history ------------------------------------------------------------------------------------------
+const WHY = { edit: 'Edited', 'before editing': 'Before editing', 'before a large deletion': 'Before a large deletion', 'before trash': 'Before moving to trash', 'before delete': 'Before deleting',
+  'before Claude’s change': 'Before Claude’s change', 'before sync': 'Before a sync replaced it', 'before restoring': 'Before a restore', 'before Writing update': 'Before a newer copy came from Writing' };
+/** The list of saved versions of a note; tap one to read it, see what changed, and put it back. */
+function versionHistory(id, afterRestore) {
+  modal((close, body) => {
+    const list = () => {
+      const snaps = V.history(id), cur = store.get('notes', id);
+      fill(body, h('p', { class: 'sub' }, 'Steward keeps a copy when you finish editing, before a large deletion, and before a note is trashed, changed by Claude or replaced by a sync: the newest 20, plus one a day for 30 days. Both devices share this list.'),
+        !snaps.length && h('div', { class: 'empty' }, h('strong', null, 'No saved versions yet'), h('p', null, 'Copies start the next time this note is edited.')),
+        h('div', { class: 'vlist' }, snaps.map(sn => h('button', { type: 'button', class: 'vrow', onclick: () => show(sn) },
+          h('span', { class: 'grow' }, h('b', null, new Date(sn.at).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), h('br'), h('small', null, [WHY[sn.why] || 'Saved', sn.device, `${sn.words ?? 0} word${sn.words === 1 ? '' : 's'}`].filter(Boolean).join(' · '))),
+          cur && cur.body === sn.body && cur.title === sn.title ? h('span', { class: 'count' }, 'same as now') : icon('right', 14)))));
+    };
+    const show = sn => {
+      const cur = store.get('notes', id);
+      let marked = false;
+      const view = h('div', { class: 'vprev ebody' });
+      const draw = () => {
+        const d = marked && cur ? diffWords(plainOf(cur.body), plainOf(sn.body)) : null;
+        if (marked && d) fill(view, d.map(x => [h(x.t === 'add' ? 'ins' : x.t === 'del' ? 'del' : 'span', null, x.s), ' ']));
+        else { view.innerHTML = sanitize(sn.body || ''); hydrate(view, cur?.attachments || [], mounted?.urls || []); }
+      };
+      draw();
+      const canMark = !!cur && diffWords(plainOf(cur.body), plainOf(sn.body)) !== null && cur.body !== sn.body;
+      const toggle = canMark && btn('Show what is different', () => { marked = !marked; toggle.textContent = marked ? 'Show the version itself' : 'Show what is different'; legend.hidden = !marked; draw(); }, 'tiny');
+      const legend = h('p', { class: 'sub', hidden: true }, h('ins', null, 'In this version, not in the note now'), ' · ', h('del', null, 'In the note now, not in this version'));
+      fill(body, h('div', { class: 'row between wrap' }, btn('All versions', list, 'tiny', 'back'), toggle),
+        h('div', { class: 'sub vhead-line' }, new Date(sn.at).toLocaleString(undefined, { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }), ' · ', sn.device || '', ' · ', `${sn.words ?? 0} words`),
+        h('h3', { class: 'vtitle' }, sn.title || 'Untitled'), legend, view,
+        h('div', { class: 'row end gap' }, btn('Close', close), cur && btn('Restore this version', () => {
+          if (V.restore(id, sn.at)) { close(); toast('Version restored. The text from before is in the history too.'); afterRestore?.(); }
+        }, 'primary', 'back')));
+    };
+    list();
+  }, { title: 'Version history', cls: 'wide' });
+}
 
 const liveBacklinks = id => M.liveNotes().filter(n => n.id !== id && (n.body || '').includes(`#/note/${id}"`));
 function pickNote(selfId, onPick) {

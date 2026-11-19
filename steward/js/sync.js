@@ -6,6 +6,7 @@
 // Charles's own Google account and answers only Steward's own sign-in for that account (steward-helper/).
 import { store, settings, BUNDLES, ITEMWISE } from './store.js';
 import { applyOps, buildSummary } from './model.js';
+import { adoptWriting } from './migrate.js';
 import { pad } from './util.js';
 import { snapshot, backgroundIsNewer, kvGet } from './lsmirror.js';
 
@@ -26,8 +27,8 @@ function checkScopes(granted) {
 const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const FILE_NAMES = { tasks: 'steward-tasks.json', organize: 'steward-organize.json' };
-// Before 2.4, notes and writing were whole-section files. Any still found are read in once, then moved to the trash.
-const OLD_FILES = { 'steward-notes.json': ['notebooks', 'notes', 'ocr'], 'steward-writing.json': ['docs', 'sources'] };
+// Before 2.4, notes were one whole-section file. Any still found is read in once, then moved to the trash.
+const OLD_FILES = { 'steward-notes.json': ['notebooks', 'notes', 'ocr'] };
 const LIB = 'library';
 const WINDOW = 10 * 60000; // re-list files changed this long before the last one seen: Drive's file list can lag a little
 const itemName = (t, id) => `${t}.${id}.json`;
@@ -396,7 +397,7 @@ export const sync = {
     return false;
   },
   /**
-   * Notes, notebooks, page text from scans, and Writing documents and sources: one small file per item in Steward/library.
+   * Notes, notebooks, page text from scans and saved note versions: one small file per item in Steward/library.
    * 1. Ask Drive which files changed since last time and download only those.
    * 2. Upload only the items edited on this device since they were last uploaded.
    * Newest edit of each item wins, as before.
@@ -410,6 +411,7 @@ export const sync = {
     if (!alive) { d.lib = await this.folder(LIB, d.root); ls.set('drive', d); if (map.size) { await store.driveClear(); map.clear(); } cursor = 0; }
     const save = [];
     let changed = false;
+    if (await this.retireWriting(d)) changed = true;
 
     // ---- 1. what changed in Drive ----
     let q = `'${d.lib}' in parents and trashed=false`;
@@ -482,8 +484,8 @@ export const sync = {
       if (todo.length > 30 && ++n % 25 === 0) this.set('syncing', `Uploading ${n} of ${todo.length}`);
     });
 
-    // ---- 4. notes and writing saved by Steward 2.3 or earlier (on a device not yet updated) ----
-    const oq = `'${d.root}' in parents and trashed=false and (name='steward-notes.json' or name='steward-writing.json')`;
+    // ---- 4. notes saved by Steward 2.3 or earlier (on a device not yet updated) ----
+    const oq = `'${d.root}' in parents and trashed=false and name='steward-notes.json'`;
     const old = (await this.api(`${DRIVE}/files?q=${encodeURIComponent(oq)}&fields=files(id,name)`)).files || [];
     for (const f of old) {
       const types = OLD_FILES[f.name]; if (!types) continue;
@@ -494,6 +496,33 @@ export const sync = {
       this.again = true; // upload what came in on the next pass
     }
     return changed || todo.length > 0;
+  },
+  /**
+   * Steward 4.5 removed the Writing section. Once per device: any old document or source file still in Drive is read,
+   * documents with real text become notes in "From Writing" (sources become one note), and only then is each old
+   * file moved to the Drive trash (recoverable there for 30 days). Nothing is dropped without being looked at.
+   */
+  async retireWriting(d) {
+    if (ls.get('writingGone')) return false;
+    const q = `'${d.lib}' in parents and trashed=false and (name contains 'docs.' or name contains 'sources.')`;
+    const files = [];
+    let pageToken = '';
+    do {
+      const r = await this.api(`${DRIVE}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent('nextPageToken,files(id,name)')}&pageSize=1000${pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''}`);
+      files.push(...(r.files || []).filter(f => /^(docs|sources)\..+\.json$/.test(f.name))); pageToken = r.nextPageToken || '';
+    } while (pageToken);
+    const docs = [], sources = [];
+    for (const f of files) {
+      let j = null;
+      try { j = JSON.parse(await (await this.api(`${DRIVE}/files/${f.id}?alt=media`, {}, true)).text()); }
+      catch (e) { if (e.message === 'auth' || e instanceof TypeError || e.status >= 500 || e.status === 429) throw e; }
+      if (j?.v?.id) (f.name.startsWith('docs.') ? docs : sources).push(j.v);
+    }
+    const made = adoptWriting({ docs, sources });
+    if (made) { store.settle(); await store.flush(); }
+    for (const f of files) await this.api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(e => { if (e.status !== 404) throw e; });
+    ls.set('writingGone', 1);
+    return made > 0;
   },
   async writeSummary(d) {
     if (!d.files.summary) { const f = await this.find('steward-summary.md', d.root); if (f) d.files.summary = f.id; }
@@ -528,8 +557,8 @@ export const sync = {
         await report(f.name, ['Nothing was applied: ' + (e.message || 'the file could not be read')]);
         continue;
       }
-      // Notes and documents need the page's HTML tools: a change file with any is left for when Steward is opened.
-      if (this.background && ops.some(o => o && o.op !== 'delete' && ['note', 'doc', 'document'].includes(String(o.type || '').toLowerCase()))) { release.push(f.id); continue; }
+      // Notes need the page's HTML tools: a change file with any is left for when Steward is opened.
+      if (this.background && ops.some(o => o && o.op !== 'delete' && ['note'].includes(String(o.type || '').toLowerCase()))) { release.push(f.id); continue; }
       const results = applyOps(ops);
       applied++; done.push(f.id); ls.set('inboxDone', done);
       await store.flush().catch(() => {});

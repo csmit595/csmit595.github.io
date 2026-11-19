@@ -1,5 +1,5 @@
 // Offline: keeps everything Steward needs on this device so it works with no signal.
-// - The tools (PDF reader, Word import/export, page reader, search model) live in their own cache that survives updates.
+// - The tools (PDF reader, page reader, search model) live in their own cache that survives updates.
 // - Every attachment (photos, PDFs, recordings) is kept on the device, not only the ones opened before.
 import { store } from './store.js';
 import { sync } from './sync.js';
@@ -7,8 +7,8 @@ import { setModelHere } from './dictate.js';
 
 export const TOOLS_CACHE = 'steward-tools-1'; // keep in step with sw.js
 const base = p => new URL(p, document.baseURI).href;
-// Small, needed to read PDFs and work with Word files: downloaded automatically.
-const BASIC = ['vendor/pdf/pdf.min.mjs', 'vendor/pdf/pdf.worker.min.mjs', 'vendor/fflate/fflate.js', 'vendor/docx/docx.js', 'vendor/mammoth/mammoth.browser.min.js', 'vendor/paged/paged.polyfill.min.js'];
+// Small, needed to read PDFs: downloaded automatically.
+const BASIC = ['vendor/pdf/pdf.min.mjs', 'vendor/pdf/pdf.worker.min.mjs'];
 // Larger: the page reader (reads text in photos) and search by meaning.
 const BIG = ['vendor/tess/tesseract.min.js', 'vendor/tess/worker.min.js', 'vendor/tess/core/tesseract-core-lstm.wasm.js', 'vendor/tess/core/tesseract-core-simd-lstm.wasm.js', 'vendor/tess/lang/eng.traineddata.gz',
   'vendor/tf/transformers.min.js', 'vendor/tf/ort-wasm.wasm', 'vendor/tf/ort-wasm-simd.wasm',

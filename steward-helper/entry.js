@@ -5,7 +5,7 @@
 //      minute; until every device has shown its test notification, it also keeps the old "Steward Reminders"
 //      calendar right as a backup, and empties that calendar once notifications are proven.
 // It uses Steward's own task code (store.js, model.js, dates.js), so changes are applied exactly as the app does.
-// Change files that touch notes or Writing documents are left for the app (they need its HTML tools).
+// Change files that touch notes are left for the app (they need its HTML tools).
 import './shims.js'; // must stay first
 import { store } from '../steward/js/store.js';
 import { applyOps, openTasks, reminderTimes, reminderKey, projectName } from '../steward/js/model.js';
@@ -15,7 +15,9 @@ const DRIVE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 const CAL = 'https://www.googleapis.com/calendar/v3';
 const FOLDER = 'application/vnd.google-apps.folder';
-const needsApp = o => o && o.op !== 'delete' && ['note', 'doc', 'document', 'orgword'].includes(String(o.type || '').toLowerCase());
+// (Since Steward 4.5 there is no Writing section: a change that names a document or source is answered with a
+// report saying so, by the shared applyOps, and everything else in the file is applied as usual.)
+const needsApp = o => o && o.op !== 'delete' && ['note', 'orgword'].includes(String(o.type || '').toLowerCase());
 
 /**
  * env.http(url, {method, headers, body}) -> {status, text}  (synchronous)
@@ -70,7 +72,7 @@ export function run(env) {
   const claimed = claims(env);
   const files = (api(`${DRIVE}/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType)&orderBy=createdTime&pageSize=100`).files || [])
     .filter(f => !/^(failed-|report-)/.test(f.name) && f.mimeType !== FOLDER && !claimed[f.id]);
-  // Files left for the app last time (notes, documents) don't need looking at again until the app takes them.
+  // Files left for the app last time (notes) don't need looking at again until the app takes them.
   const deferred = new Set(JSON.parse(env.props.get('deferred') || '[]'));
   const fresh = files.filter(f => !deferred.has(f.id));
   env.props.set('deferred', JSON.stringify(files.filter(f => deferred.has(f.id)).map(f => f.id)));

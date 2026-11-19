@@ -4,7 +4,6 @@
 import { store } from './store.js';
 import * as M from './model.js';
 import { h, stripHtml } from './util.js';
-import { docText, liveDocs } from './writing.js';
 
 const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const bodyCache = new Map();
@@ -69,9 +68,6 @@ export function docs() {
   for (const c of store.all('comments')) comments.set(c.taskId, (comments.get(c.taskId) || '') + ' ' + c.text);
   for (const t of store.all('tasks')) out.push({ kind: 'task', item: t, title: t.content, meta: (t.labels || []).map(l => '@' + l).join(' ') + ' ' + M.projectName(t.projectId), body: (t.description || '') + (comments.get(t.id) || ''), atts: [], when: t.updatedAt });
   for (const n of M.liveNotes()) out.push({ kind: 'note', item: n, title: n.title || 'Untitled', meta: (n.tags || []).join(' ') + ' ' + (store.get('notebooks', n.notebookId)?.name || '') + ' ' + (n.attachments || []).map(a => a.name).join(' '), body: noteBody(n), atts: attText(n), when: n.updatedAt });
-  for (const w of liveDocs()) out.push({ kind: 'doc', item: w, title: w.title || 'Untitled', meta: (w.kind || '') + ' writing ' + (w.meta?.course || ''), body: docBody(w), atts: [], when: w.updatedAt });
-  // sources saved for papers (author, title, publisher…) are found too
-  for (const s of store.all('sources')) out.push({ kind: 'source', item: s, title: String(s.title || s.shortTitle || 'Untitled source'), meta: 'source writing ' + (s.type || ''), body: Object.entries(s).filter(([k, v]) => !['id', 'title', 'type', '_f', 'hist', 'createdAt', 'updatedAt'].includes(k) && (typeof v === 'string' || typeof v === 'number')).map(([, v]) => v).join(' · '), atts: [], when: s.updatedAt });
   return out;
 }
 const docCache = new Map();
@@ -125,7 +121,7 @@ function scoreDoc(d, q, fuzzy) {
 export function search(query, opts = {}) {
   const q = parseQuery(query);
   if (!q.terms.length && !q.not.length && !Object.keys(q.ops).length) return { q, results: [], fuzzy: false };
-  const pool = docs().filter(d => (!opts.kind || d.kind === opts.kind || (opts.kind === 'doc' && d.kind === 'source')) && (!opts.filter || opts.filter(d.item)) && passesOps(d, q.ops));
+  const pool = docs().filter(d => (!opts.kind || d.kind === opts.kind) && (!opts.filter || opts.filter(d.item)) && passesOps(d, q.ops));
   const run = fuzzy => pool.map(d => { const r = scoreDoc(d, q, fuzzy); return r ? { ...d, ...r } : null; }).filter(Boolean).sort((a, b) => b.score - a.score);
   let results = run(false), fuzzy = false;
   if (results.length < 3 && q.terms.some(t => t.length >= 4)) { const loose = run(true); if (loose.length > results.length) { results = loose; fuzzy = true; } }

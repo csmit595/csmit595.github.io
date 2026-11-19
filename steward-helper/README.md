@@ -2,7 +2,7 @@
 
 Runs in the owner's Google account ("Steward helper" project at script.google.com), even when Steward is closed on every device:
 - every 10 minutes (`syncSteward`): applies the task changes Claude leaves in `Steward/inbox for Claude` to `steward-tasks.json`.
-  Change files that touch notes or Writing documents are left for the app.
+  Change files that touch notes are left for the app. (Writing was removed in Steward 4.5: a change naming a document or source gets a `report-*.txt` saying so.)
 - as a web app (`doPost`), for Steward itself: since Steward 4.0 the app signs in with per-file Drive access only, so it
   cannot open Claude's change files and scans, the notifications folder, or Google Calendar. It asks the helper instead.
   Every request must carry a Google pass issued to the Steward client for this same Google account (checked with

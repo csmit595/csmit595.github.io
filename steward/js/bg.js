@@ -5,6 +5,7 @@
 import { loadShim, saveShim } from './lsmirror.js'; // must stay first: provides localStorage to the modules below
 import { store } from './store.js';
 import { sync } from './sync.js';
+import './versions.js'; // keeps a copy of a note's text before a background sync replaces it
 
 async function windows() { return self.clients.matchAll({ type: 'window', includeUncontrolled: true }); }
 

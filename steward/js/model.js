@@ -2,6 +2,8 @@
 import { store, settings, TYPES, SHARED } from './store.js';
 import { today, mdToHtml, sanitize, esc } from './util.js';
 import { nextOccurrence, parseDue, looksRepeating } from './dates.js';
+import { snapshot as snapNote, forget as forgetVersions } from './versions.js';
+import { goneExpired } from './versions-core.js';
 
 export const COLORS = { green: '#3f7d4e', moss: '#7a8f3c', teal: '#2f8f8a', blue: '#3b74c4', indigo: '#5b5fc7', plum: '#8e4fa8', rose: '#c2527a', red: '#c8473b', orange: '#d17a2a', gold: '#b8962e', stone: '#7b756a', slate: '#55606e' };
 export const PRI_COLORS = { 1: '#c8473b', 2: '#d17a2a', 3: '#3b74c4', 4: 'var(--muted)' };
@@ -89,6 +91,25 @@ export function addNote(f) {
   });
 }
 export const liveNotes = () => store.all('notes').filter(n => !n.trashed);
+/** Notes in the trash (not the ones already emptied from it, which wait 30 days in "Recently deleted"). */
+export const trashedNotes = () => store.all('notes').filter(n => n.trashed && !n.gone);
+export const goneNotes = () => store.all('notes').filter(n => n.gone);
+/** Move a note to the trash, keeping a copy of its text in its version history first. */
+export function trashNote(id) { const n = store.get('notes', id); if (!n) return; snapNote(n, 'before trash'); store.patch('notes', id, { trashed: true }); }
+/** "Delete forever" and "Empty trash": the note leaves the trash but is kept, hidden, for 30 days (Recently deleted). */
+export function hideNote(id) { const n = store.get('notes', id); if (!n) return; snapNote(n, 'before delete'); store.patch('notes', id, { trashed: true, gone: Date.now() }); }
+export function restoreNote(id) { const n = store.get('notes', id); if (n) store.put('notes', { ...n, trashed: false, gone: null }); }
+/** Remove for good the notes emptied from the trash more than 30 days ago, with their attachments and history. */
+export async function purgeGone(now = Date.now()) {
+  let n = 0;
+  for (const x of store.all('notes')) {
+    if (!goneExpired(x, now)) continue;
+    for (const a of x.attachments || []) { try { await store.delBlob(a.id); } catch {} store.remove('ocr', a.id, { silent: true }); }
+    forgetVersions(x.id); store.remove('notes', x.id, { silent: true }); n++;
+  }
+  if (n) store.emit({ local: true });
+  return n;
+}
 export const allTags = () => { const m = new Map(); for (const n of liveNotes()) for (const t of n.tags || []) m.set(t, (m.get(t) || 0) + 1); return [...m].sort((a, b) => a[0].localeCompare(b[0])); };
 
 // ---- changes written by Claude (files dropped in the Drive "inbox" folder) --
@@ -129,6 +150,7 @@ export function repairTasks() {
   for (const t of store.all('tasks')) { const f = taskFixes(t); if (f) { store.patch('tasks', t.id, f, { silent: true, noHistory: true }); n++; } }
   return n;
 }
+const WRITING_GONE = 'Writing (documents and sources) was removed from Steward in 4.5; nothing was changed. Papers and sermons live in Google Docs now. To keep text in Steward, send it as a note.';
 /** Apply a list of changes. Returns one line per change; lines starting with "problem" need attention. */
 export function applyOps(ops) {
   const results = [];
@@ -144,12 +166,13 @@ export function applyOps(ops) {
       if (o.op === 'uncomplete') { if (!store.rawGet('tasks', o.id)) throw new Error('no task with that id'); uncompleteTask(o.id); results.push('ok ' + where); continue; }
       if (o.op === 'restore') { const x = store.rawGet('tasks', o.id); if (!x?.was) throw new Error('nothing to restore'); store.put('tasks', { ...x.was }, BY); results.push('ok ' + where); continue; }
       if (o.op === 'delete') {
-        const kind = type === 'task' ? 'tasks' : type === 'doc' || type === 'document' ? 'docs' : type + 's';
+        if (['doc', 'document', 'source'].includes(type)) throw new Error(WRITING_GONE);
+        const kind = type === 'task' ? 'tasks' : type + 's';
         if (!TYPES.includes(kind)) throw new Error(`cannot delete a "${type}"`);
         if (!store.get(kind, o.id)) throw new Error(`no ${type} with that id; nothing was deleted`);
         if (type === 'task') deleteTask(o.id);
         else if (type === 'project') deleteProject(o.id);
-        else if (kind === 'notes' || kind === 'docs') store.patch(kind, o.id, { trashed: true });
+        else if (kind === 'notes') trashNote(o.id);
         else store.remove(kind, o.id);
         results.push('ok ' + where);
         continue;
@@ -203,17 +226,12 @@ export function applyOps(ops) {
           it.attachments = atts; it.body = (it.body ?? cur?.body ?? '') + add; delete it.files;
         }
         if (it.body !== undefined) it.body = sanitize(it.body);
+        // a copy of the note as it was, before Claude's change goes in
+        if (cur && ((it.body !== undefined && it.body !== cur.body) || (it.title !== undefined && it.title !== cur.title))) snapNote(cur, 'before Claude’s change');
         if (cur) store.put('notes', { ...cur, ...it });
         else addNote(it);
-      } else if (type === 'doc' || type === 'document') {
-        const cur = it.id ? store.get('docs', it.id) : null;
-        if (it.markdown !== undefined) { it.body = mdToHtml(it.markdown).replace(/<div>/g, '<p>').replace(/<\/div>/g, '</p>'); delete it.markdown; }
-        if (it.body !== undefined) it.body = sanitize(it.body);
-        store.put('docs', cur ? { ...cur, ...it } : { kind: 'other', footnotes: {}, meta: {}, trashed: false, title: 'Untitled', body: '<p><br></p>', ...it });
-      } else if (type === 'source') {
-        const cur = it.id ? store.get('sources', it.id) : null;
-        if (!cur && !String(it.title || '').trim()) throw new Error('a new source needs a title');
-        store.put('sources', cur ? { ...cur, ...it } : { type: 'book', ...it });
+      } else if (['doc', 'document', 'source'].includes(type)) {
+        throw new Error(WRITING_GONE);
       } else if (type === 'project') {
         const cur = it.id ? store.get('projects', it.id) : store.all('projects').find(p => p.name.toLowerCase() === String(it.name || '').toLowerCase());
         store.put('projects', cur ? { ...cur, ...it, id: cur.id } : { color: 'green', order: Date.now(), ...it });
@@ -310,7 +328,6 @@ export function buildSummary() {
   for (const t of none) { const k = projectName(t.projectId); if (!byProj.has(k)) byProj.set(k, []); byProj.get(k).push(t); }
   for (const [k, list] of byProj) out.push(`### ${k}`, ...list.map(line));
   out.push('', '## Projects', ...store.all('projects').map(p => `- ${p.name} [id:${p.id}]`), '', '## Notebooks', ...store.all('notebooks').map(n => `- ${n.name} (${liveNotes().filter(x => x.notebookId === n.id).length} notes) [id:${n.id}]`));
-  out.push('', '## Writing (documents)', ...store.all('docs').filter(d => !d.trashed).map(d => `- ${d.title || 'Untitled'} (${d.kind || 'document'}) [id:${d.id}]`), '', `Sources saved: ${store.all('sources').length}`);
   const DAYN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   out.push('', '## Fixed blocks (never schedule over these)', ...store.all('blocks').filter(b => !b.paused).map(b => `- ${b.name}: ${(b.days || []).map(d => DAYN[d]).join(' ')} ${b.start}–${b.end}${(b.every || 1) > 1 ? ` every ${b.every} weeks from ${b.anchor}` : ''}${b.until ? ' until ' + b.until : ''} [id:${b.id}]`));
   const toRead = [];

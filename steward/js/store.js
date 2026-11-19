@@ -1,17 +1,18 @@
 // Local data store. Everything lives on the device first (IndexedDB) and is merged with Google Drive by sync.js.
 import { uid } from './util.js';
+import { union as unionSnaps, prune as pruneSnaps } from './versions-core.js';
 
 export const FILES = {
   tasks: ['projects', 'sections', 'tasks', 'comments', 'labels', 'filters', 'prefs', 'blocks'],
-  notes: ['notebooks', 'notes', 'ocr'],
-  writing: ['docs', 'sources'],
+  // versions: saved copies of a note's text (one item per note, id = the note's id), see versions.js
+  notes: ['notebooks', 'notes', 'ocr', 'versions'],
   // what the organizer has learned (confirmed suggestions) and the names it knows: one small synced file, so the
   // phone and the Mac train the same model and suggest the same things
   organize: ['lessons', 'orgwords'],
 };
 export const TYPES = Object.values(FILES).flat();
 // Synced to Drive as one file per item (folder Steward/library), so editing one note uploads only that note.
-export const ITEMWISE = ['notebooks', 'notes', 'ocr', 'docs', 'sources'];
+export const ITEMWISE = ['notebooks', 'notes', 'ocr', 'versions'];
 // Synced as one combined file (small and changes often).
 export const BUNDLES = { tasks: FILES.tasks, organize: FILES.organize };
 const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
@@ -19,7 +20,7 @@ const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
 const data = Object.fromEntries(TYPES.map(t => [t, new Map()]));
 
 // ---- field-by-field change times, so edits made on two devices before they sync both survive ----
-const META = new Set(['id', 'updatedAt', 'createdAt', '_f', 'hist']);
+const META = new Set(['id', 'updatedAt', 'createdAt', '_f', 'hist', 'snaps']);
 // key order must not matter: two devices can build the same item with fields in a different order
 const canon = v => (Array.isArray(v) ? '[' + v.map(canon).join(',') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().filter(k => v[k] !== undefined).map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}' : JSON.stringify(v ?? null));
 const same = (a, b) => a === b || canon(a) === canon(b);
@@ -44,6 +45,8 @@ export function mergeFields(l, r) {
   out.updatedAt = Math.max(l.updatedAt || 0, r.updatedAt || 0);
   out.createdAt = Math.min(l.createdAt || out.updatedAt, r.createdAt || out.updatedAt);
   // history: keep every entry from both copies, newest 15
+  // saved versions of a note: keep every copy from both devices (then the usual 20 + one a day for 30 days)
+  if (l.snaps || r.snaps) out.snaps = pruneSnaps(unionSnaps(l.snaps, r.snaps));
   if (l.hist || r.hist) { const seen = new Map(); for (const e of [...(l.hist || []), ...(r.hist || [])]) seen.set(e.at + '|' + Object.keys(e.old || {}).join(','), e); out.hist = [...seen.values()].sort((a, b) => a.at - b.at).slice(-15); }
   return out;
 }
@@ -204,7 +207,7 @@ export const store = {
     // holding a change Drive lacks: give it a fresh time so the upload step (which compares times) sends it
     if (!same(m, r)) m.updatedAt = Math.max(m.updatedAt, Date.now());
     const took = !same(m, l);
-    if (took) { data[type].set(r.id, m); touchItem(type, r.id); this._merged = true; }
+    if (took) { try { this.onReplace?.(type, l, m); } catch (e) { console.warn('version copy', e); } data[type].set(r.id, m); touchItem(type, r.id); this._merged = true; }
     // 'mine' means this device holds something Drive lacks, so it is uploaded
     return !same(m, r) ? 'mine' : took ? 'took' : 'same';
   },
@@ -212,6 +215,10 @@ export const store = {
   settle() { if (this._merged) { this._merged = false; this.flush().catch(() => {}); this.emit({ remote: true }); } },
   /** Forget a long-deleted item for good. */
   purge(type, id) { if (data[type].delete(id)) touchItem(type, id); },
+
+  // ---- items of types Steward no longer has (the old Writing section): read once, then removed from this device ----
+  legacy(types) { return new Promise((res, rej) => { const out = []; const tx = db.transaction('items', 'readonly'); const c = tx.objectStore('items').openCursor(); c.onsuccess = () => { const cur = c.result; if (cur) { if (types.includes(cur.value?.t)) out.push({ key: cur.key, t: cur.value.t, v: cur.value.v }); cur.continue(); } }; tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); }); },
+  dropLegacy(keys) { return idb('items', 'readwrite', s => { for (const k of keys) s.delete(k); }); },
 
   // ---- which Drive file holds which item (this device only) -------------------
   driveAll() { return new Promise((res, rej) => { const out = new Map(); const tx = db.transaction('drive', 'readonly'); const c = tx.objectStore('drive').openCursor(); c.onsuccess = () => { const cur = c.result; if (cur) { out.set(cur.key, cur.value); cur.continue(); } }; tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); }); },

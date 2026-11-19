@@ -8,18 +8,19 @@ import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from '.
 import { renderNotes, leaveNotes, newNote, dictateNote, noteAddMenu, createClip, importEnex } from './notes.js';
 import { canDictate, dictEngine, setDictEngine } from './dictate.js';
 import { renderCalendar } from './calendar.js';
-import { renderWriting, leaveWriting, liveDocs } from './writing.js';
 import { compileFilter } from './filters.js';
 import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
 import { importTodoist, describeImport } from './import-todoist.js';
 import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
+import { adoptLocalWriting } from './migrate.js';
 import * as offline from './offline.js';
 import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.4.3';
+const VERSION = '4.5.0';
+const WHATS_NEW = `Steward updated to ${VERSION}. New: every note keeps a version history (note menu → Version history), and emptied trash can be brought back for 30 days. Writing was removed; notes are unchanged.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -30,7 +31,6 @@ function parseRoute() {
   return { view: v, id: p[1] };
 }
 const NOTE_VIEWS = ['notes', 'note', 'trash'];
-const WRITING_VIEWS = ['writing', 'doc', 'sources'];
 
 function render(info = {}) {
   const route = parseRoute(), main = $('#main');
@@ -38,9 +38,7 @@ function render(info = {}) {
   drawSidebar(route);
   document.body.dataset.view = route.view;
   $('#fab').setAttribute('aria-label', route.view === 'note' ? 'Add a photo or file to this note' : 'New note');
-  if (NOTE_VIEWS.includes(route.view)) { leaveWriting(); renderNotes(route, main, info); lastRouteKey = key; return; }
-  if (WRITING_VIEWS.includes(route.view)) { leaveNotes(); if (route.view !== 'doc' && key === lastRouteKey && !info.remote && main.children.length) return; renderWriting(route, main, info); lastRouteKey = key; return; }
-  leaveWriting();
+  if (NOTE_VIEWS.includes(route.view)) { renderNotes(route, main, info); lastRouteKey = key; return; }
   if (route.view === 'settings' && key === lastRouteKey && !info.force && main.querySelector('.settings')) return;
   if (route.view === 'search' && key === lastRouteKey && main.querySelector('.results')) return drawResults();
   leaveNotes();
@@ -73,7 +71,7 @@ function drawSidebar(route) {
   const notes = M.liveNotes(), nbs = store.all('notebooks').sort((a, b) => a.name.localeCompare(b.name)), tags = M.allTags();
   const nbMenu = nb => iconBtn('more', 'Notebook options', e => { e.preventDefault(); e.stopPropagation(); menu(e.currentTarget, [
     { label: 'Rename', icon: 'edit', onclick: async () => { const n = await promptDlg('Rename notebook', nb.name); if (n) store.patch('notebooks', nb.id, { name: n }); } },
-    { label: 'Delete notebook', icon: 'trash', danger: true, onclick: async () => { const inside = notes.filter(n => n.notebookId === nb.id); if (await confirmDlg(`Delete "${nb.name}"? Its ${inside.length} notes move to the trash.`)) { for (const n of inside) store.patch('notes', n.id, { trashed: true }, { silent: true }); store.remove('notebooks', nb.id); location.hash = '#/notes'; } } },
+    { label: 'Delete notebook', icon: 'trash', danger: true, onclick: async () => { const inside = notes.filter(n => n.notebookId === nb.id); if (await confirmDlg(`Delete "${nb.name}"? Its ${inside.length} notes move to the trash.`)) { for (const n of inside) M.trashNote(n.id); store.remove('notebooks', nb.id); location.hash = '#/notes'; } } },
   ]); }, 'mini');
   const st = sync.status;
   const time = sync.lastSync ? new Date(sync.lastSync).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
@@ -110,9 +108,6 @@ function drawSidebar(route) {
         nbs.map(nb => link('#/notes/nb/' + nb.id, 'book', nb.name, notes.filter(n => n.notebookId === nb.id).length, nbMenu(nb))),
         tags.length > 0 && h('details', { class: 'stags', open: localStorage.getItem('steward.tagsOpen') === '1', ontoggle: e => localStorage.setItem('steward.tagsOpen', e.currentTarget.open ? '1' : '0') }, h('summary', null, icon('tag', 17), h('span', { class: 'grow' }, 'Tags'), h('span', { class: 'count' }, tags.length)), tags.map(([t, n]) => link('#/notes/tag/' + encodeURIComponent(t), 'tag', t, n))),
         link('#/trash', 'trash', 'Trash')),
-      sec('writing', 'Writing', null,
-        link('#/writing', 'edit', 'Documents', liveDocs().length),
-        link('#/sources', 'book', 'Sources', store.all('sources').length)),
       h('div', { class: 'sfoot' }, link('#/settings', 'gear', 'Settings'))));
   for (const a of document.querySelectorAll('#tabs a')) a.classList.toggle('on', a.getAttribute('href') === hash || !!(a.dataset.match && new RegExp(a.dataset.match).test(hash)));
 }
@@ -126,9 +121,9 @@ function defaultsForRoute() {
 const closeDrawer = () => document.body.classList.remove('drawer');
 // Keyboard: "g" then a letter jumps to a screen; "?" shows every shortcut.
 let goPending = 0;
-const GO = { t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', w: '#/writing', s: '#/settings' };
+const GO = { t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', s: '#/settings' };
 function shortcuts() {
-  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then W', 'Writing'], ['Esc', 'Close a window'], ['?', 'This list']];
+  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['Esc', 'Close a window'], ['?', 'This list']];
   modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
 }
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
@@ -138,8 +133,8 @@ const toggleSide = () => { setSideHidden(!document.body.classList.contains('side
 // ---- search -------------------------------------------------------------------------------
 let searchKind = '';
 function viewSearch(main) {
-  const input = h('input', { class: 'field big', type: 'search', placeholder: 'Search tasks, notes, writing and attachments', value: searchQ, autofocus: true, oninput: debounce(() => { searchQ = input.value; drawResults(); }, 120) });
-  const chips = h('div', { class: 'seg skinds' }, [['', 'Everything'], ['task', 'Tasks'], ['note', 'Notes'], ['doc', 'Writing']].map(([k, l]) => h('button', { type: 'button', class: k === searchKind ? 'on' : '', onclick: e => { searchKind = k; chips.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.currentTarget.classList.add('on'); drawResults(); } }, l)));
+  const input = h('input', { class: 'field big', type: 'search', placeholder: 'Search tasks, notes and attachments', value: searchQ, autofocus: true, oninput: debounce(() => { searchQ = input.value; drawResults(); }, 120) });
+  const chips = h('div', { class: 'seg skinds' }, [['', 'Everything'], ['task', 'Tasks'], ['note', 'Notes']].map(([k, l]) => h('button', { type: 'button', class: k === searchKind ? 'on' : '', onclick: e => { searchKind = k; chips.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.currentTarget.classList.add('on'); drawResults(); } }, l)));
   main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Search'))), input, chips, h('div', { class: 'results' }),
     h('details', { class: 'help' }, h('summary', null, 'Search tips'), h('div', { html: 'Words can be in any order and partly typed. Small typos are forgiven when nothing else matches.<br><code>"exact phrase"</code> <code>-word</code> to leave something out<br><code>tag:receipts</code> <code>notebook:clips</code> <code>has:file</code> <code>in:notes</code><br><code>@promise</code> <code>project:hanel</code> <code>is:done</code> <code>in:tasks</code>' })));
   drawResults();
@@ -152,8 +147,6 @@ function drawResults() {
   const shown = results.slice(0, 80);
   const row = r => r.kind === 'task'
     ? h('button', { class: 'rowlink sres' + (r.item.completedAt ? ' done' : ''), onclick: () => openTask(r.item.id) }, icon(r.item.completedAt ? 'done' : 'check', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), (r.where.has('body')) && h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Task · ${M.projectName(r.item.projectId)}${r.item.due ? ' · ' + fmtDate(r.item.due.date) : ''}${r.item.completedAt ? ' · completed' : ''}${(r.item.labels || []).length ? ' · @' + r.item.labels.join(' @') : ''}`)))
-    : r.kind === 'source' ? h('a', { class: 'rowlink sres', href: '#/sources' }, icon('book', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, 'Source · Writing')))
-    : r.kind === 'doc' ? h('a', { class: 'rowlink sres', href: '#/doc/' + r.item.id }, icon('edit', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Writing · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`)))
     : h('a', { class: 'rowlink sres', href: '#/note/' + r.item.id }, icon('note', 16), h('span', { class: 'grow' }, h('span', { class: 'stitle' }, highlight(r.title, (r._terms || q.terms))), h('small', null, excerpt(r, (r._terms || q.terms))), h('small', { class: 'smeta' }, `Note · ${store.get('notebooks', r.item.notebookId)?.name || ''} · ${new Date(r.item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}${(r.item.tags || []).length ? ' · ' + r.item.tags.join(', ') : ''}`)));
   fill(el, h('div', { class: 'sub scount' }, results.length ? `${results.length} result${results.length === 1 ? '' : 's'}${results.length > 80 ? ', showing the best 80' : ''}${fuzzy ? ' · including close spellings' : ''}` : ''),
     h('div', { class: 'rows' }, shown.map(row)),
@@ -218,11 +211,11 @@ function orgCard(card, again) {
     }, 'danger')));
 }
 
-// Settings → Claude: Haiku sorts new tasks and notes, Sonnet plans the day and helps in Writing. The API key is kept in
+// Settings → Claude: Haiku sorts new tasks and notes, Sonnet plans the day. The API key is kept in
 // the Steward helper (his Google Apps Script), never on this device or in Steward's public code.
 function aiCard(card, again) {
   const intro = h('p', { class: 'sub' }, 'With signal, Claude Haiku sorts each new task and note (area, tags, customer promise, project), and Claude Sonnet can ',
-    h('b', null, 'Plan with Claude'), ' on Today and ', h('b', null, 'Ask Claude'), ' in Writing (More ▾). The words you are working on are sent to Anthropic to answer; nothing is filed or changed until you confirm. With no signal, the on-device organizer does the sorting as before.');
+    h('b', null, 'Plan with Claude'), ' on Today. The words you are working on are sent to Anthropic to answer; nothing is filed or changed until you confirm. With no signal, the on-device organizer does the sorting as before.');
   if (!sync.helperUrl()) return card('Claude', intro, h('p', null, 'This needs the Steward helper, which connects once Google sync is set up.'));
   const status = h('p', { class: 'sub' }, 'Checking…');
   const keyIn = h('input', { class: 'field mono', type: 'password', autocomplete: 'off', placeholder: 'sk-ant-…  (from console.anthropic.com → API keys)' });
@@ -320,7 +313,7 @@ function viewSettings(main) {
       h('label', { class: 'inline nowrap' }, keepBox, h('span', { class: 'grow' }, 'Keep a copy of every photo, PDF and recording on this device')),
       h('div', { class: 'row gap wrap' }, btn('Download everything to this device', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 140 MB plus your attachments).'); await offline.downloadAll(); offLine(); }, 'primary', 'download')),
       h('p', { class: 'sub', id: 'off-line' }, 'Checking…'), h('p', { class: 'sub', id: 'off-busy' }, offline.state.line)),
-    card('Speak instead of type', h('p', { class: 'sub' }, 'Dictation for tasks, notes and Writing. Steward has its own speech model that runs only on this device, so speaking works with no signal and nothing you say leaves the phone or Mac. Chrome’s speech service is a little quicker when there is signal.'),
+    card('Speak instead of type', h('p', { class: 'sub' }, 'Dictation for tasks and notes. Steward has its own speech model that runs only on this device, so speaking works with no signal and nothing you say leaves the phone or Mac. Chrome’s speech service is a little quicker when there is signal.'),
       ...[['auto', 'Automatic: Chrome’s speech service when there is signal, the model on this device when there is not (switches over by itself if the signal drops)'], ['device', 'Always use the model on this device (private; works anywhere; each phrase appears a moment after you pause)']]
         .map(([v, label]) => h('label', { class: 'inline block' }, h('input', { type: 'radio', name: 'dict-engine', value: v, checked: dictEngine() === v, onchange: () => { setDictEngine(v); speechLine(); } }), h('span', { class: 'grow' }, label))),
       h('div', { class: 'row gap wrap' }, btn('Download the speech model', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 77 MB).'); await offline.downloadSpeech(); speechLine(); }, 'primary', 'download')),
@@ -709,8 +702,11 @@ async function repairApp() {
 async function start() {
   applyTheme();
   const seen = localStorage.getItem('steward.seenVersion');
-  if (seen !== VERSION) { localStorage.setItem('steward.seenVersion', VERSION); if (seen) setTimeout(() => toast(`Steward updated to ${VERSION}. New: speak tasks and notes. Tap the microphone in Add task or in a note${isMobile() ? ', or press and hold the plus button' : ', or press D'}.`, null, null, 9000), 1200); }
+  if (seen !== VERSION) { localStorage.setItem('steward.seenVersion', VERSION); if (seen) setTimeout(() => toast(WHATS_NEW, null, null, 9000), 1200); }
   await store.init();
+  // 4.5: the Writing section is gone. Anything it held on this device becomes a note first (never dropped).
+  try { const moved = await adoptLocalWriting(); if (moved) setTimeout(() => toast(`Writing was removed. What it held is now ${moved === 1 ? 'a note' : moved + ' notes'} in the notebook “From Writing”.`, null, null, 12000), 1500); } catch (e) { console.warn('writing move', e); }
+  M.purgeGone().catch(() => {});
   M.repairTasks();
   settings.adoptLocal();
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }
@@ -744,7 +740,7 @@ async function start() {
   const pushSoon = debounce(() => sync.run(), 4000);
   let warned = 0;
   store.on(info => { if (info.storageError && Date.now() - warned > 30000) { warned = Date.now(); toast('Steward could not save to this device (' + info.storageError + '). Free up storage space, then make another change so it retries.', null, null, 15000); } });
-  store.on(info => { if (info.remote) M.repairTasks(); });
+  store.on(info => { if (info.remote) { M.repairTasks(); M.purgeGone().catch(() => {}); } });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   store.on(info => { if (info.ocr) { pushSoon(); semantic.kick(12000); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); if (info.local || info.remote || info.ocr) semantic.kick(info.local ? 6000 : 12000); });
   ocr.kick(15000);

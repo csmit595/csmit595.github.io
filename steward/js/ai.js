@@ -1,5 +1,5 @@
 // Claude, online. Haiku sorts each new task or note (area, tags, customer promise, project or notebook, and whether a
-// capture is a task or a note); Sonnet helps plan the day and helps with Writing. Steward is public code, so the API key
+// capture is a task or a note); Sonnet helps plan the day. Steward is public code, so the API key
 // never lives here: it stays in the Steward helper (Charles's own Google Apps Script), which adds it and asks Claude.
 // With no signal, no helper or no key, everything falls back to the on-device organizer and nothing is lost.
 import { h, fill, today, fromYmd, addDays, pad, fmtTime, mdToHtml, sanitize } from './util.js';
@@ -262,32 +262,4 @@ function showPlan(job) {
       h('p', { class: 'sub' }, 'Nothing changes until you press a button. Times can still be changed on each task.'),
       h('div', { class: 'row end gap' }, btn('Close', close), btn('Plan again', () => again(close), '', 'spark'), order.some(o => !o.clash) && btn('Use these times', useTimes, 'primary', 'check')));
   }, { title: 'Plan with Claude', cls: 'wide' });
-}
-
-// ---- Sonnet: help with Writing ---------------------------------------------------------------------------------------
-const WRITE_SYSTEM = `You help Charles in Steward's Writing section. He is a first-year student at BJU Seminary (writing Turabian-style papers) and preaches and teaches (sermons, Sunday school, devotionals). His tradition is Bible-church evangelical with Baptist influences; he reads Scripture by the literal, grammatical-historical-contextual method.
-Rules: Be truthful. Never invent sources, quotations, page numbers or publication details; if a citation is needed and you are not certain of it, say what to look up instead. Quote Scripture from the KJV exactly, with the reference. Follow Turabian (Chicago notes-bibliography) when asked about citations. Keep his voice: plain, warm, direct. Answer in Markdown; keep it as short as the request allows.`;
-
-/** Open the "Ask Claude" sheet in Writing. selected: highlighted text (may be ''); whole: the document's text; title. insert(html): puts text at the cursor. */
-export function askAboutWriting({ selected, whole, title, insert }) {
-  modal((close, body) => {
-    const q = h('textarea', { class: 'field', rows: 3, autofocus: true, placeholder: selected ? 'What should Claude do with the selected text? e.g. tighten this paragraph, check the Turabian footnote, is this exegesis sound?' : 'Ask about this document, e.g. outline the argument, suggest a stronger introduction, what is missing?' });
-    const out = h('div', { class: 'aiw-out' });
-    let answer = '';
-    const go = async () => {
-      const ask_ = q.value.trim(); if (!ask_) return toast('Type what you would like help with');
-      fill(out, h('p', { class: 'sub' }, icon('spark', 14), ' Claude Sonnet is thinking…'));
-      const ctx = `Document: "${title || 'Untitled'}"\n\n${selected ? 'Selected text:\n"""\n' + selected.slice(0, 20000) + '\n"""\n\nWhole document for context:\n' : 'Document text:\n'}"""\n${whole.slice(0, 80000)}\n"""\n\nRequest: ${ask_}`;
-      try {
-        answer = await ask('sonnet', { system: WRITE_SYSTEM, max_tokens: 3000, messages: [{ role: 'user', content: ctx }] });
-        if (!body.isConnected) return;
-        fill(out, h('div', { class: 'aiw-answer', html: sanitize(mdToHtml(answer)) }),
-          h('div', { class: 'row end gap' }, btn('Copy', () => navigator.clipboard?.writeText(answer).then(() => toast('Copied'))), insert && btn(selected ? 'Put after the selection' : 'Insert at the cursor', () => { insert(sanitize(mdToHtml(answer))); close(); }, 'primary')));
-      } catch (e) { if (body.isConnected) fill(out, h('p', null, e.message || String(e))); }
-    };
-    q.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); go(); } });
-    return h('div', null, selected && h('blockquote', { class: 'aiw-sel' }, selected.slice(0, 400) + (selected.length > 400 ? '…' : '')), q,
-      h('div', { class: 'row end gap' }, btn('Close', close), btn('Ask', go, 'primary', 'spark')), out,
-      h('p', { class: 'sub' }, 'The document is sent to Claude to answer. Nothing in it changes unless you press Insert.'));
-  }, { title: 'Ask Claude', cls: 'wide' });
 }
