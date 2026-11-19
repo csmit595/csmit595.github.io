@@ -15,12 +15,14 @@ let downUntil = 0, noKey = false;
 export const aiReady = () => aiOn() && !noKey && navigator.onLine && !!sync.helperUrl() && sync.connected() && Date.now() > downUntil;
 
 /** Ask Claude through the helper. model: 'haiku' | 'sonnet'. Returns the reply's text. */
-export async function ask(model, { system, messages, max_tokens }) {
+export async function ask(model, opts) { return (await askFull(model, opts)).text; }
+/** Same as ask(), but returns { text, stop } so a reply cut off at the length limit can be told apart. */
+export async function askFull(model, { system, messages, max_tokens }) {
   if (!navigator.onLine) throw new Error('No signal');
   try {
     const r = await sync.helper('ai', { model, system, messages, max_tokens });
     if (r.usage) settings.set('aiUsageSeen', r.usage);
-    return r.text || '';
+    return { text: r.text || '', stop: r.stop || null };
   } catch (e) {
     const m = String(e.message || e);
     if (/no-key|bad-key/.test(m)) { noKey = true; throw new Error('Claude is not set up yet: add your API key in Settings → Claude.'); }
@@ -34,7 +36,47 @@ export const keyStatus = () => sync.helper('aiKey', {}).then(r => { noKey = !r.h
 export const saveKey = key => sync.helper('aiKey', { set: key }).then(r => { noKey = !r.hasKey; return r; });
 export const clearKey = () => sync.helper('aiKey', { clear: true }).then(r => { noKey = true; return r; });
 
-const firstJson = s => { const a = String(s).indexOf('{'), b = String(s).lastIndexOf('}'); if (a < 0 || b <= a) return null; try { return JSON.parse(s.slice(a, b + 1)); } catch { return null; } };
+// Claude's JSON is not always strictly valid: code fences, a sentence before or after it, Scripture quoted with straight
+// "double quotes" inside a string, a trailing comma, or a reply cut short. Read it as forgivingly as possible.
+const repairJson = s => {
+  let out = '', inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (!inStr) { out += c; if (c === '"') inStr = true; continue; }
+    if (esc) { out += c; esc = false; continue; }
+    if (c === '\\') { out += c; esc = true; continue; }
+    if (c === '\n' || c === '\r' || c === '\t') { out += c === '\t' ? '\\t' : '\\n'; continue; }
+    if (c === '"') {
+      // A real closing quote is followed by , : } ] (or the end); any other quote is part of the text.
+      const next = s.slice(i + 1).match(/^\s*(.)/)?.[1];
+      if (!next || /[,:}\]]/.test(next)) { out += c; inStr = false; } else out += '\\"';
+      continue;
+    }
+    out += c;
+  }
+  if (inStr) out += '"';
+  out = out.replace(/,\s*([}\]])/g, '$1');
+  // Close whatever a cut-short reply left open.
+  const stack = []; let q = false, e = false;
+  for (const c of out) { if (q) { if (e) e = false; else if (c === '\\') e = true; else if (c === '"') q = false; continue; } if (c === '"') q = true; else if (c === '{' || c === '[') stack.push(c); else if (c === '}' || c === ']') stack.pop(); }
+  out = out.replace(/[,:]\s*$/, '');
+  while (stack.length) out += stack.pop() === '{' ? '}' : ']';
+  return out;
+};
+const firstJson = s => {
+  s = String(s || '').replace(/```(?:json)?/gi, '');
+  const a = s.indexOf('{'); if (a < 0) return null;
+  // The object that the first { opens (ignoring braces inside strings), then the widest {...} span, then the rest.
+  let depth = 0, q = false, e = false, end = -1;
+  for (let i = a; i < s.length && end < 0; i++) { const c = s[i]; if (q) { if (e) e = false; else if (c === '\\') e = true; else if (c === '"') q = false; continue; } if (c === '"') q = true; else if (c === '{') depth++; else if (c === '}' && --depth === 0) end = i; }
+  const b = s.lastIndexOf('}');
+  for (const t of [end > 0 ? s.slice(a, end + 1) : null, b > a ? s.slice(a, b + 1) : null, s.slice(a)].filter(Boolean)) {
+    try { const j = JSON.parse(t); if (j && typeof j === 'object') return j; } catch {}
+    try { const j = JSON.parse(repairJson(t)); if (j && typeof j === 'object') return j; } catch {}
+  }
+  return null;
+};
+export const _test = { firstJson };
 
 // ---- Haiku: sorting -----------------------------------------------------------------------------------------------
 const cache = new Map();
@@ -116,16 +158,18 @@ export function planWithClaude(day, plan) {
     planningHours: win ? `${win.start}–${win.end}` : 'none (rest day or no planning)',
     busy: fixed, tasksForThisDay: dayTasks.map(row), comingUpSoon: soon.slice(0, 25).map(row),
   };
-  const system = `You help Charles plan his day in Steward. He owns CS Outdoors (landscaping, Greenville SC), is a seminary student, and is a husband and soon a father. He is a Christian who weighs decisions by Scripture, especially Proverbs and Matthew 5–7.\n\n${PLAN_RULES}\n\nTasks without minutes: estimate sensibly and say it is a guess. Times are Eastern, 24-hour HH:MM.${isToday ? ' Plan only from now on.' : ''}\nReply with JSON only:\n{"headline": one short sentence on whether the day's necessary work fits,\n "order": [{"id": task id, "start": "HH:MM", "minutes": n, "why": few words}],\n "later": [{"id": task id, "why": few words}] (tasks that should move to another day),\n "tell": [short sentences: customers to contact early about a date at risk],\n "word": one or two sentences of encouragement or caution grounded in Proverbs or Matthew 5–7, quoting the KJV exactly with the reference, or "" if nothing fits}`;
+  const system = `You help Charles plan his day in Steward. He owns CS Outdoors (landscaping, Greenville SC), is a seminary student, and is a husband and soon a father. He is a Christian who weighs decisions by Scripture, especially Proverbs and Matthew 5–7.\n\n${PLAN_RULES}\n\nTasks without minutes: estimate sensibly and say it is a guess. Times are Eastern, 24-hour HH:MM.${isToday ? ' Plan only from now on.' : ''}\n\n\nReply with one JSON object and nothing else: no Markdown, no code fences, no words before or after it. It must be valid JSON. Inside text values never use the double-quote character; when quoting Scripture use single quotes or curly quotes instead. Keep every "why" to a few words.\nShape (example values):\n{"headline": "The necessary work fits with room to spare.",\n "order": [{"id": "abc123", "start": "11:40", "minutes": 15, "why": "quick office task"}],\n "later": [{"id": "def456", "why": "flexes; no promise"}],\n "tell": ["Text the Hanels today that Friday may slip."],\n "word": "'The thoughts of the diligent tend only to plenteousness' (Proverbs 21:5, KJV)."}\n"order": tasks to do this day with start times. "later": tasks that should move to another day. "tell": customers to contact early about a date at risk (empty list if none). "word": one or two sentences of encouragement or caution grounded in Proverbs or Matthew 5–7, quoting the KJV exactly with the reference, or "" if nothing fits.`;
   modal((close, body) => {
     const box = h('div', { class: 'aiplan' }, h('p', { class: 'sub' }, icon('spark', 14), ' Claude Sonnet is planning ', isToday ? 'the rest of today' : 'this day', '…'));
     let result = null;
     const busyMin = fixed.map(f => ({ s: toMin(f.from), e: toMin(f.to) }));
     const draw = () => {
       const tasks = new Map(open.map(t => [t.id, t]));
-      const order = (result.order || []).filter(o => tasks.has(o.id) && /^\d{1,2}:\d{2}$/.test(o.start || ''))
+      const arr = v => Array.isArray(v) ? v : [];
+      const order = arr(result.order).filter(o => o && tasks.has(o.id) && /^\d{1,2}:\d{2}$/.test(o.start || ''))
         .map(o => { const s = toMin(o.start), mins = Math.max(5, Math.min(600, Number(o.minutes) || tasks.get(o.id).duration || 30)); return { ...o, s, mins, clash: busyMin.some(b => s < b.e && b.s < s + mins) || (win && (s < toMin(win.start) || s + mins > toMin(win.end))) }; });
-      const later = (result.later || []).filter(o => tasks.has(o.id));
+      const later = arr(result.later).filter(o => o && tasks.has(o.id));
+      const tell = arr(result.tell).filter(x => typeof x === 'string' && x);
       const useTimes = () => {
         const before = [];
         for (const o of order) if (!o.clash) { const t = tasks.get(o.id); before.push({ id: t.id, due: t.due, duration: t.duration }); store.patch('tasks', t.id, { due: { ...(t.due || { recur: null }), date: day, time: clock(o.s) }, duration: t.duration || o.mins }, { silent: true }); }
@@ -134,17 +178,33 @@ export function planWithClaude(day, plan) {
       };
       const moveLater = o => { const t = tasks.get(o.id); if (!t || t.due?.recur) return toast('Repeating tasks keep their own rhythm. Change this one from the task itself.'); const was = t.due; store.patch('tasks', t.id, { due: { ...(t.due || { time: null, recur: null }), date: addDays(day, 1) } }); toast('Moved to the next day', 'Undo', () => store.patch('tasks', t.id, { due: was })); };
       fill(box,
-        h('p', { class: 'aip-head' }, result.headline || ''),
+        h('p', { class: 'aip-head' }, String(result.headline || '')),
         order.length ? h('ol', { class: 'aip-list' }, order.map(o => h('li', { class: o.clash ? 'clash' : '' }, h('span', { class: 'aip-t' }, fmtTime(clock(o.s))), h('span', { class: 'grow' }, h('b', null, tasks.get(o.id).content), h('span', { class: 'sub' }, ` · ${o.mins} min${o.why ? ' · ' + o.why : ''}`), o.clash && h('span', { class: 'aip-warn' }, ' · overlaps a fixed time; will not be set'))))) : null,
         later.length ? h('div', null, h('h4', null, 'Better on another day'), h('ul', { class: 'aip-list' }, later.map(o => h('li', null, h('span', { class: 'grow' }, h('b', null, tasks.get(o.id).content), o.why && h('span', { class: 'sub' }, ' · ' + o.why)), btn('Move to next day', () => moveLater(o), 'tiny'))))) : null,
-        (result.tell || []).length ? h('div', { class: 'aip-tell' }, h('h4', null, icon('flag', 13), ' Tell early'), h('ul', null, result.tell.map(s => h('li', null, s)))) : null,
-        result.word ? h('p', { class: 'aip-word' }, result.word) : null,
+        tell.length ? h('div', { class: 'aip-tell' }, h('h4', null, icon('flag', 13), ' Tell early'), h('ul', null, tell.map(s => h('li', null, s)))) : null,
+        result.word ? h('p', { class: 'aip-word' }, String(result.word)) : null,
         h('p', { class: 'sub' }, 'Nothing changes until you press a button. Times can still be changed on each task.'),
         h('div', { class: 'row end gap' }, btn('Close', close), order.some(o => !o.clash) && btn('Use these times', useTimes, 'primary', 'check')));
     };
-    ask('sonnet', { system, max_tokens: 2500, messages: [{ role: 'user', content: JSON.stringify(facts) }] })
-      .then(text => { result = firstJson(text); if (!result) throw new Error('Claude’s answer could not be read. Try again.'); if (body.isConnected) draw(); })
-      .catch(e => { if (body.isConnected) fill(box, h('p', null, e.message || String(e)), h('div', { class: 'row end' }, btn('Close', close))); });
+    const showPlain = text => fill(box,
+      h('p', { class: 'sub' }, 'Claude answered in a form Steward could not turn into times, so here is the plan as written. Nothing was changed.'),
+      h('div', { class: 'aiw-answer', html: sanitize(mdToHtml(String(text).replace(/```(?:json)?/gi, '').trim())) }),
+      h('div', { class: 'row end gap' }, btn('Close', close), btn('Try again', () => { close(); planWithClaude(day, plan); }, 'primary', 'spark')));
+    (async () => {
+      const messages = [{ role: 'user', content: JSON.stringify(facts) }];
+      let r = await askFull('sonnet', { system, max_tokens: 4000, messages });
+      result = firstJson(r.text);
+      // Not readable: ask once more, showing Claude its own reply, before giving up.
+      if (!result?.order && r.text.trim()) {
+        const why = r.stop === 'max_tokens' ? 'Your reply was cut off because it was too long. Send it again, shorter (few-word reasons).' : 'Your reply was not valid JSON.';
+        const r2 = await askFull('sonnet', { system, max_tokens: 4000, messages: [...messages, { role: 'assistant', content: r.text.slice(0, 20000) }, { role: 'user', content: why + ' Reply again with only the JSON object in the shape asked for, with no double-quote characters inside text values.' }] });
+        const j = firstJson(r2.text); if (j?.order) { result = j; r = r2; } else if (!result && j) result = j;
+      }
+      if (!body.isConnected) return;
+      if (result && (result.order || result.later || result.headline)) return draw();
+      if (r.text.trim()) return showPlain(r.text);
+      throw new Error('Claude sent back an empty answer. Try again in a minute.');
+    })().catch(e => { if (body.isConnected) fill(box, h('p', null, e.message || String(e)), h('div', { class: 'row end gap' }, btn('Close', close), btn('Try again', () => { close(); planWithClaude(day, plan); }, 'primary', 'spark'))); });
     return box;
   }, { title: 'Plan with Claude', cls: 'wide' });
 }
