@@ -18,7 +18,7 @@ import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import * as offline from './offline.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.3.1';
+const VERSION = '4.3.2';
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
