@@ -167,8 +167,21 @@ Never place anything over a fixed block or calendar event (devotions, classes, f
 Guard the quiet priorities: time with God, Elise and the coming baby, seminary work, rest and health. If the necessary work already fits, say so, so he can stop adding hours "just in case". If it does not fit, say what should move rather than stretching into family or rest time.
 Leave a little margin between field jobs for driving and loading.`;
 
-/** Open the "Plan with Claude" sheet for a day. */
+// "Plan with Claude" runs in the background: pressing the button starts Sonnet and hands the app straight back.
+// When the plan is ready a notice offers "See plan", and the button on Today turns into "See Claude's plan".
+let planJob = null; // { day, status: 'running' | 'ready' | 'error', result, text, error, ctx }
+/** 'running' | 'ready' | null for the plan of this day. */
+export const planStatus = day => planJob && planJob.day === day && planJob.status !== 'error' ? planJob.status : null;
+const planChanged = () => store.emit({}); // redraw Today (the button's label) without counting as a change to sync
+
+/** Plan with Claude for a day: starts it in the background, or shows the plan if it is already done. */
 export function planWithClaude(day, plan) {
+  if (planJob && planJob.day === day && planJob.status === 'running') return toast('Claude is still planning. Keep working; you will get a notice when it is ready.');
+  if (planJob && planJob.day === day && planJob.status === 'ready') return showPlan(planJob);
+  startPlan(day, plan);
+}
+
+function startPlan(day, plan) {
   const isToday = day === today(), now = new Date(), nowMin = isToday ? now.getHours() * 60 + now.getMinutes() : null;
   const win = (settings.get('hours') || [])[fromYmd(day).getDay()] || null;
   const open = M.openTasks().filter(t => !t.parentId);
@@ -183,53 +196,71 @@ export function planWithClaude(day, plan) {
     busy: fixed, tasksForThisDay: dayTasks.map(row), comingUpSoon: soon.slice(0, 25).map(row),
   };
   const system = `You help Charles plan his day in Steward. He owns CS Outdoors (landscaping, Greenville SC), is a seminary student, and is a husband and soon a father. He is a Christian who weighs decisions by Scripture, especially Proverbs and Matthew 5–7.\n\n${PLAN_RULES}\n\nTasks without minutes: estimate sensibly and say it is a guess. Times are Eastern, 24-hour HH:MM.${isToday ? ' Plan only from now on.' : ''}\n\n\nReply with one JSON object and nothing else: no Markdown, no code fences, no words before or after it. It must be valid JSON. Inside text values never use the double-quote character; when quoting Scripture use single quotes or curly quotes instead. Keep every "why" to a few words.\nShape (example values):\n{"headline": "The necessary work fits with room to spare.",\n "order": [{"id": "abc123", "start": "11:40", "minutes": 15, "why": "quick office task"}],\n "later": [{"id": "def456", "why": "flexes; no promise"}],\n "tell": ["Text the Hanels today that Friday may slip."],\n "word": "'The thoughts of the diligent tend only to plenteousness' (Proverbs 21:5, KJV)."}\n"order": tasks to do this day with start times. "later": tasks that should move to another day. "tell": customers to contact early about a date at risk (empty list if none). "word": one or two sentences of encouragement or caution grounded in Proverbs or Matthew 5–7, quoting the KJV exactly with the reference, or "" if nothing fits.`;
-  modal((close, body) => {
-    const box = h('div', { class: 'aiplan' }, h('p', { class: 'sub' }, icon('spark', 14), ' Claude Sonnet is planning ', isToday ? 'the rest of today' : 'this day', '…'));
-    let result = null;
+  const job = planJob = { day, status: 'running', result: null, text: '', error: null, ctx: { day, plan, isToday, win, fixed } };
+  planChanged();
+  toast(`Claude is planning ${isToday ? 'the rest of today' : 'this day'} in the background. Keep working; you will get a notice when it is ready.`, null, null, 4000);
+  (async () => {
+    const messages = [{ role: 'user', content: JSON.stringify(facts) }];
+    let r = await askFull('sonnet', { system, max_tokens: 4000, messages });
+    let result = firstJson(r.text);
+    // Not readable: ask once more, showing Claude its own reply, before giving up.
+    if (!result?.order && r.text.trim()) {
+      const why = r.stop === 'max_tokens' ? 'Your reply was cut off because it was too long. Send it again, shorter (few-word reasons).' : 'Your reply was not valid JSON.';
+      const r2 = await askFull('sonnet', { system, max_tokens: 4000, messages: [...messages, { role: 'assistant', content: r.text.slice(0, 20000) }, { role: 'user', content: why + ' Reply again with only the JSON object in the shape asked for, with no double-quote characters inside text values.' }] });
+      const j = firstJson(r2.text); if (j?.order) { result = j; r = r2; } else if (!result && j) result = j;
+    }
+    if (!(result && (result.order || result.later || result.headline)) && !r.text.trim()) throw new Error('Claude sent back an empty answer. Try again in a minute.');
+    return { result: result && (result.order || result.later || result.headline) ? result : null, text: r.text };
+  })().then(({ result, text }) => {
+    if (planJob !== job) return; // replaced by a newer plan
+    Object.assign(job, { status: 'ready', result, text });
+    planChanged();
+    toast('Your plan from Claude is ready', 'See plan', () => showPlan(job), 60000);
+  }).catch(e => {
+    if (planJob !== job) return;
+    Object.assign(job, { status: 'error', error: e.message || String(e) });
+    planChanged();
+    toast('Claude could not plan the day: ' + job.error, 'Try again', () => { planJob = null; startPlan(day, plan); }, 15000);
+  });
+}
+
+/** Show a finished plan. */
+function showPlan(job) {
+  const { day, plan, win, fixed } = job.ctx;
+  const again = close => { close(); planJob = null; startPlan(day, plan); };
+  modal(close => {
+    const box = h('div', { class: 'aiplan' });
+    const result = job.result;
     const busyMin = fixed.map(f => ({ s: toMin(f.from), e: toMin(f.to) }));
-    const draw = () => {
-      const tasks = new Map(open.map(t => [t.id, t]));
-      const arr = v => Array.isArray(v) ? v : [];
-      const order = arr(result.order).filter(o => o && tasks.has(o.id) && /^\d{1,2}:\d{2}$/.test(o.start || ''))
-        .map(o => { const s = toMin(o.start), mins = Math.max(5, Math.min(600, Number(o.minutes) || tasks.get(o.id).duration || 30)); return { ...o, s, mins, clash: busyMin.some(b => s < b.e && b.s < s + mins) || (win && (s < toMin(win.start) || s + mins > toMin(win.end))) }; });
-      const later = arr(result.later).filter(o => o && tasks.has(o.id));
-      const tell = arr(result.tell).filter(x => typeof x === 'string' && x);
-      const useTimes = () => {
-        const before = [];
-        for (const o of order) if (!o.clash) { const t = tasks.get(o.id); before.push({ id: t.id, due: t.due, duration: t.duration }); store.patch('tasks', t.id, { due: { ...(t.due || { recur: null }), date: day, time: clock(o.s) }, duration: t.duration || o.mins }, { silent: true }); }
-        store.emit({ local: true }); close();
-        toast(`Times set on ${before.length} task${before.length === 1 ? '' : 's'}`, 'Undo', () => { for (const b of before) store.patch('tasks', b.id, { due: b.due, duration: b.duration }, { silent: true }); store.emit({ local: true }); });
-      };
-      const moveLater = o => { const t = tasks.get(o.id); if (!t || t.due?.recur) return toast('Repeating tasks keep their own rhythm. Change this one from the task itself.'); const was = t.due; store.patch('tasks', t.id, { due: { ...(t.due || { time: null, recur: null }), date: addDays(day, 1) } }); toast('Moved to the next day', 'Undo', () => store.patch('tasks', t.id, { due: was })); };
-      fill(box,
-        h('p', { class: 'aip-head' }, String(result.headline || '')),
-        order.length ? h('ol', { class: 'aip-list' }, order.map(o => h('li', { class: o.clash ? 'clash' : '' }, h('span', { class: 'aip-t' }, fmtTime(clock(o.s))), h('span', { class: 'grow' }, h('b', null, tasks.get(o.id).content), h('span', { class: 'sub' }, ` · ${o.mins} min${o.why ? ' · ' + o.why : ''}`), o.clash && h('span', { class: 'aip-warn' }, ' · overlaps a fixed time; will not be set'))))) : null,
-        later.length ? h('div', null, h('h4', null, 'Better on another day'), h('ul', { class: 'aip-list' }, later.map(o => h('li', null, h('span', { class: 'grow' }, h('b', null, tasks.get(o.id).content), o.why && h('span', { class: 'sub' }, ' · ' + o.why)), btn('Move to next day', () => moveLater(o), 'tiny'))))) : null,
-        tell.length ? h('div', { class: 'aip-tell' }, h('h4', null, icon('flag', 13), ' Tell early'), h('ul', null, tell.map(s => h('li', null, s)))) : null,
-        result.word ? h('p', { class: 'aip-word' }, String(result.word)) : null,
-        h('p', { class: 'sub' }, 'Nothing changes until you press a button. Times can still be changed on each task.'),
-        h('div', { class: 'row end gap' }, btn('Close', close), order.some(o => !o.clash) && btn('Use these times', useTimes, 'primary', 'check')));
+    if (!result) {
+      return fill(box,
+        h('p', { class: 'sub' }, 'Claude answered in a form Steward could not turn into times, so here is the plan as written. Nothing was changed.'),
+        h('div', { class: 'aiw-answer', html: sanitize(mdToHtml(String(job.text).replace(/```(?:json)?/gi, '').trim())) }),
+        h('div', { class: 'row end gap' }, btn('Close', close), btn('Try again', () => again(close), 'primary', 'spark')));
+    }
+    // Read the tasks fresh: some may have been finished or changed while Claude was planning.
+    const tasks = new Map(M.openTasks().filter(t => !t.parentId).map(t => [t.id, t]));
+    const arr = v => Array.isArray(v) ? v : [];
+    const order = arr(result.order).filter(o => o && tasks.has(o.id) && /^\d{1,2}:\d{2}$/.test(o.start || ''))
+      .map(o => { const s = toMin(o.start), mins = Math.max(5, Math.min(600, Number(o.minutes) || tasks.get(o.id).duration || 30)); return { ...o, s, mins, clash: busyMin.some(b => s < b.e && b.s < s + mins) || (win && (s < toMin(win.start) || s + mins > toMin(win.end))) }; });
+    const later = arr(result.later).filter(o => o && tasks.has(o.id));
+    const tell = arr(result.tell).filter(x => typeof x === 'string' && x);
+    const useTimes = () => {
+      const before = [];
+      for (const o of order) if (!o.clash) { const t = tasks.get(o.id); before.push({ id: t.id, due: t.due, duration: t.duration }); store.patch('tasks', t.id, { due: { ...(t.due || { recur: null }), date: day, time: clock(o.s) }, duration: t.duration || o.mins }, { silent: true }); }
+      if (planJob === job) planJob = null;
+      store.emit({ local: true }); close();
+      toast(`Times set on ${before.length} task${before.length === 1 ? '' : 's'}`, 'Undo', () => { for (const b of before) store.patch('tasks', b.id, { due: b.due, duration: b.duration }, { silent: true }); store.emit({ local: true }); });
     };
-    const showPlain = text => fill(box,
-      h('p', { class: 'sub' }, 'Claude answered in a form Steward could not turn into times, so here is the plan as written. Nothing was changed.'),
-      h('div', { class: 'aiw-answer', html: sanitize(mdToHtml(String(text).replace(/```(?:json)?/gi, '').trim())) }),
-      h('div', { class: 'row end gap' }, btn('Close', close), btn('Try again', () => { close(); planWithClaude(day, plan); }, 'primary', 'spark')));
-    (async () => {
-      const messages = [{ role: 'user', content: JSON.stringify(facts) }];
-      let r = await askFull('sonnet', { system, max_tokens: 4000, messages });
-      result = firstJson(r.text);
-      // Not readable: ask once more, showing Claude its own reply, before giving up.
-      if (!result?.order && r.text.trim()) {
-        const why = r.stop === 'max_tokens' ? 'Your reply was cut off because it was too long. Send it again, shorter (few-word reasons).' : 'Your reply was not valid JSON.';
-        const r2 = await askFull('sonnet', { system, max_tokens: 4000, messages: [...messages, { role: 'assistant', content: r.text.slice(0, 20000) }, { role: 'user', content: why + ' Reply again with only the JSON object in the shape asked for, with no double-quote characters inside text values.' }] });
-        const j = firstJson(r2.text); if (j?.order) { result = j; r = r2; } else if (!result && j) result = j;
-      }
-      if (!body.isConnected) return;
-      if (result && (result.order || result.later || result.headline)) return draw();
-      if (r.text.trim()) return showPlain(r.text);
-      throw new Error('Claude sent back an empty answer. Try again in a minute.');
-    })().catch(e => { if (body.isConnected) fill(box, h('p', null, e.message || String(e)), h('div', { class: 'row end gap' }, btn('Close', close), btn('Try again', () => { close(); planWithClaude(day, plan); }, 'primary', 'spark'))); });
-    return box;
+    const moveLater = o => { const t = tasks.get(o.id); if (!t || t.due?.recur) return toast('Repeating tasks keep their own rhythm. Change this one from the task itself.'); const was = t.due; store.patch('tasks', t.id, { due: { ...(t.due || { time: null, recur: null }), date: addDays(day, 1) } }); toast('Moved to the next day', 'Undo', () => store.patch('tasks', t.id, { due: was })); };
+    return fill(box,
+      h('p', { class: 'aip-head' }, String(result.headline || '')),
+      order.length ? h('ol', { class: 'aip-list' }, order.map(o => h('li', { class: o.clash ? 'clash' : '' }, h('span', { class: 'aip-t' }, fmtTime(clock(o.s))), h('span', { class: 'grow' }, h('b', null, tasks.get(o.id).content), h('span', { class: 'sub' }, ` · ${o.mins} min${o.why ? ' · ' + o.why : ''}`), o.clash && h('span', { class: 'aip-warn' }, ' · overlaps a fixed time; will not be set'))))) : null,
+      later.length ? h('div', null, h('h4', null, 'Better on another day'), h('ul', { class: 'aip-list' }, later.map(o => h('li', null, h('span', { class: 'grow' }, h('b', null, tasks.get(o.id).content), o.why && h('span', { class: 'sub' }, ' · ' + o.why)), btn('Move to next day', () => moveLater(o), 'tiny'))))) : null,
+      tell.length ? h('div', { class: 'aip-tell' }, h('h4', null, icon('flag', 13), ' Tell early'), h('ul', null, tell.map(s => h('li', null, s)))) : null,
+      result.word ? h('p', { class: 'aip-word' }, String(result.word)) : null,
+      h('p', { class: 'sub' }, 'Nothing changes until you press a button. Times can still be changed on each task.'),
+      h('div', { class: 'row end gap' }, btn('Close', close), btn('Plan again', () => again(close), '', 'spark'), order.some(o => !o.clash) && btn('Use these times', useTimes, 'primary', 'check')));
   }, { title: 'Plan with Claude', cls: 'wide' });
 }
 
