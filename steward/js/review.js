@@ -16,19 +16,28 @@ import { statsFor, statsCards } from './stats.js';
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'], ABBR = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 export const REVIEW_TASK = 'weekly-review';
 const toMin = s => { const [a, b] = s.split(':').map(Number); return a * 60 + b; };
+const dayOfMs = ms => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 /** A weekday's fixed blocks, as minute ranges (every-other-week blocks count: the review must be clear every week). */
 const blocksOfDow = d => store.all('blocks').filter(b => !b.paused && (b.days || []).includes(d)).map(b => ({ name: b.name, start: toMin(b.start), end: toMin(b.end) }));
 export const reviewAt = () => settings.get('reviewAt') || { day: 5, time: '16:00' };
 export const reviewProblem = (day, time) => ST.reviewSlotProblem({ day, time, restDay: settings.get('restDay'), blocks: blocksOfDow(day) });
 
 /** The repeating "Weekly review" task. Made once (a task he deleted stays deleted), and moved when the time changes. */
-export function ensureReviewTask() {
-  if (store.rawGet('tasks', REVIEW_TASK)) return;
+export function ensureReviewTask(again = false) {
+  const raw = store.rawGet('tasks', REVIEW_TASK);
+  if (again) { M.unmarkSeedGone([REVIEW_TASK]); if (raw?.deleted) store.purge('tasks', REVIEW_TASK); }
+  else { if (raw?.deleted) M.markSeedGone(REVIEW_TASK); if (raw || M.seedGone(REVIEW_TASK)) return; }
+  if (store.get('tasks', REVIEW_TASK)) return;
   let { day, time } = reviewAt();
   if (reviewProblem(day, time)) time = ST.freeReviewSlot({ day, time, restDay: settings.get('restDay'), blocks: blocksOfDow(day) });
   const due = parseDue(`every ${ABBR[day]} ${time}`)?.due;
   if (!due) return;
-  M.addTask({ id: REVIEW_TASK, content: 'Weekly review', description: 'Steward → Menu → Weekly review. About 15 minutes: look back, give thanks, deal with what slipped, check the quiet priorities, and see that next week fits.', due, duration: 15, priority: 2, labels: ['personal'] }, { silent: true });
+  const f = { id: REVIEW_TASK, content: 'Weekly review', description: 'Steward → Menu → Weekly review. About 15 minutes: look back, give thanks, deal with what slipped, check the quiet priorities, and see that next week fits.', due, duration: 15, priority: 2, labels: ['personal'] };
+  if (again) { M.addTask(f, { silent: true }); return; } // asked for again: made now, so it wins over the record of its delete
+  // Made by Steward itself, so it carries the oldest possible edit time (like the starting identities): a device set up
+  // later never overwrites the review time, repeats or history already synced from the others.
+  M.ensureLabels(f.labels);
+  store.put('tasks', { ...f, projectId: 'inbox', sectionId: null, parentId: null, deadline: null, reminders: [], noteId: null, goalId: null, order: 1, completedAt: null, createdAt: 1, updatedAt: 1 }, { silent: true, keepTimes: true, noHistory: true });
 }
 /** Change when the review happens. Returns '' or what is in the way. */
 export function setReviewTime(day, time) {
@@ -36,7 +45,7 @@ export function setReviewTime(day, time) {
   if (why) return why;
   settings.set('reviewAt', { day, time });
   const due = parseDue(`every ${ABBR[day]} ${time}`)?.due, t = store.get('tasks', REVIEW_TASK);
-  if (due && t) store.patch('tasks', REVIEW_TASK, { due, remindedFor: null }); else if (due && !store.rawGet('tasks', REVIEW_TASK)) ensureReviewTask();
+  if (due && t) store.patch('tasks', REVIEW_TASK, { due, remindedFor: null }); else if (due && !store.rawGet('tasks', REVIEW_TASK) && !M.seedGone(REVIEW_TASK)) ensureReviewTask();
   return '';
 }
 /** Settings → Weekly review. */
@@ -47,7 +56,7 @@ export function reviewSettings(again) {
   const msg = h('p', { class: 'sub' }, `Now: ${DAYS[at.day]}s at ${fmtTime(at.time)}. A repeating task “Weekly review” reminds you.`);
   const save = () => { const why = setReviewTime(+daySel.value, time.value); if (why) { msg.textContent = why; msg.classList.add('warnline'); return; } toast('Weekly review time saved'); again(); };
   return h('div', null, h('p', { class: 'sub' }, 'About 15 minutes, once a week. It never lands on Sunday, on Saturday family time or on a fixed block.'), h('div', { class: 'row gap wrap' }, daySel, time, btn('Save', save, 'tiny primary'), h('a', { class: 'btn tiny', href: '#/review' }, 'Open the review')), msg,
-    !store.get('tasks', REVIEW_TASK) && btn('Add the “Weekly review” task again', () => { store.purge('tasks', REVIEW_TASK); ensureReviewTask(); store.emit({ local: true }); again(); }, 'link'));
+    !store.get('tasks', REVIEW_TASK) && btn('Add the “Weekly review” task again', () => { ensureReviewTask(true); store.emit({ local: true }); again(); }, 'link'));
 }
 
 // ---- the review itself -------------------------------------------------------------------------------------------
@@ -73,13 +82,17 @@ export function renderReview(route, main) {
   const steps = quarterStep ? [...STEPS.slice(0, 5), 'This quarter', ...STEPS.slice(5)] : STEPS;
   draft.step = Math.max(0, Math.min(steps.length - 1, draft.step || 0));
   const name = steps[draft.step];
-  const st = statsFor(week, now);
+  // Look back from the last review (so Friday evening, Saturday and Sunday are counted), not only this Monday on.
+  const done = store.all('reviews').find(r => r.weekOf === week[0]);
+  const prev = store.all('reviews').filter(r => r.weekOf < week[0] && r.finishedAt).sort((a, b) => b.finishedAt - a.finishedAt)[0];
+  const look = ST.reviewDays(now, prev ? dayOfMs(prev.finishedAt) : null);
+  const lookLabel = `${fmtDate(look[0], true)} to ${fmtDate(look[look.length - 1], true).toLowerCase()}`;
+  const st = statsFor(look, now, { targetWeeks: 1 });
   const goTo = n => { draft.step = n; keep(); store.emit({}); main.scrollTop = 0; };
   const body = h('div', { class: 'rv-body' });
-  const done = store.all('reviews').find(r => r.weekOf === week[0]);
 
   if (name === 'Look back') {
-    put(body, h('p', { class: 'rv-lead' }, 'The week in plain words:'), h('ul', { class: 'rv-lines' }, ST.plainSummary(st).map(l => h('li', null, l))), h('details', { class: 'gfold' }, h('summary', null, 'See the numbers'), h('div', { class: 'stgrid' }, statsCards(st, { week: true, now }))));
+    put(body, h('p', { class: 'rv-lead' }, prev && look.length !== 7 ? `Since your last review, in plain words (${lookLabel}):` : `The last seven days in plain words (${lookLabel}):`), h('ul', { class: 'rv-lines' }, ST.plainSummary(st).map(l => h('li', null, l))), h('details', { class: 'gfold' }, h('summary', null, 'See the numbers'), h('div', { class: 'stgrid' }, statsCards(st, { week: true, now, label: 'since ' + fmtDate(look[0], true) }))));
   } else if (name === 'Thanks and wins') {
     put(body, h('label', { class: 'rv-q' }, 'What has God provided this week?', area(draft.thanks, 'Work, a kindness, an answered prayer, strength for a hard day…', v => { draft.thanks = v; })),
       h('label', { class: 'rv-q' }, 'What went well?', area(draft.wins, 'A job done right, a promise kept, an evening at home…', v => { draft.wins = v; })));
@@ -96,7 +109,7 @@ export function renderReview(route, main) {
       risk.length > 0 && h('h4', null, `Promises due in the next three days (${risk.length})`), risk.map(t => row(t, false)));
   } else if (name === 'Quiet priorities') {
     const q = st.quiet;
-    const hint = { god: `${q.devotionDays} of ${q.devotionOf} days · ${GC.fmtHours(q.worshipMin)}`, wife: `${GC.fmtHours(q.familyMin)} of family time · ${q.familyBlocksKept} of ${q.familyBlocks} evenings kept`, rest: q.restDays ? (q.restKept ? 'kept' : 'work was done') : 'still ahead: last Sunday?', study: GC.fmtHours(q.studyMin), health: GC.fmtHours(q.healthMin) };
+    const hint = { god: `${q.devotionDays} of ${q.devotionOf} days · ${GC.fmtHours(q.worshipMin)}`, wife: `${GC.fmtHours(q.familyMin)} of family time · ${q.familyBlocksKept} of ${q.familyBlocks} evenings kept`, rest: q.restDays ? (q.restKept === q.restDays ? 'kept' : 'work was done') : 'no Sunday in these days', study: GC.fmtHours(q.studyMin), health: GC.fmtHours(q.healthMin) };
     put(body, h('p', { class: 'rv-lead' }, 'These do not shout. An honest yes, partly or no for each.'), QUIET.map(([k, label]) => {
       const cur = draft.quiet[k] || (draft.quiet[k] = { v: '', note: '' });
       const seg = h('div', { class: 'seg' }, [['yes', 'Yes'], ['partly', 'Partly'], ['no', 'No']].map(([v, l]) => h('button', { type: 'button', class: cur.v === v ? 'on' : '', onclick: e => { cur.v = v; keep(); seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === e.currentTarget)); } }, l)));
@@ -177,7 +190,7 @@ function finish(week, st, steps) {
     else if (c.v === 'carry') store.patch('goals', id, { end: nq.end }, { silent: true });
   }
   const ans = v => ({ yes: 'Yes', partly: 'Partly', no: 'No' }[v] || 'Not answered');
-  const md = [`Week of ${fmtDate(week[0], true)} to ${fmtDate(week[6], true)}`, '', '## The week', ...ST.plainSummary(st).map(l => '- ' + l), '', '## What God provided', draft.thanks || '(left empty)', '', '## What went well', draft.wins || '(left empty)', '',
+  const md = [`Week of ${fmtDate(week[0], true)} to ${fmtDate(week[6], true)}`, `Looks back over ${fmtDate(st.days[0], true)} to ${fmtDate(st.days[st.days.length - 1], true)}.`, '', '## The week', ...ST.plainSummary(st).map(l => '- ' + l), '', '## What God provided', draft.thanks || '(left empty)', '', '## What went well', draft.wins || '(left empty)', '',
     '## Quiet priorities', ...QUIET.map(([k, l]) => `- ${l}: ${ans(draft.quiet[k]?.v)}${draft.quiet[k]?.note ? ' — ' + draft.quiet[k].note : ''}`), '',
     '## Goals', ...(Object.keys(draft.goals).length ? Object.entries(draft.goals).map(([id, c]) => `- ${store.rawGet('goals', id)?.title || 'Goal'}: ${{ 'on-track': 'on track', behind: 'behind', change: 'changed', drop: 'set aside' }[c.v] || c.v}`) : ['- No active goals']), '',
     '## Top three for next week', ...(draft.top3.filter(Boolean).length ? draft.top3.filter(Boolean).map((t, n) => `${n + 1}. ${t}`) : ['(none chosen)']), ...(draft.claude ? ['', '## Reflection from Claude', draft.claude] : [])].join('\n');

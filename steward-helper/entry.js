@@ -8,7 +8,7 @@
 // Change files that touch notes are left for the app (they need its HTML tools).
 import './shims.js'; // must stay first
 import { store } from '../steward/js/store.js';
-import { applyOps, openTasks, reminderTimes, reminderKey, projectName, blocksOn } from '../steward/js/model.js';
+import { applyOps, parseChangeFile, openTasks, reminderTimes, reminderKey, projectName, blocksOn } from '../steward/js/model.js';
 import { isRunning, isPaused, dayOf } from '../steward/js/session-core.js';
 import { newKeys, request } from './push.js';
 
@@ -20,8 +20,8 @@ const FOLDER = 'application/vnd.google-apps.folder';
 // report saying so, by the shared applyOps, and everything else in the file is applied as usual.)
 // Identities, goals, sessions and reviews live in steward-goals.json, which only the app reads and writes; a task
 // filed under a goal by its title needs that file too. Those change files are left for the app as well.
-const APP_TYPES = ['note', 'orgword', 'identity', 'goal', 'session', 'review'];
-const needsApp = o => o && ((o.op !== 'delete' && ['note', 'orgword'].includes(String(o.type || '').toLowerCase())) || APP_TYPES.slice(2).includes(String(o.type || '').toLowerCase()) || (o.item && typeof o.item === 'object' && (o.item.goal !== undefined || o.item.goalId)));
+// Which changes the helper may apply itself, and which wait for the app: see needs-app.js.
+import { needsApp } from './needs-app.js';
 
 /**
  * env.http(url, {method, headers, body}) -> {status, text}  (synchronous)
@@ -101,9 +101,7 @@ export function run(env) {
     let ops;
     try {
       const url = f.mimeType === 'application/vnd.google-apps.document' ? `${DRIVE}/files/${f.id}/export?mimeType=text/plain` : `${DRIVE}/files/${f.id}?alt=media`;
-      const j = JSON.parse(String(api(url, {}, true)).replace(/^﻿/, '').replace(/[“”]/g, '"').trim());
-      ops = Array.isArray(j) ? j : j?.ops;
-      if (!Array.isArray(ops)) throw new Error('not a list of changes');
+      ops = parseChangeFile(api(url, {}, true));
     } catch (e) {
       if (e.status) throw e; // Google trouble: try again next run
       api(`${DRIVE}/files/${f.id}`, { method: 'PATCH', headers: json, body: JSON.stringify({ name: 'failed-' + f.name }) });

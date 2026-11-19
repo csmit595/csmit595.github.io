@@ -196,8 +196,22 @@ function askStale(s) {
   { title: 'Family timer', cls: 'small', onClose: () => { if (!answered) store.patch('sessions', s.id, { staleAsked: true }); } });
 }
 
+/**
+ * Only one timer runs at a time. Two can be running when each device started one with no signal: the newer one is
+ * kept and each older one is closed at the moment the newer one began (or when its own time ran out, if sooner), so
+ * it does not go on counting unseen. Both devices work out the same end, so their copies agree.
+ */
+function settleExtras() {
+  const live = sessions().filter(S.isRunning).sort((a, b) => b.startedAt - a.startedAt);
+  for (const old of live.slice(1)) {
+    const at = Math.max(old.startedAt, live[0].startedAt);
+    const planned = old.plannedMin && S.isOver(old, at) ? S.finishAtPlanned(old, at) : null;
+    save({ ...(planned && planned.endedAt ? planned : S.finish(old, at)), checkedIn: true });
+  }
+}
 /** Runs every second while Steward is open: ends a session whose time is up, notices a forgotten family timer, keeps the pill right. */
 function tick() {
+  settleExtras();
   const r = runningSession();
   if (r && S.isOver(r)) timeUp(r);
   else if (r && S.familyStale(r) && !document.hidden) askStale(r);

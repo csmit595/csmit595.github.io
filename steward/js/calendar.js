@@ -150,7 +150,11 @@ export function editEvent(ev) {
     let busy = false;
     const save = async () => {
       if (!title.value.trim() || busy) return title.focus();
-      if (kind === 'task') { M.addTask({ content: title.value.trim(), due: { date: sd.value, time: allDay.checked ? null : st.value, recur: null } }); toast('Task added'); return close(); }
+      if (kind === 'task') { M.addTask({ content: title.value.trim(), due: { date: sd.value || today(), time: allDay.checked ? null : st.value || null, recur: null } }); toast('Task added'); return close(); }
+      if (!sd.value) return toast('Pick the day it starts.');
+      if (!allDay.checked && !st.value) return toast('Pick a start time, or tick All day.');
+      if (!ed.value || ed.value < sd.value) ed.value = sd.value;
+      if (!allDay.checked && !et.value) { const [H, Mi] = st.value.split(':').map(Number); et.value = `${pad(Math.min(23, H + 1))}:${pad(Mi)}`; }
       busy = true;
       // notes left untouched keep their original formatting (links from invitations and the like)
       const out = { id: ev.id, calId: cal.value, title: title.value.trim(), allDay: allDay.checked, location: loc.value, description: desc.value === desc0 ? (ev.description || '') : desc.value, rrule: isNew ? rep.value : '' };

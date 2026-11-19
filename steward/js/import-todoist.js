@@ -51,7 +51,7 @@ export async function importTodoist(token, { pauseReminders = false, onStep } = 
   const pid = id => (!id || id === inbox?.id ? 'inbox' : 'tdp-' + id);
   const keepProj = new Set(projects.map(p => p.id));
   const now = Date.now();
-  const n = { projects: 0, sections: 0, tasks: 0, finished: 0, labels: 0, filters: 0, comments: 0, reminders: 0 };
+  const n = { projects: 0, sections: 0, tasks: 0, finished: 0, labels: 0, filters: 0, comments: 0, reminders: 0, keptDone: 0, keptDeleted: 0, keptEdits: 0 };
 
   onStep?.('Projects and sections…');
   for (const p of projects) {
@@ -90,16 +90,33 @@ export async function importTodoist(token, { pauseReminders = false, onStep } = 
     else if (r.type === 'absolute' && r.due?.date) { const d = /Z$/.test(r.due.date) ? new Date(r.due.date) : new Date(r.due.date); if (!isNaN(d)) list.push({ at: `${ymd(d)}T${hm(d)}` }); }
     rems.set(r.item_id, list);
   }
+  // What was changed in Steward since it came over stays as he left it: a field edited here, a task finished here,
+  // a task deleted here. Everything else follows Todoist.
+  const mine = (cur, k) => {
+    if (!cur) return false;
+    if (cur.importedAt) return (cur._f?.[k] || 0) > cur.importedAt + 5000;
+    const last = [...(cur.hist || [])].reverse().find(e => e.old && k in e.old); // brought over before 4.8.1: go by its history
+    return !!last && last.by !== 'Todoist import';
+  };
   for (const t of items) {
     const id = 'td-' + t.id, cur = store.get('tasks', id);
+    if (!cur && store.rawGet('tasks', id)?.deleted) { n.keptDeleted++; continue; } // deleted in Steward: stays deleted
     const dur = t.duration?.amount ? (t.duration.unit === 'day' ? null : +t.duration.amount) : null;
     const reminders = rems.get(t.id) || [];
     n.reminders += reminders.length;
-    store.put('tasks', { ...(cur || {}), id, content: t.content, description: t.description || '', projectId: pid(t.project_id),
+    const from = { content: t.content, description: t.description || '', projectId: pid(t.project_id),
       sectionId: t.section_id ? 'tds-' + t.section_id : null, parentId: t.parent_id && ids.has(t.parent_id) ? 'td-' + t.parent_id : null,
       priority: 5 - (t.priority || 1), labels: (t.labels || []).map(labelName), due: dueOf(t.due, problems, t.content), deadline: t.deadline?.date || null,
-      duration: dur, reminders, noteId: cur?.noteId || null, order: (t.child_order ?? 0) * 1000, completedAt: null,
-      createdAt: cur?.createdAt || (t.added_at ? Date.parse(t.added_at) : now), remindedFor: null }, { silent: true, by: 'Todoist import', noHistory: !cur });
+      duration: dur, reminders, order: (t.child_order ?? 0) * 1000 };
+    let kept = 0;
+    for (const k of Object.keys(from)) if (mine(cur, k)) { from[k] = cur[k]; if (k !== 'order') kept++; }
+    if (kept) n.keptEdits++;
+    if (cur?.completedAt) n.keptDone++;
+    const dueSame = cur && JSON.stringify(cur.due || null) === JSON.stringify(from.due || null);
+    store.put('tasks', { ...(cur || {}), id, ...from, noteId: cur?.noteId || null, completedAt: cur?.completedAt || null, // finished in Steward: stays finished
+      createdAt: cur?.createdAt || (t.added_at ? Date.parse(t.added_at) : now), remindedFor: dueSame ? cur.remindedFor ?? null : null }, { silent: true, by: 'Todoist import', noHistory: !cur });
+    // stamped after the save, so "changed in Steward since" can be told from what this import wrote
+    store.patch('tasks', id, { importedAt: Date.now() }, { silent: true, noHistory: true });
     n.tasks++;
   }
   // Brought over before, but no longer open in Todoist: you finished (or deleted) it there, so finish it here too.
@@ -120,5 +137,6 @@ export async function importTodoist(token, { pauseReminders = false, onStep } = 
 export function describeImport({ n, problems }) {
   const c = (k, word) => n[k] ? `${n[k]} ${word}${n[k] === 1 ? '' : 's'}` : null;
   const parts = [c('tasks', 'open task'), c('projects', 'project'), c('sections', 'section'), c('labels', 'label'), c('filters', 'filter'), c('comments', 'comment'), c('reminders', 'reminder')].filter(Boolean);
-  return { line: 'Brought over ' + parts.join(', ') + '.' + (n.finished ? ` ${n.finished} task${n.finished === 1 ? '' : 's'} you finished in Todoist since last time ${n.finished === 1 ? 'was' : 'were'} finished here too.` : ''), problems };
+  return { line: 'Brought over ' + parts.join(', ') + '.' + (n.finished ? ` ${n.finished} task${n.finished === 1 ? '' : 's'} you finished in Todoist since last time ${n.finished === 1 ? 'was' : 'were'} finished here too.` : '')
+    + (n.keptDone + n.keptDeleted + n.keptEdits ? ` Left as you have them in Steward: ${[n.keptDone && `${n.keptDone} finished here`, n.keptDeleted && `${n.keptDeleted} deleted here`, n.keptEdits && `${n.keptEdits} changed here`].filter(Boolean).join(', ')}.` : ''), problems };
 }

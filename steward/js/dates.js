@@ -54,9 +54,10 @@ export function nextOccurrence(due, now = today()) {
       return addDays(base, 7 * n);
     }
     if (r.unit === 'month' && r.nth) { const d = fromYmd(base); const t = new Date(d.getFullYear(), d.getMonth() + n, 1); return nthWeekday(t.getFullYear(), t.getMonth(), r.nth, r.dow); }
-    if (r.unit === 'month') return addMonths(base, n, r.dom);
+    // "every!" repeats count from the day the task was finished, so they keep that day, not the first due day
+    if (r.unit === 'month') return addMonths(base, n, r.fromDone ? undefined : r.dom);
     if (r.unit === 'year') {
-      const d = fromYmd(base), a = r.anchor ? fromYmd(r.anchor) : d, y = d.getFullYear() + n;
+      const d = fromYmd(base), a = r.anchor && !r.fromDone ? fromYmd(r.anchor) : d, y = d.getFullYear() + n;
       const last = new Date(y, a.getMonth() + 1, 0).getDate();
       return ymd(new Date(y, a.getMonth(), Math.min(a.getDate(), last)));
     }
@@ -84,7 +85,12 @@ function parseTime(text, partOk = false) {
     let H = +m[1] % 12; if (/^p/i.test(m[3])) H += 12;
     if (+m[1] <= 12) return { time: `${pad(H)}:${m[2] || '00'}`, rest: cut(m) };
   }
-  for (const s of text.matchAll(/\b(at\s+)?([01]?\d|2[0-3]):([0-5]\d)\b/gi)) { if (!s[1] && isVerse(text, s)) continue; return { time: `${pad(+s[2])}:${s[3]}`, rest: cut(s) }; }
+  for (const s of text.matchAll(/\b(at\s+)?([01]?\d|2[0-3]):([0-5]\d)\b/gi)) {
+    if (!s[1] && isVerse(text, s)) continue;
+    // "3:30" with no am/pm means the afternoon (as "at 3" does): nobody plans a call for 3:30 at night. "03:30" stays as written.
+    let H = +s[2]; if (H >= 1 && H <= 5 && s[2].length === 1) H += 12;
+    return { time: `${pad(H)}:${s[3]}`, rest: cut(s) };
+  }
   if ((m = text.match(/\bat\s+(\d{1,2})\b(?!\s*[\/.:-]\d)/i)) && +m[1] <= 23 && !isAddress(+m[1], text.slice(m.index + m[0].length))) {
     let H = +m[1]; if (H >= 1 && H <= 6) H += 12; // "at 3" means 3 PM for working hours
     return { time: `${pad(H)}:00`, rest: cut(m) };
@@ -172,8 +178,12 @@ function parseDay(text, now) {
     if (!yr && (!dt || ymd(dt) < now)) dt = real(y + 1, mo, d) || dt;
     return dt ? ymd(dt) : null;
   };
-  if ((m = text.match(/\b(today|tod|tonight)\b/i))) return { date: now, rest: cut(m), time: /tonight/i.test(m[1]) ? '19:00' : null };
-  if ((m = text.match(/\b(tomorrow|tom|tmrw|tmr)\b/i))) return { date: addDays(now, 1), rest: cut(m) };
+  // The short forms "tod" and "tom" are also names and words ("Call Tom"): they only count typed in small letters with
+  // nothing after them but a time. "weekend" alone is the same ("weekend trip"); "this weekend" always counts.
+  const SHORT_NEXT = /^\s*(?:$|[,.;!)]|at\b|@|noon|midnight|morning|afternoon|evening|night|\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b)/i;
+  const shortOk = (s, word) => s[1] !== word ? s[1].toLowerCase() !== word : SHORT_NEXT.test(text.slice(s.index + s[0].length));
+  for (const s of text.matchAll(/\b(today|tod|tonight)\b/gi)) { if (!shortOk(s, 'tod')) continue; return { date: now, rest: cut(s), time: /tonight/i.test(s[1]) ? '19:00' : null }; }
+  for (const s of text.matchAll(/\b(tomorrow|tom|tmrw|tmr)\b/gi)) { if (!shortOk(s, 'tom')) continue; return { date: addDays(now, 1), rest: cut(s) }; }
   if ((m = text.match(/\byesterday\b/i))) return { date: addDays(now, -1), rest: cut(m) };
   if ((m = text.match(/\bin\s+(\d+|a|an)\s+(day|week|month|year)s?\b/i))) {
     const n = /^a/i.test(m[1]) ? 1 : +m[1], u = m[2].toLowerCase();
@@ -182,7 +192,7 @@ function parseDay(text, now) {
   }
   if ((m = text.match(/\bnext\s+week\b/i))) return { date: nextDow(now, 1), rest: cut(m) };
   if ((m = text.match(/\bnext\s+month\b/i))) return { date: addMonths(now, 1, 1), rest: cut(m) };
-  if ((m = text.match(/\b(?:this\s+)?weekend\b/i))) return { date: nextDow(now, 6, false), rest: cut(m) };
+  for (const s of text.matchAll(/\b(this\s+)?weekend\b/gi)) { if (!s[1] && !TIME_NEXT.test(text.slice(s.index + s[0].length))) continue; return { date: nextDow(now, 6, false), rest: cut(s) }; }
   if ((m = text.match(/\bend\s+of\s+(?:the\s+)?month\b/i))) return { date: addMonths(now, 0, 31), rest: cut(m) };
   if ((m = text.match(new RegExp(`\\b(${MON_RE})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`, 'i')))) { const date = future(monIdx(m[1]), +m[2], m[3] && +m[3]); if (date) return { date, rest: cut(m) }; }
   if ((m = text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MON_RE})\\b(?:,?\\s+(\\d{4}))?`, 'i')))) { const date = future(monIdx(m[2]), +m[1], m[3] && +m[3]); if (date) return { date, rest: cut(m) }; }
@@ -220,7 +230,7 @@ export function parseDue(text, now = today()) {
     else if (recur?.dom) { date = addMonths(now, 0, recur.dom); if (date < now) date = addMonths(now, 1, recur.dom); }
     else date = now;
   }
-  if (recur) { recur.anchor = date; if (recur.unit === 'month' && !recur.dom && !recur.nth) recur.dom = fromYmd(date).getDate(); }
+  if (recur) { recur.anchor = date; if (recur.unit === 'month' && !recur.dom && !recur.nth && !recur.fromDone) recur.dom = fromYmd(date).getDate(); }
   rest = rest.replace(/\s+(on|at|by|due)\s*$/i, '').replace(/\s{2,}/g, ' ').trim();
   return { due: { date, time: time || null, recur: recur || null }, rest };
 }

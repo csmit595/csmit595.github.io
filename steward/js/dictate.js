@@ -170,9 +170,10 @@ export function spokenTask(raw, names = {}) {
     return p ? ' #' + p + ' ' + rest.slice(p.length) : all;
   });
   s = s.replace(/\shashtag\s+/gi, ' #');
-  // "label promise" / "tag promise" / "at promise" → @promise, only for labels that exist (plus promise)
+  // "label promise" / "at sign promise" → @promise, only for labels that exist (plus promise). A plain "at" or "tag"
+  // is left alone: "meet at church" and "price tag" are ordinary words even when a label has that name.
   const labels = new Set([...(names.labels || []), 'promise'].map(l => l.toLowerCase()));
-  s = s.replace(/\s(?:label|tag|at sign|at)\s+([\w-]+)/gi, (all, l) => labels.has(l.toLowerCase()) ? ' @' + l.toLowerCase() : all);
+  s = s.replace(/\s(?:label|at sign)\s+([\w-]+)/gi, (all, l) => labels.has(l.toLowerCase()) ? ' @' + l.toLowerCase() : all);
   s = s.replace(/\b(?:it'?s|this is|mark it|mark this)?\s*(?:a\s+)?customer promise\b/gi, ' @promise ');
   // "deadline friday" / "due by november 20" → {friday}: the longest run of words that reads as a date
   s = s.replace(/\s(?:deadline|due by|hard deadline(?: of)?)\s+(.+)$/i, (all, rest) => {

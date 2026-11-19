@@ -252,7 +252,7 @@ function showPlan(job) {
       store.emit({ local: true }); close();
       toast(`Times set on ${before.length} task${before.length === 1 ? '' : 's'}`, 'Undo', () => { for (const b of before) store.patch('tasks', b.id, { due: b.due, duration: b.duration }, { silent: true }); store.emit({ local: true }); });
     };
-    const moveLater = o => { const t = tasks.get(o.id); if (!t || t.due?.recur) return toast('Repeating tasks keep their own rhythm. Change this one from the task itself.'); const was = t.due; store.patch('tasks', t.id, { due: { ...(t.due || { time: null, recur: null }), date: addDays(day, 1) } }); toast('Moved to the next day', 'Undo', () => store.patch('tasks', t.id, { due: was })); };
+    const moveLater = o => { const t = tasks.get(o.id); if (!t || t.due?.recur) return toast('Repeating tasks keep their own rhythm. Change this one from the task itself.'); const was = t.due; store.patch('tasks', t.id, { due: { ...(t.due || { time: null, recur: null }), date: M.nextPlanDay(day) } }); toast(`Moved to ${M.nextPlanDay(day) === addDays(day, 1) ? 'the next day' : fromYmd(M.nextPlanDay(day)).toLocaleDateString('en-US', { weekday: 'long' })}`, 'Undo', () => store.patch('tasks', t.id, { due: was })); };
     return fill(box,
       h('p', { class: 'aip-head' }, String(result.headline || '')),
       order.length ? h('ol', { class: 'aip-list' }, order.map(o => h('li', { class: o.clash ? 'clash' : '' }, h('span', { class: 'aip-t' }, fmtTime(clock(o.s))), h('span', { class: 'grow' }, h('b', null, tasks.get(o.id).content), h('span', { class: 'sub' }, ` · ${o.mins} min${o.why ? ' · ' + o.why : ''}`), o.clash && h('span', { class: 'aip-warn' }, ' · overlaps a fixed time; will not be set'))))) : null,

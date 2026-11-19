@@ -22,7 +22,7 @@ const fileOf = type => Object.keys(FILES).find(f => FILES[f].includes(type));
 const data = Object.fromEntries(TYPES.map(t => [t, new Map()]));
 
 // ---- field-by-field change times, so edits made on two devices before they sync both survive ----
-const META = new Set(['id', 'updatedAt', 'createdAt', '_f', 'hist', 'snaps']);
+const META = new Set(['id', 'updatedAt', 'createdAt', '_f', 'hist', 'snaps', '_ahead']);
 // key order must not matter: two devices can build the same item with fields in a different order
 const canon = v => (Array.isArray(v) ? '[' + v.map(canon).join(',') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().filter(k => v[k] !== undefined).map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}' : JSON.stringify(v ?? null));
 const same = (a, b) => a === b || canon(a) === canon(b);
@@ -44,6 +44,7 @@ export function mergeFields(l, r) {
     f[k] = Math.max(rt, lt);
   }
   out._f = f;
+  if (l._ahead || r._ahead) out._ahead = { ...(l._ahead || {}), ...(r._ahead || {}) };
   out.updatedAt = Math.max(l.updatedAt || 0, r.updatedAt || 0);
   out.createdAt = Math.min(l.createdAt || out.updatedAt, r.createdAt || out.updatedAt);
   // history: keep every entry from both copies, newest 15
@@ -51,6 +52,21 @@ export function mergeFields(l, r) {
   if (l.snaps || r.snaps) out.snaps = pruneSnaps(unionSnaps(l.snaps, r.snaps));
   if (l.hist || r.hist) { const seen = new Map(); for (const e of [...(l.hist || []), ...(r.hist || [])]) seen.set(e.at + '|' + Object.keys(e.old || {}).join(','), e); out.hist = [...seen.values()].sort((a, b) => a.at - b.at).slice(-15); }
   return out;
+}
+/** A copy from a device whose clock runs ahead: bring its times back to now, so it cannot win every later change. */
+export function clampFuture(r, l = null, now = Date.now()) {
+  const soon = now + 5 * 60000;
+  // A time from the future counts as "now" the first time it is seen. The same future time seen again (that device
+  // has uploaded its copy once more) keeps the moment it was first seen, so it cannot beat what was changed since.
+  const fix = (key, t) => {
+    const seen = l?._ahead?.[key] || r._ahead?.[key];
+    const at = seen && seen.f === t ? seen.at : now;
+    (r._ahead ||= {})[key] = { f: t, at };
+    return at;
+  };
+  if ((r.updatedAt || 0) > soon) r.updatedAt = fix('updatedAt', r.updatedAt);
+  if (r._f) for (const k in r._f) if (r._f[k] > soon) r._f[k] = fix('f:' + k, r._f[k]);
+  return r;
 }
 const HIST_SKIP = new Set(['order', 'remindedFor', 'lastDoneAt', 'doneCount', 'doneLog']);
 const listeners = new Set();
@@ -174,15 +190,15 @@ export const store = {
   /** Merge a remote snapshot. Newest edit of each item wins. Returns whether this device holds anything the remote lacks. */
   merge(file, remote) {
     let localNewer = false, changed = false;
-    const cutoff = Date.now() - 90 * 864e5, soon = Date.now() + 5 * 60000;
+    const cutoff = Date.now() - 90 * 864e5;
     for (const t of FILES[file]) {
       const map = data[t];
       const seen = new Set();
       for (const r of remote?.[t] || []) {
         if (!r || !r.id) continue;
-        if ((r.updatedAt || 0) > soon) r.updatedAt = Date.now(); // a device with a wrong clock must not win forever
         seen.add(r.id);
         const l = map.get(r.id);
+        clampFuture(r, l); // a device with a wrong clock must not win forever
         if (!l) { map.set(r.id, r); changed = true; touchItem(t, r.id); continue; }
         if (same(l, r)) continue;
         const m = mergeFields(l, r);
@@ -201,8 +217,8 @@ export const store = {
   /** Merge one item read from its own Drive file. Returns 'took' (Drive copy was newer), 'mine' (this device is newer) or 'same'. */
   mergeItem(type, r) {
     if (!data[type] || !r || !r.id) return 'same';
-    if ((r.updatedAt || 0) > Date.now() + 5 * 60000) r.updatedAt = Date.now(); // a device with a wrong clock must not win forever
     const l = data[type].get(r.id);
+    clampFuture(r, l); // a device with a wrong clock must not win forever
     if (!l) { data[type].set(r.id, r); touchItem(type, r.id); this._merged = true; return 'took'; }
     if (same(l, r)) return 'same';
     const m = mergeFields(l, r);
@@ -263,7 +279,7 @@ export const store = {
 // hours: per weekday (0 = Sunday) the window tasks may be planned in, or null for no planning that day.
 const WEEK_HOURS = [null, ...Array(5).fill({ start: '07:00', end: '22:30' }), { start: '07:00', end: '22:30' }];
 const defaults = { theme: 'light', weekStart: 0, home: 'today', autoRemind: true, remindLead: 0, clientId: '953176719624-701gj43chqpp040biv5qvvr628o8rflo.apps.googleusercontent.com', calView: 'week', hidden: [], workStart: '07:00', workEnd: '18:00', restDay: 0, hours: WEEK_HOURS };
-export const SHARED = ['autoRemind', 'remindLead', 'remindersPaused', 'workStart', 'workEnd', 'restDay', 'hours', 'helperUrl', 'aiOn', 'reviewAt'];
+export const SHARED = ['autoRemind', 'remindLead', 'remindersPaused', 'workStart', 'workEnd', 'restDay', 'hours', 'helperUrl', 'aiOn', 'reviewAt', 'seedsGone'];
 const local = {
   get(k) { try { return JSON.parse(localStorage.getItem('steward.set.' + k)); } catch { return null; } },
   set(k, v) { localStorage.setItem('steward.set.' + k, JSON.stringify(v)); },

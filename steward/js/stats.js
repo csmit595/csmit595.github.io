@@ -20,8 +20,8 @@ function fitOf(day) {
   return computePlan({ day, tasks, events: sync.events || [], window: (settings.get('hours') || [])[fromYmd(day).getDay()] || null, blocks: M.blocksOn(day), restDay: settings.get('restDay') }).state;
 }
 /** Everything stats-core needs, read from the store. */
-export function statsFor(days, now = today()) {
-  return ST.periodStats({ days, today: now, restDay: settings.get('restDay'), identities: store.all('identities'), goals: store.all('goals'), tasks: store.all('tasks'), sessions: store.all('sessions'), blocksOn: M.blocksOn, fitOf });
+export function statsFor(days, now = today(), opts = {}) {
+  return ST.periodStats({ ...opts, days, today: now, restDay: settings.get('restDay'), identities: store.all('identities'), goals: store.all('goals'), tasks: store.all('tasks'), sessions: store.all('sessions'), blocksOn: M.blocksOn, fitOf });
 }
 export const weekStats = (day = today()) => statsFor(ST.weekOf(day));
 
@@ -36,10 +36,10 @@ const line = (ic, text, cls = '') => h('li', { class: cls }, icon(ic, 15), h('sp
 const DAY1 = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /** The cards, for the Stats screen and for the first step of the weekly review. */
-export function statsCards(st, { week = true, now = today() } = {}) {
+export function statsCards(st, { week = true, now = today(), label = '' } = {}) {
   const q = st.quiet, out = [];
   const maxOpen = Math.max(60, ...st.time.filter(t => !t.targetMin).map(t => t.min));
-  out.push(card('Time by identity', week ? 'this week' : 'this quarter so far',
+  out.push(card('Time by identity', label || (week ? 'this week' : 'this quarter so far'),
     st.time.map(t => barRow(t.name, t.targetMin ? t.pct : t.min / maxOpen, colorOf(t.color), t.targetMin ? `${fmtHours(t.min)} of ${fmtHours(t.targetMin)}` : fmtHours(t.min), { noTarget: !t.targetMin, title: `${t.name}: ${fmtHours(t.min)}${t.targetMin ? ` of ${fmtHours(t.targetMin)}` : ', tracked without a target'}${t.timed ? ' (timed, Monday to Saturday; Sunday is never counted)' : ''}` })),
     h('p', { class: 'sub' }, 'Focus sessions, the family timer and time added by hand. Bars with a target fill toward it; the others only show the time.')));
   const restLine = q.restDays ? (q.restKept === q.restDays ? (week ? 'Sunday rest kept' : `Sunday rest kept ${q.restKept} of ${q.restDays} weeks`) : (week ? 'Work was done on the rest day' : `Sunday rest kept ${q.restKept} of ${q.restDays} weeks`)) : 'Sunday rest is still ahead';

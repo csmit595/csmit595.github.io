@@ -34,7 +34,7 @@ const minOfDay = ms => { const d = new Date(ms); return d.getHours() * 60 + d.ge
  * in: { days, today, restDay (0 = Sunday, -1 none), identities, goals, tasks, sessions, blocksOn(day) -> [{ b, start, end }],
  *       fitOf(day) -> 'fits' | 'over' | 'rest' | 'empty' | 'after' (optional), now }
  */
-export function periodStats({ days, today, restDay = 0, identities = [], goals = [], tasks = [], sessions = [], blocksOn = () => [], fitOf = null, now = Date.now() }) {
+export function periodStats({ days, today, restDay = 0, identities = [], goals = [], tasks = [], sessions = [], blocksOn = () => [], fitOf = null, now = Date.now(), targetWeeks = null }) {
   const want = new Set(days), past = days.filter(d => d <= today);
   const ctx = { identities, goals, tasks }, r = roles(identities);
   const idOf = new Map(); const identOf = t => { if (!idOf.has(t.id)) idOf.set(t.id, identityOf(t, ctx)?.id || null); return idOf.get(t.id); };
@@ -52,7 +52,7 @@ export function periodStats({ days, today, restDay = 0, identities = [], goals =
       minutes.set(s.identityId, (minutes.get(s.identityId) || 0) + part.min);
     }
   }
-  const time = [...identities].sort(byOrder).map(i => { const min = minutes.get(i.id) || 0, target = (i.weeklyTargetMin || 0) * (days.length > 7 ? weeksSoFar : 1); return { id: i.id, name: i.name, color: i.color, timed: !!i.timed, min, targetMin: target || 0, pct: target ? Math.min(1, min / target) : null }; });
+  const time = [...identities].sort(byOrder).map(i => { const min = minutes.get(i.id) || 0, target = (i.weeklyTargetMin || 0) * (targetWeeks || (days.length > 7 ? weeksSoFar : 1)); return { id: i.id, name: i.name, color: i.color, timed: !!i.timed, min, targetMin: target || 0, pct: target ? Math.min(1, min / target) : null }; });
 
   // ---- finished tasks ----
   const done = []; // { t, at, day, identityId }
@@ -132,6 +132,15 @@ export function plainSummary(st) {
   return out;
 }
 
+/**
+ * The days a weekly review looks back over: from the day of the last review through today, so the evening after a
+ * Friday review, Saturday's family time and Sunday's rest are all in the next one. With no earlier review (or one
+ * outside 5 to 10 days ago) it is the last seven days.
+ */
+export function reviewDays(today, lastReviewDay = null) {
+  const span = lastReviewDay && lastReviewDay < today ? daysBetween(lastReviewDay, today) : [];
+  return span.length >= 6 && span.length <= 11 ? span : daysBetween(addDays(today, -6), today);
+}
 /**
  * Is this a sound time for the weekly review? It must not be the rest day, and its 15 minutes must not land on a
  * fixed block (Saturday family time included). Returns '' when fine, else what is in the way.

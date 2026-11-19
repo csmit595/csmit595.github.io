@@ -47,7 +47,7 @@ function viewGoals(main) {
   const nActive = all.filter(g => g.status === 'active' && started(g, now)).length;
   main.append(header('Goals', `${q.label} · ${nActive} active goal${nActive === 1 ? '' : 's'}`, btn('New identity', () => editIdentity(), 'tiny', 'plus'), btn('New goal', () => editGoal({}), 'primary', 'plus')));
   main.append(h('p', { class: 'verse' }, '“A man’s heart deviseth his way: but the LORD directeth his steps.” ', h('span', null, 'Proverbs 16:9')));
-  if (!ids.length) main.append(h('div', { class: 'empty' }, h('strong', null, 'No identities yet'), h('p', null, 'An identity is a role you live in. Goals sit under them.'), btn('Add the starting six', () => { M.ensureIdentities(); store.emit({ local: true }); }, 'primary')));
+  if (!ids.length) main.append(h('div', { class: 'empty' }, h('strong', null, 'No identities yet'), h('p', null, 'An identity is a role you live in. Goals sit under them.'), btn('Add the starting six', () => { M.ensureIdentities(true); store.emit({ local: true }); }, 'primary')));
   for (const i of ids) {
     const mine = GC.sortGoals(all.filter(g => g.identityId === i.id), i);
     const act = mine.filter(g => g.status === 'active' && started(g, now)), later = mine.filter(g => g.status === 'active' && !started(g, now)), past = mine.filter(g => g.status !== 'active');
@@ -158,7 +158,7 @@ export function editGoal(g = {}) {
     idSel.addEventListener('change', drawTags); drawTags();
     const count = store.all('goals').filter(x => x.status === 'active' && (!x.start || x.start <= now) && x.id !== g.id).length;
     const nq = GC.nextQuarter(now);
-    const soft = isNew && count >= GC.SOFT_LIMIT && h('div', { class: 'banner soft' }, `You have ${count} active goals. Ali suggests 3–4 quests a quarter. Is this one for now or later? `,
+    const soft = isNew && count >= GC.SOFT_LIMIT && h('div', { class: 'banner soft' }, `You have ${count} active goals. Three or four a quarter is plenty. Is this one for now or later? `,
       btn(`Later (${nq.label})`, () => { start.value = nq.start; end.value = nq.end; toast(`Dates set to ${nq.label}`); }, 'tiny'));
     const save = () => {
       if (!title.value.trim()) return toast('Give the goal a name');

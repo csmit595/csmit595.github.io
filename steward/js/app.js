@@ -5,7 +5,7 @@ import * as M from './model.js';
 import { sync } from './sync.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpen, isMobile, PHONE_MQ } from './ui.js';
 import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from './tasks.js';
-import { renderNotes, leaveNotes, newNote, dictateNote, noteAddMenu, createClip, importEnex } from './notes.js';
+import { renderNotes, leaveNotes, newNote, dictateNote, noteAddMenu, createClip, importEnex, noteBusy } from './notes.js';
 import { canDictate, dictEngine, setDictEngine } from './dictate.js';
 import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
@@ -23,8 +23,8 @@ import * as offline from './offline.js';
 import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.8.0';
-const WHATS_NEW = `Steward updated to ${VERSION}. New: Stats and the weekly review (Menu → Stats, Weekly review). Time with God and family come first on every screen, Sunday never counts against you, and the review ends by showing that next week fits.`;
+const VERSION = '4.8.1';
+const WHATS_NEW = `Steward updated to ${VERSION}: 31 fixes. Among them: “3:30” now means the afternoon, “Call Tom” is no longer read as tomorrow, moving leftover work never lands on Sunday, the weekly review looks back to your last review (weekend included), and a recording is saved even if you leave the note.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -45,6 +45,8 @@ function render(info = {}) {
   if (NOTE_VIEWS.includes(route.view)) { renderNotes(route, main, info); lastRouteKey = key; return; }
   if (route.view === 'settings' && key === lastRouteKey && !info.force && main.querySelector('.settings')) return;
   if (route.view === 'search' && key === lastRouteKey && main.querySelector('.results')) return drawResults();
+  // The weekly review: a sync finishing must not take the cursor out of the box being typed in (what is typed is kept as it goes).
+  if (route.view === 'review' && key === lastRouteKey && !info.force && main.querySelector('.rv-body') && main.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
   leaveNotes();
   if (route.view !== 'focus') leaveFocus();
   const y = key === lastRouteKey ? main.scrollTop : 0;
@@ -58,10 +60,20 @@ function render(info = {}) {
   else if (route.view === 'review') renderReview(route, main);
   else if (route.view === 'family-start') { location.replace('#/focus'); setTimeout(() => startFamily(), 60); return; }
   else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
-  else if (route.view === 'task') { location.replace('#/' + settings.get('home')); const id = decodeURIComponent(route.id || ''); setTimeout(() => { if (store.get('tasks', id)) openTask(id); }, 80); return; }
+  else if (route.view === 'task') { location.replace('#/' + settings.get('home')); const id = decodeURIComponent(route.id || ''); setTimeout(() => openTaskSoon(id), 80); return; }
+  else if (route.view === 'new-note') { location.replace('#/notes'); setTimeout(() => newNote(), 60); return; }
   else if (['today', 'upcoming', 'inbox', 'project', 'label', 'filter', 'filters', 'completed'].includes(route.view)) { renderTasks(route, main); const acts = main.querySelector('.vhead > .row'); if (acts && isMobile()) acts.prepend(iconBtn('search', 'Search', () => { location.hash = '#/search'; }, 'hsearch')); }
   else { location.hash = '#/today'; return; }
   main.scrollTop = y; lastRouteKey = key;
+}
+/** Open a task from a reminder. One this device has not received yet (Claude just added it) is fetched first. */
+async function openTaskSoon(id) {
+  if (!id) return;
+  if (store.get('tasks', id)) return openTask(id);
+  if (!sync.connected() || !navigator.onLine) return toast('That task has not reached this device yet. It will be here after the next sync.');
+  toast('Getting that task…', null, null, 2500);
+  for (let i = 0; i < 2 && !store.get('tasks', id); i++) { await sync.run().catch(() => {}); if (sync.busy) await new Promise(r => setTimeout(r, 1500)); }
+  if (store.get('tasks', id)) openTask(id); else toast('That task is not on this device yet. Look in Today after the next sync.');
 }
 let queued = false, queuedInfo = {};
 function schedule(info = {}) {
@@ -305,9 +317,10 @@ function viewSettings(main) {
   const enex = h('input', { type: 'file', accept: '.enex', multiple: true, hidden: true, onchange: async () => {
     const prog = h('p', null, 'Reading…'); const close = modal(() => prog, { title: 'Importing from Evernote', cls: 'small' });
     let total = 0;
-    try { for (const f of enex.files) total += await importEnex(f, (i, n) => { prog.textContent = `${f.name}: ${i} of ${n} notes`; }); prog.textContent = `Imported ${total} notes.`; if (sync.connected()) sync.run(); }
+    let already = 0;
+    try { for (const f of enex.files) { const r = await importEnex(f, (i, n) => { prog.textContent = `${f.name}: ${i} of ${n} notes`; }); total += r.added; already += r.already; } prog.textContent = `Imported ${total} note${total === 1 ? '' : 's'}.` + (already ? ` ${already} ${already === 1 ? 'was' : 'were'} already here and left as ${already === 1 ? 'it is' : 'they are'}.` : ''); if (sync.connected()) sync.run(); }
     catch (e) { prog.textContent = 'Import stopped: ' + e.message; }
-    enex.value = ''; setTimeout(close, 2500);
+    enex.value = ''; setTimeout(close, 4500);
   } });
   const restore = h('input', { type: 'file', accept: '.json', hidden: true, onchange: async () => { try { const n = store.importAll(JSON.parse(await restore.files[0].text())); toast(`Restored ${n} items`); } catch { toast('That file is not a Steward backup'); } restore.value = ''; } });
   const keepBox = h('input', { type: 'checkbox', checked: offline.keepFiles(), onchange: () => offline.setKeepFiles(keepBox.checked) });
@@ -325,7 +338,7 @@ function viewSettings(main) {
       hoursEditor(again), h('label', { class: 'inline block' }, 'Rest day ', restSel)),
     h('section', { class: 'card', id: 'blocks-card' }, h('h3', null, 'Fixed blocks'), blocksEditor(again)),
     card('Weekly review', reviewSettings(again)),
-    card('Use with no signal', h('p', { class: 'sub' }, 'Steward keeps your tasks, notes, documents and calendar on this device, so it opens and works with no connection. Changes you make offline sync when the signal comes back. Adding or changing Google Calendar events still needs a connection.'),
+    card('Use with no signal', h('p', { class: 'sub' }, 'Steward keeps your tasks, notes and calendar on this device, so it opens and works with no connection. Changes you make offline sync when the signal comes back. Adding or changing Google Calendar events still needs a connection.'),
       h('label', { class: 'inline nowrap' }, keepBox, h('span', { class: 'grow' }, 'Keep a copy of every photo, PDF and recording on this device')),
       h('div', { class: 'row gap wrap' }, btn('Download everything to this device', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 140 MB plus your attachments).'); await offline.downloadAll(); offLine(); }, 'primary', 'download')),
       h('p', { class: 'sub', id: 'off-line' }, 'Checking…'), h('p', { class: 'sub', id: 'off-busy' }, offline.state.line)),
@@ -353,14 +366,14 @@ function viewSettings(main) {
       h('p', null, h('b', null, 'One-tap “Add task” on your phone: '), 'press and hold the Steward icon, then drag “Add task” onto your home screen. Tapping it opens Steward straight to a new task.')),
     card('Bring in your old data',
       h('p', null, h('b', null, 'Evernote: '), 'in the Evernote desktop app, right-click a notebook, choose Export, pick the ENEX format, then load the file here. Notes, tags and attachments come across.'), btn('Import Evernote .enex files', () => enex.click(), '', 'note'), enex,
-      h('p', null, h('b', null, 'Todoist: '), 'brings over every open task with its project, section, sub-tasks, dates, repeats, priority, labels, deadlines, comments and reminders, plus your projects and filters. Doing it again later updates what came over instead of making copies, and finishes here whatever you finished in Todoist.'), btn('Import from Todoist', () => todoistDialog(again), '', 'check'),
+      h('p', null, h('b', null, 'Todoist: '), 'brings over every open task with its project, section, sub-tasks, dates, repeats, priority, labels, deadlines, comments and reminders, plus your projects and filters. Doing it again later updates what came over instead of making copies, and finishes here whatever you finished in Todoist. Anything you changed, finished or deleted in Steward since stays the way you left it.'), btn('Import from Todoist', () => todoistDialog(again), '', 'check'),
       h('p', null, h('b', null, 'Google Calendar: '), 'needs no import; it shows up as soon as Google is connected.')),
     card('Backup', h('p', { class: 'sub' }, 'Google Drive keeps earlier versions of your data files for 30 days. You can also save a copy yourself.'),
       h('div', { class: 'row gap wrap' }, btn('Download a backup', async () => { const blob = new Blob([JSON.stringify(await store.exportAll())], { type: 'application/json' }); const a = h('a', { href: URL.createObjectURL(blob), download: `steward-backup-${today()}.json` }); a.click(); }), btn('Restore from a backup', () => restore.click()), restore)),
     card('Appearance', h('label', { class: 'inline' }, 'Theme ', theme), h('label', { class: 'inline' }, 'Open Steward on ', home)),
     card('Updates', h('p', { class: 'sub' }, 'Steward updates itself: it checks whenever you come back to it and switches to the new version on its own. You never need to uninstall it to get an update.'),
       h('div', { class: 'row gap wrap' }, btn('Check for updates now', checkForUpdate, 'primary'), btn('Reload Steward fresh', repairApp)),
-      h('p', { class: 'sub' }, '“Reload Steward fresh” is for when something looks stuck on an old version. It downloads the app again; your tasks, notes, documents and settings stay right where they are.')),
+      h('p', { class: 'sub' }, '“Reload Steward fresh” is for when something looks stuck on an old version. It downloads the app again; your tasks, notes and settings stay right where they are.')),
     card('Install', installEvt ? btn('Install Steward on this device', async () => { installEvt.prompt(); installEvt = null; }, 'primary') : null,
       h('p', { class: 'sub' }, 'Mac (Chrome): click the install icon at the right of the address bar, or the three-dot menu, then "Install Steward". Android (Chrome): three-dot menu, then "Add to Home screen" and "Install".')),
     h('p', { class: 'sub center' }, `Steward ${VERSION}`)));
@@ -685,7 +698,7 @@ function fabGestures() {
 // A new version of Steward was published: check whenever the app comes back to the screen, and when the new
 // version takes over, reload into it right away (or the next time Steward is opened, if you are typing).
 let hadController = !!navigator.serviceWorker?.controller, pendingReload = false, swReg = null;
-function safeToReload() { const a = document.activeElement; return !document.querySelector('.modal') && !(a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))); }
+function safeToReload() { const a = document.activeElement; return !noteBusy() && !document.querySelector('.modal') && !(a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))); }
 async function reloadIntoUpdate() { pendingReload = false; try { await store.flush(); } catch {} location.reload(); }
 function watchForUpdates(reg) {
   swReg = reg;
@@ -714,7 +727,7 @@ async function checkForUpdate() {
 // Throws away the saved copy of the app (never your data) and loads it fresh from the internet.
 async function repairApp() {
   if (!navigator.onLine) return toast('Connect to the internet first, so Steward can download itself again.');
-  if (!(await confirmDlg('Download Steward again? Your tasks, notes, documents and settings are not touched; only the saved copy of the app itself is replaced.', 'Reload fresh', false))) return;
+  if (!(await confirmDlg('Download Steward again? Your tasks, notes and settings are not touched; only the saved copy of the app itself is replaced.', 'Reload fresh', false))) return;
   try { await store.flush(); } catch {}
   try { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } catch {}
   try { for (const k of await caches.keys()) if (k.startsWith('steward-') && k !== 'steward-share') await caches.delete(k); } catch {}
@@ -729,6 +742,7 @@ async function start() {
   // 4.5: the Writing section is gone. Anything it held on this device becomes a note first (never dropped).
   try { const moved = await adoptLocalWriting(); if (moved) setTimeout(() => toast(`Writing was removed. What it held is now ${moved === 1 ? 'a note' : moved + ' notes'} in the notebook “From Writing”.`, null, null, 12000), 1500); } catch (e) { console.warn('writing move', e); }
   M.purgeGone().catch(() => {});
+  M.enforceSeedsGone();
   M.ensureIdentities();
   try { ensureReviewTask(); } catch (e) { console.warn('review task', e); }
   M.repairTasks();
@@ -739,7 +753,7 @@ async function start() {
     // updateViaCache 'none': the phone always asks GitHub for a fresh sw.js (and its imports) instead of a saved copy.
     navigator.serviceWorker.register('sw.js', { type: 'module', updateViaCache: 'none' }).then(reg => { watchForUpdates(reg); return setupBackground(reg); }).catch(e => console.warn('sw', e));
     // The background sync asks an open, visible Steward to sync itself rather than doing it behind its back.
-    navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); if (e.data?.steward === 'open-task' && store.get('tasks', e.data.id)) openTask(e.data.id); if (e.data?.steward === 'go' && /^#\/[\w-]+$/.test(e.data.url || '')) location.hash = e.data.url; });
+    navigator.serviceWorker.addEventListener('message', e => { if (e.data?.steward === 'sync-now' || (e.data?.steward === 'reload' && !document.hidden)) sync.run(); if (e.data?.steward === 'open-task') openTaskSoon(e.data.id); if (e.data?.steward === 'go' && /^#\/[\w-]+$/.test(e.data.url || '')) location.hash = e.data.url; });
   }
   // The background sync ran while this window was hidden: take its work (settings, then data) before syncing again.
   sync.onStale = async () => {
@@ -764,7 +778,7 @@ async function start() {
   const pushSoon = debounce(() => sync.run(), 4000);
   let warned = 0;
   store.on(info => { if (info.storageError && Date.now() - warned > 30000) { warned = Date.now(); toast('Steward could not save to this device (' + info.storageError + '). Free up storage space, then make another change so it retries.', null, null, 15000); } });
-  store.on(info => { if (info.remote) { M.repairTasks(); M.purgeGone().catch(() => {}); } });
+  store.on(info => { if (info.remote) { M.repairTasks(); M.enforceSeedsGone(); M.purgeGone().catch(() => {}); } });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   store.on(info => { if (info.ocr) { pushSoon(); semantic.kick(12000); if (parseRoute().view !== 'search') return; } schedule(info); if (info.local) pushSoon(); if (info.remote) ocr.kick(8000); if (info.local || info.remote || info.ocr) semantic.kick(info.local ? 6000 : 12000); });
   initFocus();

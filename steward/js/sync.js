@@ -5,7 +5,7 @@
 // scans, the notifications folder, Google Calendar) it reaches through the Steward helper's web app, which runs in
 // Charles's own Google account and answers only Steward's own sign-in for that account (steward-helper/).
 import { store, settings, BUNDLES, ITEMWISE } from './store.js';
-import { applyOps, buildSummary } from './model.js';
+import { applyOps, buildSummary, parseChangeFile, driveTrashQueue, setDriveTrashQueue } from './model.js';
 import { adoptWriting } from './migrate.js';
 import { pad } from './util.js';
 import { snapshot, backgroundIsNewer, kvGet } from './lsmirror.js';
@@ -161,7 +161,8 @@ export const sync = {
     const t = ls.get('token'), rt = ls.get('refresh');
     if (rt) fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(rt), { method: 'POST' }).catch(() => {});
     else if (t && window.google?.accounts) try { google.accounts.oauth2.revoke(t.access_token, () => {}); } catch {}
-    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email', 'pushKey', 'pushFile', 'pushDevs', 'pushActive', 'askAgain', 'startFresh', 'inboxDone']) ls.del(k);
+    for (const k of ['token', 'refresh', 'connected', 'drive', 'versions', 'remCal', 'email', 'pushKey', 'pushFile', 'pushDevs', 'pushActive', 'askAgain', 'startFresh', 'inboxDone', 'rootSeen', 'calendars']) ls.del(k);
+    this._extra = [];
     this.code = '';
     store.driveClear().catch(() => {});
     this.set('off');
@@ -226,23 +227,29 @@ export const sync = {
     let d = ls.get('drive');
     if (d?.root) { if (!ls.get('rootSeen')) ls.set('rootSeen', d.root); return d; }
     const seen = await this.find('Steward', 'root', true);
-    if (!seen) {
-      // Never start a second Steward folder: if this device (or the helper) knows one exists that Steward cannot see
-      // with its per-file access, stop and say so instead of making an empty new one.
-      let known = ls.get('rootSeen');
-      if (!known && this.helperUrl()) known = (await this.helper('ping').catch(() => ({}))).root;
+    if (!seen && !ls.get('startFresh', false)) {
+      // Which Google account is this? Several can be signed in on one device, and picking the wrong one is the usual
+      // reason the folder is not there.
+      const was = ls.get('email', '');
+      let email = '';
+      try { email = (await this.api(`${DRIVE}/about?fields=user(emailAddress)`)).user.emailAddress; } catch {}
+      const other = !!was && !!email && was.toLowerCase() !== email.toLowerCase();
+      // Never start a second Steward folder: if this device (or the helper) knows one exists in THIS account that
+      // Steward cannot see with its per-file access, stop and say so instead of making an empty new one.
+      let known = other ? null : ls.get('rootSeen');
+      if (!known && !other && this.helperUrl()) known = (await this.helper('ping').catch(() => ({}))).root;
       if (known) { const e = new Error('no-access'); e.detail = 'Steward cannot see its folder in your Google Drive with the new sign-in. Ask Claude to look at it.'; throw e; }
-      // Several Google accounts can be signed in on one device. Picking one that has no Steward folder would quietly
-      // start a second, empty Steward there. Stop and say so, unless the person chose to start fresh in that account.
-      if (!ls.get('startFresh', false)) {
-        let email = ls.get('email', '');
-        try { email = (await this.api(`${DRIVE}/about?fields=user(emailAddress)`)).user.emailAddress; ls.set('email', email); } catch {}
+      // Picking an account that has no Steward folder would quietly start a second, empty Steward there. Stop and say
+      // so, unless the person chose to start fresh in that account.
+      {
+        if (!was && email) ls.set('email', email);
         const e = new Error('no-folder');
-        e.detail = `${email || 'This Google account'} has no Steward folder in its Drive. Your Steward data is probably in a different Google account: in Settings tap Disconnect, then connect again and pick that account.`;
+        e.detail = `${email || 'This Google account'} has no Steward folder in its Drive. Your Steward data is ${other ? `in ${was}` : 'probably in a different Google account'}: in Settings tap Disconnect, then connect again and pick that account.`;
         throw e;
       }
     }
     const root = seen ? seen.id : await this.folder('Steward', 'root');
+    if (!seen) ls.del('email'); // a fresh start in this account: connect() notes whose it is
     ls.set('rootSeen', root);
     d = { root, att: await this.folder('attachments', root), inbox: await this.folder('inbox for Claude', root), files: {} };
     ls.set('drive', d);
@@ -316,6 +323,7 @@ export const sync = {
       if (applied) await syncAll();
       // 3. Photos, PDFs and recordings last, one at a time: a file that will not upload never holds up tasks and notes.
       if (await this.pushAttachments(d)) wrote = (await this.syncLibrary(d)) || wrote;
+      await this.trashAttachments().catch(e => { if (e.message === 'auth') throw e; console.warn('attachment clean-up', e); });
       if (wrote || !d.files.summary) await this.writeSummary(d);
       ls.set('drive', d);
       await this.syncPush().catch(e => { if (e.message === 'auth') throw e; console.warn('notifications', e); });
@@ -549,9 +557,7 @@ export const sync = {
     for (const f of files) {
       let ops;
       try {
-        const j = JSON.parse(String(f.text).replace(/^\uFEFF/, '').replace(/[\u201C\u201D]/g, '"').trim());
-        ops = Array.isArray(j) ? j : j?.ops;
-        if (!Array.isArray(ops)) throw new Error('not a list of changes');
+        ops = parseChangeFile(f.text);
       } catch (e) {
         failed.push({ id: f.id, name: f.name });
         await report(f.name, ['Nothing was applied: ' + (e.message || 'the file could not be read')]);
@@ -605,6 +611,19 @@ export const sync = {
     this.attWaiting = waiting;
     return sent;
   },
+  /**
+   * Files of notes that were removed for good (30 days after leaving the trash): move them to Drive's own trash, so
+   * Steward/attachments does not keep growing. A file Steward cannot reach (one Claude uploaded) or that is already
+   * gone is taken off the list; any other trouble is tried again on a later sync.
+   */
+  async trashAttachments() {
+    const left = [];
+    for (const id of driveTrashQueue()) {
+      try { await this.api(`${DRIVE}/files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }); }
+      catch (e) { if (e.message === 'auth') { setDriveTrashQueue([...left, ...driveTrashQueue().slice(driveTrashQueue().indexOf(id))]); throw e; } if (e.status !== 404 && e.status !== 403) left.push(id); }
+    }
+    setDriveTrashQueue(left);
+  },
   /** Get an attachment's contents, downloading from Drive if this device has not seen it yet. */
   async blob(att) {
     let b = await store.getBlob(att.id);
@@ -644,21 +663,36 @@ export const sync = {
     const byId = new Map((r.calendars || []).map(c => [c.id, c]));
     return (r.events || []).filter(x => byId.has(x.calId)).map(x => this.norm(x.e, byId.get(x.calId)));
   },
+  // Stretches of the calendar outside the usual window that were fetched for the screen (last month, next year):
+  // [{ a, b, at }]. Remembered for ten minutes, so looking at one asks Google once, not on every redraw.
+  _extra: [],
   async refreshEvents() {
     const [a, b] = this.window();
-    this.events = await this.fetchRange(a, b);
-    await store.putKV('events', this.events);
+    const fresh = await this.fetchRange(a, b);
+    this._extra = this._extra.filter(x => Date.now() - x.at < 10 * 60000);
+    // keep what was fetched for an earlier or later stretch, so it stays on the screen
+    const ids = new Set(fresh.map(e => e.calId + e.id));
+    const outside = this._extra.length ? this.events.filter(e => !ids.has(e.calId + e.id) && (new Date(e.end) <= a || new Date(e.start) >= b)) : [];
+    this.events = fresh.concat(outside);
+    await store.putKV('events', outside.length ? fresh : this.events);
     store.emit({ events: true });
   },
   async ensureRange(from, to) {
     const [a, b] = this.window();
     if ((from >= a && to <= b) || !this.connected() || !navigator.onLine) return false;
+    const now = Date.now();
+    this._extra = this._extra.filter(x => now - x.at < 10 * 60000);
+    // already fetched (or being fetched, or it just failed): never ask again on every redraw of the calendar
+    if (this._extra.some(x => x.a <= from && x.b >= to)) return false;
+    const mark = { a: from, b: to, at: now };
+    this._extra.push(mark); if (this._extra.length > 8) this._extra.shift();
     try {
       const extra = await this.fetchRange(from, to);
       const ids = new Set(extra.map(e => e.calId + e.id));
-      this.events = this.events.filter(e => !ids.has(e.calId + e.id)).concat(extra);
+      // what Google has for that stretch now replaces what was shown for it (events deleted since go away)
+      this.events = this.events.filter(e => !ids.has(e.calId + e.id) && !(new Date(e.start) < to && new Date(e.end) > from && (new Date(e.end) <= a || new Date(e.start) >= b))).concat(extra);
       return true;
-    } catch { return false; }
+    } catch { mark.at = now - 9 * 60000; return false; } // try again in a minute, not at once
   },
   eventBody(ev) {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;

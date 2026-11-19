@@ -1,6 +1,6 @@
 // Business rules shared by the screens and by sync (completing, repeating, reminders, changes sent by Claude).
 import { store, settings, TYPES, SHARED } from './store.js';
-import { today, mdToHtml, sanitize, esc } from './util.js';
+import { today, mdToHtml, sanitize, esc, fromYmd, addDays } from './util.js';
 import { nextOccurrence, parseDue, looksRepeating } from './dates.js';
 import { snapshot as snapNote, forget as forgetVersions } from './versions.js';
 import { goneExpired } from './versions-core.js';
@@ -19,7 +19,7 @@ export const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || (a.createdAt
 const slug = s => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'x';
 export function ensureProject(name) {
   if (!name || /^inbox$/i.test(name)) return 'inbox';
-  const p = store.all('projects').find(p => p.name.toLowerCase() === name.toLowerCase());
+  const p = store.all('projects').find(p => String(p.name).toLowerCase() === name.toLowerCase());
   return p ? p.id : store.put('projects', { id: 'pj-' + slug(name), name, color: 'green', order: Date.now() }).id;
 }
 export function ensureSection(projectId, name) {
@@ -32,12 +32,18 @@ export function ensureNotebook(name) {
   const n = store.all('notebooks').find(n => n.name.toLowerCase() === name.toLowerCase());
   return n ? n.id : store.put('notebooks', { id: 'nb-' + slug(name), name }).id;
 }
+/** Labels in the spelling already in use: "@Promise" is the label "promise", "@Church" the existing "church". */
+export function canonLabels(names) {
+  const have = new Map(store.all('labels').filter(l => typeof l.name === 'string').map(l => [l.name.toLowerCase(), l.name]));
+  return [...new Set((names || []).map(n => { const s = String(n ?? ''); return s.toLowerCase() === 'promise' ? 'promise' : have.get(s.toLowerCase()) || s; }).filter(Boolean))];
+}
 export function ensureLabels(names) {
   const have = new Set(store.all('labels').map(l => l.name.toLowerCase()));
   for (const n of names || []) if (n && !have.has(n.toLowerCase())) { store.put('labels', { id: 'lb-' + slug(n), name: n, color: 'stone' }); have.add(n.toLowerCase()); }
 }
 
 export function addTask(f, opts) {
+  if (f.labels?.length) f = { ...f, labels: canonLabels(f.labels) };
   ensureLabels(f.labels);
   return store.put('tasks', {
     ...(f.id ? { id: f.id } : {}), content: f.content, description: f.description || '', projectId: f.projectId || 'inbox', sectionId: f.sectionId || null,
@@ -51,9 +57,9 @@ export function completeTask(id) {
   const t = store.get('tasks', id);
   if (!t) return;
   if (t.due?.recur) {
-    const next = nextOccurrence(t.due);
+    const next = nextOccurrence(t.due), at = Date.now(); // one moment for both records, or Stats counts the round twice
     // doneLog: when each round of a repeating task was finished (newest 60), so the week's stats can count them
-    store.put('tasks', { ...t, due: { ...t.due, date: next }, lastDoneAt: Date.now(), doneCount: (t.doneCount || 0) + 1, doneLog: [...(t.doneLog || []).slice(-59), Date.now()], remindedFor: null });
+    store.put('tasks', { ...t, due: { ...t.due, date: next }, lastDoneAt: at, doneCount: (t.doneCount || 0) + 1, doneLog: [...(t.doneLog || []).slice(-59), at], remindedFor: null });
     for (const c of childrenOf(id)) if (c.completedAt) store.patch('tasks', c.id, { completedAt: null }, { silent: true });
     return { recurring: true, next };
   }
@@ -62,7 +68,26 @@ export function completeTask(id) {
   return { recurring: false };
 }
 export function uncompleteTask(id) { store.patch('tasks', id, { completedAt: null }); }
+// The six starting identities and the "Weekly review" task are made by Steward itself. One he deletes is written down
+// in the shared settings, because the usual record of a delete is forgotten after 90 days and Steward would make it again.
+const seedsGone = () => { const v = settings.get('seedsGone'); return Array.isArray(v) ? v : []; };
+export const seedGone = id => seedsGone().includes(id);
+export const markSeedGone = id => { if (!seedGone(id)) settings.set('seedsGone', [...seedsGone(), id]); };
+export const unmarkSeedGone = ids => { if (seedsGone().some(x => ids.includes(x))) settings.set('seedsGone', seedsGone().filter(x => !ids.includes(x))); };
+const SEED_IDS = new Set([...GC.SEED_IDENTITIES.map(s => s.id), 'weekly-review']);
+/**
+ * After data arrives from Drive: a starting item this device made by itself (still untouched) that he deleted on
+ * another device is taken away again, and a delete made before this list existed is added to it.
+ */
+export function enforceSeedsGone() {
+  for (const id of SEED_IDS) {
+    const type = id === 'weekly-review' ? 'tasks' : 'identities', raw = store.rawGet(type, id);
+    if (raw?.deleted) markSeedGone(id);
+    else if (raw && seedGone(id) && (raw.updatedAt || 0) <= 1) store.remove(type, id, { silent: true });
+  }
+}
 export function deleteTask(id) {
+  if (SEED_IDS.has(id)) markSeedGone(id);
   for (const c of childrenOf(id)) deleteTask(c.id);
   for (const c of store.all('comments')) if (c.taskId === id) store.remove('comments', c.id, { silent: true });
   store.remove('tasks', id);
@@ -97,9 +122,18 @@ export const identityOfTask = (t, ctx = goalCtx()) => GC.identityOf(t, ctx);
  * The six starting identities, added once. They carry the oldest possible edit time, so a device that seeds them
  * later never overwrites what he has already changed on another device; one he deleted stays deleted.
  */
-export function ensureIdentities() {
+export function ensureIdentities(again = false) {
   let n = 0;
-  for (const seed of GC.SEED_IDENTITIES) { if (store.rawGet('identities', seed.id)) continue; store.put('identities', { ...seed, createdAt: 1, updatedAt: 1 }, { silent: true, keepTimes: true }); n++; }
+  // again: "Add the starting six" was pressed, so the ones deleted earlier come back too
+  if (again) { unmarkSeedGone(GC.SEED_IDENTITIES.map(s => s.id)); for (const seed of GC.SEED_IDENTITIES) if (store.rawGet('identities', seed.id)?.deleted) store.purge('identities', seed.id); }
+  for (const seed of GC.SEED_IDENTITIES) {
+    const raw = store.rawGet('identities', seed.id);
+    if (raw?.deleted) markSeedGone(seed.id);
+    if (raw || seedGone(seed.id)) continue;
+    // asked for again: made now, so it wins over the record of its delete still in Drive
+    if (again) store.put('identities', { ...seed }, { silent: true }); else store.put('identities', { ...seed, createdAt: 1, updatedAt: 1 }, { silent: true, keepTimes: true });
+    n++;
+  }
   return n;
 }
 export function addGoal(f) {
@@ -115,6 +149,7 @@ export function deleteGoal(id) {
 export function deleteIdentity(id) {
   for (const g of store.all('goals')) if (g.identityId === id) deleteGoal(g.id);
   for (const b of store.all('blocks')) if (b.identityId === id) store.patch('blocks', b.id, { identityId: null }, { silent: true });
+  if (SEED_IDS.has(id)) markSeedGone(id);
   store.remove('identities', id);
 }
 
@@ -139,11 +174,28 @@ export async function purgeGone(now = Date.now()) {
   let n = 0;
   for (const x of store.all('notes')) {
     if (!goneExpired(x, now)) continue;
-    for (const a of x.attachments || []) { try { await store.delBlob(a.id); } catch {} store.remove('ocr', a.id, { silent: true }); }
+    for (const a of x.attachments || []) {
+      // a file another note still uses (a copy of this note made before 4.8.1 shared its files) is left alone
+      if (store.all('notes').some(o => o.id !== x.id && (o.attachments || []).some(b => b.id === a.id || (a.driveId && b.driveId === a.driveId)))) continue;
+      try { await store.delBlob(a.id); } catch {}
+      store.remove('ocr', a.id, { silent: true });
+      if (a.driveId) queueDriveTrash(a.driveId); // the copy in Drive goes to Drive's trash on the next sync
+    }
     forgetVersions(x.id); store.remove('notes', x.id, { silent: true }); n++;
   }
   if (n) store.emit({ local: true });
   return n;
+}
+/** Files in Steward/attachments waiting to be moved to Drive's trash (this device's list; sync.js empties it). */
+const TRASH_KEY = 'steward.attTrash';
+export const driveTrashQueue = () => { try { const v = JSON.parse(localStorage.getItem(TRASH_KEY)); return Array.isArray(v) ? v : []; } catch { return []; } };
+export const setDriveTrashQueue = list => { try { list.length ? localStorage.setItem(TRASH_KEY, JSON.stringify(list)) : localStorage.removeItem(TRASH_KEY); } catch {} };
+const queueDriveTrash = id => { const q = driveTrashQueue(); if (!q.includes(id)) setDriveTrashQueue([...q, id]); };
+/** The next day work may be planned on (skips the rest day and days with no planning hours). */
+export function nextPlanDay(day) {
+  const hours = settings.get('hours') || [], rest = settings.get('restDay');
+  for (let i = 1; i <= 7; i++) { const d = addDays(day, i), w = fromYmd(d).getDay(); if (w !== rest && hours[w]) return d; }
+  return addDays(day, 1);
 }
 export const allTags = () => { const m = new Map(); for (const n of liveNotes()) for (const t of n.tags || []) m.set(t, (m.get(t) || 0) + 1); return [...m].sort((a, b) => a[0].localeCompare(b[0])); };
 
@@ -169,6 +221,7 @@ export function taskFixes(t, partial = false) {
   if (typeof t.content !== 'string' && !(partial && t.content === undefined)) f.content = String(t.content ?? '').trim() || 'Untitled';
   if (t.description != null && typeof t.description !== 'string') f.description = String(t.description);
   if (t.labels != null && (!Array.isArray(t.labels) || t.labels.some(l => typeof l !== 'string' || !l || l[0] === '@'))) f.labels = labelList(t.labels);
+  if ((f.labels || (Array.isArray(t.labels) ? t.labels : [])).some(l => l !== 'promise' && String(l).toLowerCase() === 'promise')) f.labels = [...new Set((f.labels || t.labels).map(l => String(l).toLowerCase() === 'promise' ? 'promise' : l))];
   if (t.priority != null && ![1, 2, 3, 4].includes(t.priority)) { const p = Math.round(Number(t.priority)); f.priority = p >= 1 && p <= 4 ? p : 4; }
   if (t.duration != null && (typeof t.duration !== 'number' || !(t.duration > 0))) { const n = Math.round(Number(t.duration)); f.duration = n > 0 && n <= 1440 ? n : null; }
   if (t.reminders != null && !Array.isArray(t.reminders)) f.reminders = [];
@@ -183,9 +236,23 @@ export function taskFixes(t, partial = false) {
 export function repairTasks() {
   let n = 0;
   for (const t of store.all('tasks')) { const f = taskFixes(t); if (f) { store.patch('tasks', t.id, f, { silent: true, noHistory: true }); n++; } }
+  // a project, section, label, filter or notebook with no name (a malformed change) stops lists and Add task from working
+  for (const type of ['projects', 'sections', 'labels', 'filters', 'notebooks']) for (const x of store.all(type)) if (typeof x.name !== 'string' || !x.name.trim()) { store.patch(type, x.id, { name: 'Untitled' }, { silent: true }); n++; }
   return n;
 }
 const WRITING_GONE = 'Writing (documents and sources) was removed from Steward in 4.5; nothing was changed. Papers and sermons live in Google Docs now. To keep text in Steward, send it as a note.';
+/**
+ * Read one of Claude's change files: {"ops": [...]} or a bare list. Typographic quotes inside the text are fine; only
+ * a file that cannot be read as it stands is tried again with curly quotes straightened (a file typed by hand).
+ */
+export function parseChangeFile(text) {
+  const raw = String(text ?? '').replace(/^\uFEFF/, '').trim();
+  let j;
+  try { j = JSON.parse(raw); } catch (e) { try { j = JSON.parse(raw.replace(/[\u201C\u201D]/g, '"')); } catch { throw e; } }
+  const ops = Array.isArray(j) ? j : j?.ops;
+  if (!Array.isArray(ops)) throw new Error('not a list of changes');
+  return ops;
+}
 /** Apply a list of changes. Returns one line per change; lines starting with "problem" need attention. */
 export function applyOps(ops) {
   const results = [];
@@ -237,7 +304,7 @@ export function applyOps(ops) {
         if (it.goalId && !store.get('goals', it.goalId) && store.all('goals').length) { results.push(`problem ${where}: no goal with id ${it.goalId}; saved without a goal`); it.goalId = null; }
         if (it.parentId && !store.get('tasks', it.parentId)) { results.push(`problem ${where}: no parent task with id ${it.parentId}; saved as a top-level task`); it.parentId = null; }
         Object.assign(it, taskFixes(it, true) || {});
-        if (it.labels) ensureLabels(it.labels);
+        if (it.labels) { it.labels = canonLabels(it.labels); ensureLabels(it.labels); }
         if (it.id && !cur && store.rawGet('tasks', it.id)?.deleted) throw new Error('that task was deleted; use {"op":"restore"} first');
         // A change to a task this device does not have (yet) must never create a blank copy under that id: the copy's
         // empty name, project and labels would be newer than the real task's and overwrite it everywhere.
@@ -317,7 +384,11 @@ export function applyOps(ops) {
           store.put('sessions', { ...(it.id ? { id: it.id } : {}), ...manualSession({ kind: i.timed ? 'family' : 'manual', identityId: i.id, goalId: g?.id || null, minutes: min, day, note: String(it.note || ''), device: 'Claude' }) });
         }
       } else if (type === 'project') {
-        const cur = it.id ? store.get('projects', it.id) : store.all('projects').find(p => p.name.toLowerCase() === String(it.name || '').toLowerCase());
+        const cur = it.id ? store.get('projects', it.id) : store.all('projects').find(p => String(p.name).toLowerCase() === String(it.name || '').toLowerCase());
+        if (it.name !== undefined && (typeof it.name !== 'string' || !it.name.trim())) throw new Error('a project name must be words');
+        if (!cur && !String(it.name || '').trim()) throw new Error(it.id ? 'no project with that id on this device yet; nothing was changed (a new project needs a name)' : 'a new project needs a name');
+        if (it.name) it.name = it.name.trim();
+        if (it.color != null && !COLORS[it.color]) delete it.color;
         store.put('projects', cur ? { ...cur, ...it, id: cur.id } : { color: 'green', order: Date.now(), ...it });
       } else if (type === 'block') {
         // a fixed block: {name, days:[0-6], start:"HH:MM", end:"HH:MM", every:1|2, anchor:"YYYY-MM-DD", until:"YYYY-MM-DD"}
@@ -348,9 +419,9 @@ export function applyOps(ops) {
         const cur = store.rawGet('ocr', it.id);
         store.put('ocr', { ...(cur && !cur.deleted ? cur : {}), id: it.id, text: it.text.slice(0, 30000), by: 'claude', failed: false, needsReading: false });
       } else if (type === 'comment') {
-        if (!it.id && !store.get('tasks', it.taskId)) throw new Error('no task with that taskId; the comment was not added');
-        if (!it.id && !String(it.text || '').trim()) throw new Error('a comment needs text');
         const curC = it.id ? store.get('comments', it.id) : null;
+        if (!curC && !store.get('tasks', it.taskId)) throw new Error('no task with that taskId; the comment was not added');
+        if (!curC && !String(it.text || '').trim()) throw new Error('a comment needs text');
         store.put('comments', { ...(curC || {}), taskId: it.taskId, text: String(it.text ?? curC?.text ?? ''), author: it.author || curC?.author || 'Claude', ...it });
       } else if (type === 'orgword') {
         // a name or word the organizer should know: {word, area, tags:[...]} (area: cs-outdoors, seminary, church, home-family, personal)
@@ -365,6 +436,7 @@ export function applyOps(ops) {
         const cur = it.id ? store.get(type + 's', it.id) : null;
         if (!cur && !String(it.name || '').trim()) throw new Error(`a new ${type} needs a name`);
         if (!cur && type === 'filter' && !String(it.query || '').trim()) throw new Error('a new filter needs a query');
+        if (it.name !== undefined && (typeof it.name !== 'string' || !it.name.trim())) throw new Error(`a ${type} name must be words`);
         if (type === 'label' && it.name) it.name = labelList(it.name)[0] || it.name;
         store.put(type + 's', cur ? { ...cur, ...it } : it);
       } else throw new Error(`unknown type "${type}"; nothing was changed`);

@@ -58,7 +58,7 @@ function toggle(t, row) {
   setTimeout(() => {
     if (!store.get('tasks', t.id) || store.get('tasks', t.id).completedAt) return; // changed meanwhile (double tap, sync)
     const r = M.completeTask(t.id);
-    toast(r?.recurring ? `Done. Next on ${fmtDate(r.next, true)}` : 'Completed', 'Undo', () => { for (const x of before) { const cur = store.get('tasks', x.id); if (cur) store.patch('tasks', x.id, { completedAt: x.completedAt ?? null, due: x.due ?? null, lastDoneAt: x.lastDoneAt ?? null, doneCount: x.doneCount ?? 0, remindedFor: x.remindedFor ?? null }, { silent: true }); } store.emit({ local: true }); });
+    toast(r?.recurring ? `Done. Next on ${fmtDate(r.next, true)}` : 'Completed', 'Undo', () => { for (const x of before) { const cur = store.get('tasks', x.id); if (cur) store.patch('tasks', x.id, { completedAt: x.completedAt ?? null, due: x.due ?? null, lastDoneAt: x.lastDoneAt ?? null, doneCount: x.doneCount ?? 0, doneLog: x.doneLog ?? [], remindedFor: x.remindedFor ?? null }, { silent: true }); } store.emit({ local: true }); });
   }, 160);
 }
 
@@ -166,7 +166,7 @@ function touchDrag(row, t) {
       ghost?.remove(); row.classList.remove('dragging'); clearMarks();
       const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
       row.addEventListener('click', swallow, { capture: true, once: true }); setTimeout(() => row.removeEventListener('click', swallow, true), 400);
-      if (target) target.list._dnd.onDrop?.(t.id, orderFor(target.list._dnd.tasks, t.id, target.id, target.before));
+      if (target) target.list._dnd.onDrop?.(t.id, orderFor(target.list._dnd.tasks, t.id, target.id, target.before), target.id, target.before);
     };
     document.addEventListener('touchmove', move, { passive: false }); document.addEventListener('touchend', end); document.addEventListener('touchcancel', end);
   }, { passive: true });
@@ -220,14 +220,9 @@ export function taskList(tasks, o = {}) {
     list.addEventListener('drop', e => {
       if (!dragId) return; e.preventDefault();
       const item = e.target.closest('.titem');
-      const sibs = tasks.filter(x => x.id !== dragId);
-      let order = Date.now();
-      if (item && item.dataset.id !== dragId && item.parentElement === list) {
-        const idx = sibs.findIndex(s => s.id === item.dataset.id), r = item.getBoundingClientRect(), before = e.clientY < r.top + r.height / 2;
-        const prev = sibs[before ? idx - 1 : idx], next = sibs[before ? idx : idx + 1];
-        order = prev && next ? ((prev.order ?? 0) + (next.order ?? 0)) / 2 : prev ? (prev.order ?? 0) + 1000 : (next.order ?? 0) - 1000;
-      } else if (sibs.length) order = Math.max(...sibs.map(s => s.order ?? 0)) + 1000;
-      o.onDrop?.(dragId, order);
+      let targetId, before;
+      if (item && item.dataset.id !== dragId && item.parentElement === list) { const r = item.getBoundingClientRect(); targetId = item.dataset.id; before = e.clientY < r.top + r.height / 2; }
+      o.onDrop?.(dragId, orderFor(tasks, dragId, targetId, before), targetId, before);
     });
   }
   return list;
@@ -283,7 +278,7 @@ function viewUpcoming(main) {
 }
 
 function viewProject(main, pid) {
-  const proj = pid === 'inbox' ? { id: 'inbox', name: 'Inbox', view: settings.get('inboxView') || 'list', sort: settings.get('inboxSort') || 'manual' } : store.get('projects', pid);
+  const proj = pid === 'inbox' ? { id: 'inbox', name: 'Inbox', view: settings.get('inboxView') || 'list', sort: settings.get('inboxSort') || 'manual', showDone: !!settings.get('inboxShowDone') } : store.get('projects', pid);
   if (!proj) { main.append(empty('Project not found', 'It may have been deleted on another device.')); return; }
   const setP = f => { if (pid === 'inbox') { for (const [k, v] of Object.entries(f)) settings.set('inbox' + k[0].toUpperCase() + k.slice(1), v); store.emit({}); } else store.patch('projects', pid, f); };
   const showDone = !!proj.showDone, sort = SORTS[proj.sort] ? proj.sort : 'manual', board = proj.view === 'board';
@@ -302,7 +297,17 @@ function viewProject(main, pid) {
     pid !== 'inbox' && { label: 'Delete project', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete "${proj.name}" and its ${all.length} tasks? This cannot be undone.`)) { M.deleteProject(pid); go('#/today'); } } },
   ]);
   main.append(header(proj.name, `${openCount} open`, iconBtn('plus', 'Add section', async () => { const n = await promptDlg('New section', '', 'Section name'); if (n) store.put('sections', { projectId: pid, name: n, order: Date.now() }); }), iconBtn('more', 'More', more)));
-  const drop = sectionId => (id, order) => { store.patch('tasks', id, { projectId: pid, sectionId, parentId: null, order }); if (sort !== 'manual') setP({ sort: 'manual' }); };
+  const drop = sectionId => (id, order, targetId, before) => {
+    if (sort !== 'manual') {
+      // Sorted by date, priority or name: first make "my own order" the order on the screen, so the task lands where
+      // it was dropped and the rest stay where they are.
+      top.forEach((t, i) => { if (t.id !== id && t.order !== (i + 1) * 1000) store.patch('tasks', t.id, { order: (i + 1) * 1000 }, { silent: true, noHistory: true }); });
+      const shown = top.map(t => store.get('tasks', t.id)).filter(t => t && ((t.sectionId || null) === sectionId || (sectionId === null && t.sectionId && !sections.find(x => x.id === t.sectionId))));
+      order = orderFor(shown, id, targetId, before);
+    }
+    store.patch('tasks', id, { projectId: pid, sectionId, parentId: null, order });
+    if (sort !== 'manual') setP({ sort: 'manual' });
+  };
   const secHead = s => iconBtn('more', 'Section options', e => menu(e.currentTarget, [
     { label: 'Rename', icon: 'edit', onclick: async () => { const n = await promptDlg('Rename section', s.name); if (n) store.patch('sections', s.id, { name: n }); } },
     { label: 'Delete section', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete section "${s.name}"? Its tasks stay in the project.`)) { for (const t of all) if (t.sectionId === s.id) store.patch('tasks', t.id, { sectionId: null }, { silent: true }); store.remove('sections', s.id); } } },
@@ -357,9 +362,20 @@ function viewFilters(main) {
   const labels = store.all('labels').sort((a, b) => a.name.localeCompare(b.name));
   main.append(group('Labels', h('div', { class: 'rows' }, labels.map(l => h('div', { class: 'rowlink' }, icon('tag', 16), h('a', { class: 'grow', href: '#/label/' + encodeURIComponent(l.name) }, '@' + l.name), h('span', { class: 'count' }, tasks.filter(t => (t.labels || []).includes(l.name)).length),
     iconBtn('more', 'Label options', e => menu(e.currentTarget, [
-      { label: 'Rename', icon: 'edit', onclick: async () => { const n = (await promptDlg('Rename label', l.name))?.replace(/\s+/g, '-'); if (n && n !== l.name) { for (const t of store.all('tasks')) if ((t.labels || []).includes(l.name)) store.patch('tasks', t.id, { labels: t.labels.map(x => x === l.name ? n : x) }, { silent: true }); store.patch('labels', l.id, { name: n }); } } },
+      { label: 'Rename', icon: 'edit', onclick: async () => { const n = (await promptDlg('Rename label', l.name))?.replace(/^@/, '').replace(/\s+/g, '-'); if (n && n !== l.name) renameLabel(l, n); } },
       { label: 'Delete', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete label @${l.name}? It is removed from all tasks.`)) { for (const t of store.all('tasks')) if ((t.labels || []).includes(l.name)) store.patch('tasks', t.id, { labels: t.labels.filter(x => x !== l.name) }, { silent: true }); store.remove('labels', l.id); } } },
-    ]))))), btn('New label', async () => { const n = (await promptDlg('New label', '', 'e.g. promise'))?.replace(/^@/, '').replace(/\s+/g, '-'); if (n) M.ensureLabels([n]); }, 'link', 'plus')));
+    ]))))), btn('New label', async () => { const n = (await promptDlg('New label', '', 'e.g. promise'))?.replace(/^@/, '').replace(/\s+/g, '-'); if (n) M.ensureLabels(M.canonLabels([n])); }, 'link', 'plus')));
+}
+/** Rename a label everywhere: on its tasks and in saved filters. A name already in use joins the two labels into one. */
+function renameLabel(l, name) {
+  const other = store.all('labels').find(x => x.id !== l.id && x.name.toLowerCase() === name.toLowerCase());
+  const to = other ? other.name : name;
+  for (const t of store.all('tasks')) if ((t.labels || []).includes(l.name)) store.patch('tasks', t.id, { labels: [...new Set(t.labels.map(x => x === l.name ? to : x))] }, { silent: true, noHistory: true });
+  const esc = l.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('@' + esc + '(?![\\w-])', 'gi');
+  for (const f of store.all('filters')) { const q = String(f.query || '').replace(re, '@' + to); if (q !== f.query) store.patch('filters', f.id, { query: q }, { silent: true }); }
+  if (other) { store.remove('labels', l.id, { silent: true }); toast(`Joined with the label @${other.name}`); } else store.patch('labels', l.id, { name: to }, { silent: true });
+  store.emit({ local: true });
 }
 function viewCompleted(main) {
   const done = store.all('tasks').filter(t => t.completedAt).sort((a, b) => b.completedAt - a.completedAt).slice(0, 400);
@@ -522,7 +538,7 @@ export function openTask(id) {
       const secSel = h('select', { class: 'field', onchange: () => set({ sectionId: secSel.value || null }) }, h('option', { value: '' }, 'No section'), sections.map(s => h('option', { value: s.id }, s.name)));
       secSel.value = t.sectionId || '';
       const pri = h('div', { class: 'pris' }, [1, 2, 3, 4].map(n => h('button', { type: 'button', class: `pri pri${n}` + ((t.priority || 4) === n ? ' on' : ''), onclick: () => { set({ priority: n }); draw(); } }, icon('flag', 14), 'P' + n)));
-      const labelIn = h('input', { class: 'field', placeholder: 'Add label', list: 'label-list', onkeydown: e => { if (e.key === 'Enter' && labelIn.value.trim()) { const n = labelIn.value.trim().replace(/^@/, '').replace(/\s+/g, '-'); M.ensureLabels([n]); set({ labels: [...new Set([...(t.labels || []), n])] }); draw(); } } });
+      const labelIn = h('input', { class: 'field', placeholder: 'Add label', list: 'label-list', onkeydown: e => { if (e.key === 'Enter' && labelIn.value.trim()) { const n = M.canonLabels([labelIn.value.trim().replace(/^@/, '').replace(/\s+/g, '-')])[0]; M.ensureLabels([n]); set({ labels: [...new Set([...(t.labels || []), n])] }); draw(); } } });
       const labels = h('div', null, h('div', { class: 'chips' }, (t.labels || []).map(l => h('span', { class: 'chip' }, '@' + l, h('button', { 'aria-label': 'Remove label', onclick: () => { set({ labels: t.labels.filter(x => x !== l) }); draw(); } }, '×')))), labelIn,
         h('datalist', { id: 'label-list' }, store.all('labels').map(l => h('option', { value: l.name }))));
       const deadlineIn = h('input', { type: 'date', class: 'field', value: t.deadline || '', onchange: () => { set({ deadline: deadlineIn.value || null }); draw(); } });
@@ -545,7 +561,7 @@ export function openTask(id) {
           const x = get(); if (!x) return;
           const f = { labels: mergeList(x.labels, fin, removed) };
           if (fin.project && x.projectId === 'inbox' && !x.parentId) { const pid = projectIdByName(fin.project); if (pid) { f.projectId = pid; f.sectionId = null; } }
-          M.ensureLabels(f.labels); set(f); setTimeout(draw, 0);
+          f.labels = M.canonLabels(f.labels); M.ensureLabels(f.labels); set(f); setTimeout(draw, 0);
         } });
       if (hasArea(t.labels)) org.showDone(readOrg(t.labels)); else org.refresh(true);
       const kids = M.childrenOf(id).sort(M.byOrder);
@@ -573,7 +589,7 @@ export function openTask(id) {
         if (descr.value !== (t.description || '')) set({ description: descr.value });
         const dv = dueText.value.trim(), was = t.due ? describeDue(t.due).replace(' ↻ ', ' ') : '';
         if (dv !== was.trim()) { if (!dv) set({ due: null }); else { const d = parseDue(dv); if (d) set({ due: d.due }); else { toast("I couldn't read that date"); return; } } }
-        if (labelIn.value.trim()) { const n = labelIn.value.trim().replace(/^@/, '').replace(/\s+/g, '-'); M.ensureLabels([n]); set({ labels: [...new Set([...(get().labels || []), n])] }); }
+        if (labelIn.value.trim()) { const n = M.canonLabels([labelIn.value.trim().replace(/^@/, '').replace(/\s+/g, '-')])[0]; M.ensureLabels([n]); set({ labels: [...new Set([...(get().labels || []), n])] }); }
         if (subIn.value.trim()) { const p = parseQuickAdd(subIn.value, M.ctx()); M.addTask({ ...p, content: p.content || subIn.value.trim(), projectId: t.projectId, sectionId: t.sectionId, parentId: id }); }
         if (cIn.value.trim()) store.put('comments', { taskId: id, text: cIn.value.trim() });
         close(); toast('Saved');

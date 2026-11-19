@@ -112,12 +112,14 @@ export function planCard(day, { openTask, editHours } = {}) {
   const win = (settings.get('hours') || [])[fromYmd(day).getDay()];
   const hoursLbl = win ? `${clock(toMin(win.start))}–${clock(toMin(win.end))}` : 'No planning hours';
   const hd = headline(p);
+  // "Tomorrow" for moving work never means the rest day: Saturday's leftovers go to Monday.
+  const nextDay = M.nextPlanDay(day), nextName = nextDay === addDays(day, 1) ? 'tomorrow' : DAYS[fromYmd(nextDay).getDay()];
   const moveLeft = () => {
     const left = M.openTasks().filter(t => t.due && t.due.date <= day && !t.due.recur && !t.parentId);
     const before = left.map(t => ({ id: t.id, due: t.due }));
-    for (const t of left) store.patch('tasks', t.id, { due: { ...t.due, date: addDays(day, 1) } }, { silent: true });
+    for (const t of left) store.patch('tasks', t.id, { due: { ...t.due, date: nextDay } }, { silent: true });
     store.emit({ local: true });
-    toast(`Moved ${left.length} task${left.length === 1 ? '' : 's'} to tomorrow`, 'Undo', () => { for (const b of before) store.patch('tasks', b.id, { due: b.due }, { silent: true }); store.emit({ local: true }); });
+    toast(`Moved ${left.length} task${left.length === 1 ? '' : 's'} to ${nextName}`, 'Undo', () => { for (const b of before) store.patch('tasks', b.id, { due: b.due }, { silent: true }); store.emit({ local: true }); });
   };
   // Timeline folds away (remembered per device) so the task list stays near the top on a phone.
   let tlOpen; try { tlOpen = localStorage.getItem('steward.planOpen'); } catch {}
@@ -139,7 +141,7 @@ export function planCard(day, { openTask, editHours } = {}) {
       h('div', { class: 'pl-bar' }, h('span', { style: { width: pct + '%' } })),
       h('div', { class: 'pl-legend' }, h('span', null, h('i', { class: 'sw planned' }), hm(p.planned) + ' planned'), h('span', null, h('i', { class: 'sw open' }), hm(Math.max(0, p.margin)) + ' free'), over && h('span', { class: 'pl-over' }, hm(-p.margin) + ' too much'))),
     aiReady() && p.state !== 'rest' && p.state !== 'after' && (p.count + p.overdue) > 0 && h('div', { class: 'pl-actions' }, btn(planStatus(day) === 'running' ? 'Claude is planning…' : planStatus(day) === 'ready' ? 'See Claude’s plan' : 'Plan with Claude', () => planWithClaude(day, p), planStatus(day) === 'ready' ? 'primary tiny' : 'tiny', 'spark')),
-    (after || over) && h('div', { class: 'pl-actions' }, btn(after ? 'Move what’s left to tomorrow' : 'Move unfinished to tomorrow', moveLeft, after ? 'primary tiny' : 'tiny', 'upcoming'),
+    (after || over) && h('div', { class: 'pl-actions' }, btn(after ? `Move what’s left to ${nextName}` : `Move unfinished to ${nextName}`, moveLeft, after ? 'primary tiny' : 'tiny', 'upcoming'),
       over && h('a', { class: 'btn tiny', href: '#/upcoming' }, icon('cal', 14), 'See the week')),
     notes.length ? h('ul', { class: 'pl-notes' }, notes.map(n => h('li', { class: n.quiet ? 'quiet' : '' }, icon(n.ic, 13), h('span', null, n.text)))) : null,
     rows.length ? h('details', { class: 'pl-tl', open: tlOpen, ontoggle: e => { try { localStorage.setItem('steward.planOpen', e.currentTarget.open ? '1' : '0'); } catch {} } },

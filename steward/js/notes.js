@@ -36,10 +36,13 @@ const isBlank = n => !String(n.title || '').trim() && !(n.attachments || []).len
 export function leaveNotes(nextId) {
   const was = mounted;
   mounted?.stopDictation?.();
+  mounted?.stopRecording?.(); // the recording is finished and saved into the note it was started in
   mounted?.save(true); mounted?.urls.forEach(u => URL.revokeObjectURL(u)); mounted = null;
   if (was && was.id !== nextId && fresh.has(was.id)) { fresh.delete(was.id); const n = store.get('notes', was.id); if (n && isBlank(n)) store.remove('notes', was.id); }
 }
 
+/** A recording or dictation is under way in the open note: Steward must not reload or rebuild it now. */
+export const noteBusy = () => !!mounted && (!!mounted.isRecording?.() || !!mounted.isDictating?.());
 export function renderNotes(route, main, info = {}) {
   if (route.view === 'notes') scope = route.scope || { kind: 'all' };
   if (route.view === 'trash') scope = { kind: route.id === 'deleted' ? 'gone' : 'trash' };
@@ -52,8 +55,10 @@ export function renderNotes(route, main, info = {}) {
   const pane = main.querySelector('.neditor');
   if (route.view === 'note') {
     const focused = pane.contains(document.activeElement);
-    if (!mounted || mounted.id !== route.id || (info.remote && !focused && !mounted.isDictating?.())) mountEditor(pane, route.id);
-    else mounted.refreshTasks?.();
+    // A sync brought changes: rebuild the open note only if THIS note changed on another device (reading it keeps its
+    // place otherwise), and never while typing, dictating or recording in it.
+    if (!mounted || mounted.id !== route.id || (info.remote && !focused && !noteBusy() && mounted.stale?.())) mountEditor(pane, route.id);
+    else { if (!info.remote) mounted.mark?.(); mounted.refreshTasks?.(); }
   } else { leaveNotes(); fill(pane, h('div', { class: 'empty pane-empty' }, icon('note', 40), h('strong', null, 'Pick a note to read'), h('p', null, 'Or start a new one with ', h('kbd', null, 'N'), '. Everything here is searchable, even the words inside photos and PDFs.'), btn('New note', () => newNote(), 'primary', 'plus'))); }
 }
 
@@ -243,7 +248,20 @@ function mountEditor(pane, id) {
   const attach = async files => {
     if (!files.length) return;
     const atts = await filesToAttachments(files);
+    if (!body.isConnected) {
+      // This note is no longer the one on screen (a recording was finished by leaving it): add the file to the saved
+      // note itself. If the same note is open again, its typing is saved first and it is then redrawn with the file.
+      const again = mounted && mounted.id === id ? mounted : null;
+      again?.save(true);
+      const now = get(); if (!now) return;
+      store.patch('notes', id, { attachments: [...(now.attachments || []), ...atts], body: (now.body || '') + atts.map(attHtml).join('') + '<div><br></div>' });
+      again?.reload?.();
+      toast(`Saved “${atts[0].name.slice(0, 40)}” in the note “${(now.title || 'Untitled').slice(0, 40)}”`, 'Open', () => go('#/note/' + id), 8000);
+      ocr.kick(1500); if (sync.connected()) sync.run();
+      return;
+    }
     const cur = get();
+    if (!cur) return;
     store.patch('notes', id, { attachments: [...(cur.attachments || []), ...atts] }, { silent: true });
     insert(atts.map(attHtml).join('') + '<div><br></div>');
     await hydrate(body, get().attachments, urls);
@@ -283,6 +301,7 @@ function mountEditor(pane, id) {
     catch { toast('This browser could not share or copy the note'); }
   };
   let rec = null;
+  const stopRecording = () => { try { if (rec && rec.state !== 'inactive') rec.stop(); } catch {} };
   // ---- dictation: speak and the words are typed at the cursor -------------------------------------------------
   let dict = null, bar = null;
   const stopDictation = () => dict?.stop();
@@ -387,7 +406,7 @@ function mountEditor(pane, id) {
   ] : [
     { label: 'Add a task from this note', icon: 'check', onclick: () => openQuickAdd({ noteId: id }) },
     { label: n.pinned ? 'Unpin' : 'Pin to top', icon: 'pin', onclick: () => store.patch('notes', id, { pinned: !n.pinned }) },
-    { label: 'Duplicate', icon: 'note', onclick: () => { save(true); const c = get(); const d = M.addNote({ ...c, id: undefined, title: (c.title || 'Untitled') + ' (copy)' }); go('#/note/' + d.id); } },
+    { label: 'Duplicate', icon: 'note', onclick: async () => { save(true); const d = await duplicateNote(get()); if (d) go('#/note/' + d.id); } },
     { label: 'Print or save as PDF', icon: 'note', onclick: () => window.print() },
     { label: 'Version history', icon: 'clock', onclick: () => { save(true); versionHistory(id, () => mountEditor(pane, id)); } },
     '-',
@@ -399,16 +418,20 @@ function mountEditor(pane, id) {
     trashed && h('div', { class: 'banner' }, n0.gone ? `This note was deleted. It is kept until ${new Date(n0.gone + GONE_DAYS * 864e5).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}. ` : 'This note is in the trash. ', btn('Restore', () => { M.restoreNote(id); toast('Note restored'); go('#/note/' + id); }, 'tiny')),
     !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, !trashed && org.el, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn, photoIn);
   hydrate(body, n0.attachments, urls);
-  mounted = { id, save, urls, refreshTasks, addMenu, stopDictation, isDictating: () => !!dict };
+  // What this editor last knew of the note, to tell a change made on another device from its own saves.
+  const sig = n => (n ? JSON.stringify([n.title || '', n.body || '', n.notebookId || '', n.tags || [], !!n.trashed, n.gone || 0]) : '');
+  let known = sig(n0);
+  mounted = { id, save, urls, refreshTasks, addMenu, stopDictation, isDictating: () => !!dict, stopRecording, isRecording: () => !!rec,
+    stale: () => sig(get()) !== known, mark: () => { known = sig(get()); }, reload: () => mountEditor(pane, id) };
   if (dictateOnOpen === id) { dictateOnOpen = null; if (!trashed) { dictate(); return; } }
   if (!n0.title && !trashed && (!isMobile() || fresh.has(id))) title.focus();
 }
-window.addEventListener('pagehide', () => { mounted?.stopDictation?.(); mounted?.save(true); });
+window.addEventListener('pagehide', () => { mounted?.stopDictation?.(); mounted?.stopRecording?.(); mounted?.save(true); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { mounted?.save(true); store.flush().catch(() => {}); } });
 
 // ---- version history ------------------------------------------------------------------------------------------
 const WHY = { edit: 'Edited', 'before editing': 'Before editing', 'before a large deletion': 'Before a large deletion', 'before trash': 'Before moving to trash', 'before delete': 'Before deleting',
-  'before Claude’s change': 'Before Claude’s change', 'before sync': 'Before a sync replaced it', 'before restoring': 'Before a restore', 'before Writing update': 'Before a newer copy came from Writing' };
+  'before Claude’s change': 'Before Claude’s change', 'before sync': 'Before a sync replaced it', 'before restoring': 'Before a restore', 'before Evernote update': 'Before a newer copy came from Evernote', 'before Writing update': 'Before a newer copy came from Writing' };
 /** The list of saved versions of a note; tap one to read it, see what changed, and put it back. */
 function versionHistory(id, afterRestore) {
   modal((close, body) => {
@@ -444,6 +467,27 @@ function versionHistory(id, afterRestore) {
   }, { title: 'Version history', cls: 'wide' });
 }
 
+/**
+ * A copy of a note with its own copies of the photos and files, so deleting one note never takes them from the other.
+ * A file that is not on this device and cannot be fetched right now stays shared (and is then kept as long as either
+ * note needs it).
+ */
+export async function duplicateNote(c) {
+  if (!c) return null;
+  let body = c.body || ''; const atts = [];
+  for (const a of c.attachments || []) {
+    const blob = await sync.blob(a).catch(() => null);
+    if (!blob) { atts.push(a); continue; }
+    const { driveId: _d, ...rest } = a, b = { ...rest, id: uid() };
+    await store.putBlob(b.id, blob);
+    const o = store.get('ocr', a.id); if (o) store.put('ocr', { ...o, id: b.id }, { silent: true });
+    body = body.split(`data-att="${a.id}"`).join(`data-att="${b.id}"`);
+    atts.push(b);
+  }
+  const d = M.addNote({ title: (c.title || 'Untitled') + ' (copy)', body, notebookId: c.notebookId, tags: [...(c.tags || [])], sourceUrl: c.sourceUrl || '', attachments: atts });
+  if (atts.some(a => !a.driveId) && sync.connected()) sync.run();
+  return d;
+}
 const liveBacklinks = id => M.liveNotes().filter(n => n.id !== id && (n.body || '').includes(`#/note/${id}"`));
 function pickNote(selfId, onPick) {
   modal(close => {
@@ -503,9 +547,15 @@ export async function importEnex(file, onProgress) {
   if (xml.querySelector('parsererror')) throw new Error('This file could not be read as an Evernote export.');
   const notebookId = M.ensureNotebook(file.name.replace(/\.enex$/i, ''));
   const notes = [...xml.querySelectorAll('en-export > note')];
-  let count = 0;
+  let count = 0, seen = 0;
+  // Notes brought over before (the same title and the same Evernote creation time) are not brought over twice.
+  const have = new Map();
+  for (const n of store.all('notes')) have.set((n.title || '') + '|' + n.createdAt, n);
   for (const el of notes) {
     const kid = name => [...el.children].find(c => c.tagName === name)?.textContent || '';
+    const old = have.get(kid('title') + '|' + enDate(kid('created')));
+    // already here, and not edited in Evernote since (or edited here since): leave Steward's copy alone
+    if (old && (enDate(kid('updated') || kid('created')) <= (old.updatedAt || 0) || !kid('created'))) { seen++; onProgress?.(count + seen, notes.length); continue; }
     const atts = [], byHash = new Map();
     for (const r of [...el.children].filter(c => c.tagName === 'resource')) {
       try {
@@ -531,14 +581,17 @@ export async function importEnex(file, onProgress) {
     const created = enDate(kid('created')), updated = enDate(kid('updated') || kid('created'));
     const src = el.querySelector('note-attributes > source-url')?.textContent || '';
     // keep Evernote's own created and last-edited dates, so "Last edited" sorting still means something
-    store.put('notes', { title: kid('title'), body, notebookId, tags: [...el.children].filter(c => c.tagName === 'tag').map(c => c.textContent), pinned: false, sourceUrl: src, attachments: atts, trashed: false, createdAt: created, updatedAt: updated }, { silent: true, keepTimes: true });
-    count++; onProgress?.(count, notes.length);
+    if (old) { // edited in Evernote after it was brought over: Steward's text is kept in its version history, then replaced
+      V.snapshot(old, 'before Evernote update');
+      store.put('notes', { ...old, body, tags: [...new Set([...(old.tags || []), ...[...el.children].filter(c => c.tagName === 'tag').map(c => c.textContent)])], attachments: [...(old.attachments || []), ...atts], updatedAt: updated }, { silent: true, keepTimes: true });
+    } else store.put('notes', { title: kid('title'), body, notebookId, tags: [...el.children].filter(c => c.tagName === 'tag').map(c => c.textContent), pinned: false, sourceUrl: src, attachments: atts, trashed: false, createdAt: created, updatedAt: updated }, { silent: true, keepTimes: true });
+    count++; onProgress?.(count + seen, notes.length);
     if (count % 20 === 0) await new Promise(r => setTimeout(r));
   }
   resolveEvernoteLinks();
   store.emit({});
   ocr.kick(3000);
-  return count;
+  return { added: count, already: seen };
 }
 
 /** Evernote checkboxes become real Steward checklists. Older notes use <en-todo> inside a line; newer ones mark lists with a style. */
