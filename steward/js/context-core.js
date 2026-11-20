@@ -107,7 +107,7 @@ export function contextText(html) {
 }
 
 /** The note's text for Claude, trimmed to a size that keeps each sorting request quick and cheap. */
-export const contextForClaude = (text, max = 6000) => {
+export const contextForClaude = (text, max = 12000) => {
   const t = String(text || '').replace(/\n{3,}/g, '\n\n').trim();
   return t.length > max ? t.slice(0, max) + '\n…' : t;
 };
