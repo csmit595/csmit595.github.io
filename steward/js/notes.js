@@ -32,12 +32,13 @@ const TEMPLATES = {
 
 // Notes started with "New note" on this device and never typed in: thrown away on leaving, like closing a blank page.
 const fresh = new Set();
+const typeHere = new Set(); // notes just made with New note: the cursor goes to the body the first time they open
 const isBlank = n => !String(n.title || '').trim() && !(n.attachments || []).length && !/<(img|audio|table|hr)\b/i.test(n.body || '') && !stripHtml(n.body || '').trim();
 export function leaveNotes(nextId) {
   const was = mounted;
   mounted?.stopDictation?.();
   mounted?.stopRecording?.(); // the recording is finished and saved into the note it was started in
-  mounted?.save(true); mounted?.urls.forEach(u => URL.revokeObjectURL(u)); mounted = null;
+  mounted?.autoTitle?.(); mounted?.save(true); mounted?.urls.forEach(u => URL.revokeObjectURL(u)); mounted = null;
   if (was && was.id !== nextId && fresh.has(was.id)) { fresh.delete(was.id); const n = store.get('notes', was.id); if (n && isBlank(n)) store.remove('notes', was.id); }
 }
 
@@ -88,6 +89,7 @@ let dictateOnOpen = null;
 export function newNote(extra = {}) {
   const n = M.addNote({ notebookId: scope.kind === 'nb' ? scope.id : undefined, notebook: 'Notes', tags: scope.kind === 'tag' ? [scope.id] : [], ...extra });
   if (isBlank(n)) fresh.add(n.id);
+  typeHere.add(n.id);
   go('#/note/' + n.id);
   return n;
 }
@@ -421,10 +423,15 @@ function mountEditor(pane, id) {
   // What this editor last knew of the note, to tell a change made on another device from its own saves.
   const sig = n => (n ? JSON.stringify([n.title || '', n.body || '', n.notebookId || '', n.tags || [], !!n.trashed, n.gone || 0]) : '');
   let known = sig(n0);
-  mounted = { id, save, urls, refreshTasks, addMenu, stopDictation, isDictating: () => !!dict, stopRecording, isRecording: () => !!rec,
+  // A note started here and left without a title takes its first words as one, as dictation already does.
+  const autoTitle = () => { if (trashed || !fresh.has(id) || title.value.trim()) return; const t = titleFrom(plainText(body)); if (t) { title.value = t; dirty = true; } };
+  mounted = { id, save, autoTitle, urls, refreshTasks, addMenu, stopDictation, isDictating: () => !!dict, stopRecording, isRecording: () => !!rec,
     stale: () => sig(get()) !== known, mark: () => { known = sig(get()); }, reload: () => mountEditor(pane, id) };
-  if (dictateOnOpen === id) { dictateOnOpen = null; if (!trashed) { dictate(); return; } }
-  if (!n0.title && !trashed && (!isMobile() || fresh.has(id))) title.focus();
+  if (dictateOnOpen === id) { dictateOnOpen = null; typeHere.delete(id); if (!trashed) { dictate(); return; } }
+  // A new note opens with the cursor in the body, ready to type; the title can wait (it is filled in from the
+  // first line when the note is left untitled). An older untitled note on the Mac still opens at its title.
+  if (typeHere.delete(id) && !trashed) caretAtEnd(body); // once: a sync that redraws the note never moves the cursor
+  else if (!n0.title && !trashed && !isMobile() && !fresh.has(id)) title.focus();
 }
 window.addEventListener('pagehide', () => { mounted?.stopDictation?.(); mounted?.stopRecording?.(); mounted?.save(true); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { mounted?.save(true); store.flush().catch(() => {}); } });

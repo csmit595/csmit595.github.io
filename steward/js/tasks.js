@@ -514,7 +514,9 @@ export function openQuickAdd(defaults = {}) {
       if (fin) org.commit(learnText);
       org.reset();
       input.value = ''; desc.value = ''; keepDate = false; pick = { due: defaults.due || null, priority: null, duration: null }; typed = ''; heard = ''; heardNow = ''; added++;
-      drawTools(); refresh(); toast(dict ? `Task added (${added}) · keep talking` : 'Task added'); if (!o.quiet && !dict) input.focus();
+      // One task per window: a typed task closes it. Only dictation keeps it open ("next task" starts another).
+      if (!dict) { toast('Task added'); close(); return true; }
+      drawTools(); refresh(); toast(`Task added (${added}) · keep talking`);
       return true;
     };
     // ---- dictation: speak the task; say "next task" to add it and start another, "that's all" to stop ----
@@ -542,7 +544,7 @@ export function openQuickAdd(defaults = {}) {
         },
         onInterim: t => { heardNow = t; show(); },
         onStatus: t => { dictStatus.textContent = t ? ' ' + t : ''; },
-        onEnd: () => { dict = null; heardNow = ''; if (input.isConnected) { show(); micBtn?.classList.remove('recording'); dictLine.hidden = true; if (added) toast(`${added} task${added === 1 ? '' : 's'} added by voice`); } },
+        onEnd: () => { dict = null; heardNow = ''; if (input.isConnected) { show(); micBtn?.classList.remove('recording'); dictLine.hidden = true; if (added) { toast(`${added} task${added === 1 ? '' : 's'} added by voice`); if (!input.value.trim()) close(); } } },
       });
       micBtn?.classList.add('recording'); dictLine.hidden = false;
     };

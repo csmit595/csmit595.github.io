@@ -1,5 +1,5 @@
 // App shell: start-up, navigation, sidebar, search, settings, clipping intake, reminders.
-import { h, fill, today, debounce, fmtDate, fmtTime, ymd, hm } from './util.js';
+import { h, fill, today, debounce, fmtDate, fmtTime, ymd, hm, mdToHtml } from './util.js';
 import { store, settings } from './store.js';
 import * as M from './model.js';
 import { sync } from './sync.js';
@@ -21,10 +21,11 @@ import { hydrate, snapshot, backgroundIsNewer } from './lsmirror.js';
 import { adoptLocalWriting } from './migrate.js';
 import * as offline from './offline.js';
 import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
-import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
+import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug, contextWordCount } from './organize.js';
+import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
 
-const VERSION = '4.8.2';
-const WHATS_NEW = `Steward updated to ${VERSION}: Inbox now shows all your tasks, grouped by project (⋯ menu: one list, sort, show completed).`;
+const VERSION = '4.9.0';
+const WHATS_NEW = `Steward updated to ${VERSION}: new notes open ready to type in the body, Add task closes after each task, and a Sorting context note of your keywords helps file every new entry (Settings → Organize automatically).`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -203,6 +204,40 @@ async function drawMeaning(query, have, row) {
 const snippet = (text, w) => { const i = text.toLowerCase().indexOf(w); return text.slice(Math.max(0, i - 30), i + 60).replace(/\s+/g, ' ').trim(); };
 
 // ---- settings --------------------------------------------------------------------------------
+// The sorting-context note (js/context-core.js): his keywords by area, checked for every new task and note, on the
+// device and by Claude. It is a note in his Drive; the names in it never live in this public code.
+const CONTEXT_SKELETON = `Steward checks every new task and note against this note to sort it. Under each area heading, write lines like **Label: word, word, word**. The label is not a keyword; each word after the colon is. Add **(project Name)**, **(notebook Name)** or **(tag a, b)** to a heading or label to file matches there.
+
+## CS Outdoors (project CS Outdoors)
+- Customers:
+- Crew:
+- Suppliers:
+
+## Seminary (project Seminary Fall 2026)
+- Courses:
+
+## Church (project Church Life)
+- People:
+
+## Home/Family (project Home Life)
+- Family:
+
+## Personal
+- Words:
+
+## Customer promises
+- Phrases:
+
+## Notes for Claude
+Anything here is guidance for Claude only, not keywords.`;
+function contextRow() {
+  const n = store.get('notes', CONTEXT_ID);
+  if (!n || n.trashed) return h('p', { class: 'sub' }, 'Sorting context: a note of your keywords by area (customers, crew, family, church, courses) that every new entry is checked against. ',
+    btn('Start the sorting-context note', () => { M.addNote({ id: CONTEXT_ID, title: CONTEXT_TITLE, notebook: 'Steward', tags: ['steward'], body: mdToHtml(CONTEXT_SKELETON) }); location.hash = '#/note/' + CONTEXT_ID; }, 'tiny'));
+  const c = contextWordCount();
+  return h('p', { class: 'sub' }, `Sorting context: ${c} keyword${c === 1 ? '' : 's'} by area, checked for every new task and note (here on the device, and by Claude when it is on). `,
+    h('a', { href: '#/note/' + CONTEXT_ID }, 'Open the note to edit it'));
+}
 // Settings → Organize automatically: on/off, the language model, what it has learned, and the names it knows.
 function orgCard(card, again) {
   const on = h('input', { type: 'checkbox', checked: orgOn(), onchange: () => { settings.set('orgOn', on.checked); again(); } });
@@ -225,6 +260,7 @@ function orgCard(card, again) {
     h('label', { class: 'inline block' }, mdl, h('span', { class: 'grow' }, 'Also compare by meaning with the on-device language model (the same one as Search by meaning; works offline once downloaded)')),
     h('p', { class: 'sub' }, n ? `Learned from ${n} confirmation${n === 1 ? '' : 's'}. ` : 'Nothing learned yet: it starts from built-in rules and gets better with each Confirm. ',
       'What it learns is saved in your Google Drive (Steward/steward-organize.json) and synced, so your phone and Mac make the same suggestions.'),
+    contextRow(),
     h('details', null, h('summary', null, `Names and words it knows (${words.length})`),
       h('p', { class: 'sub' }, 'People, customers and places that always mean an area: “Elise” → Home/Family, a customer’s name → CS Outdoors. Synced to all your devices.'),
       h('div', { class: 'orgwords' }, words.map(x => h('div', { class: 'row gap orgword' },

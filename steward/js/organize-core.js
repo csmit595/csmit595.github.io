@@ -205,8 +205,15 @@ export function suggest(m, text, { near = [], kind = 'task' } = {}) {
   const rule = (k, x) => ruled.set(k, Math.min(5.5, (ruled.get(k) || 0) + x));
   if (!low.trim()) return empty();
   for (const r of RULES) if (r.re.test(low)) { rule('a:' + r.area, r.w); if (r.tag) rule('t:' + r.tag, r.w + 0.3); }
-  for (const w of m.words) if (w.re.test(low)) { if (w.area) rule('a:' + w.area, 3.5); for (const t of w.tags || []) rule('t:' + t, 4); }
   let pr = 0;
+  for (const w of m.words) if (w.re.test(low)) {
+    if (w.area) rule('a:' + w.area, 3.5);
+    for (const t of w.tags || []) rule('t:' + t, 4);
+    // from the sorting-context note: a project or notebook named for this word, and customer-promise phrases
+    if (w.project && kind === 'task') rule('p:' + String(w.project).toLowerCase(), 4);
+    if (w.notebook && kind === 'note') rule('n:' + String(w.notebook).toLowerCase(), 3.5);
+    if (w.promise) pr += 3;
+  }
   for (const [re, w] of PROMISE_RULES) if (re.test(low)) pr += w;
   if (pr > 1.5) rule(PROMISE, Math.min(5, pr)); // a deadline alone is not a promise
   // projects and notebooks mentioned by name

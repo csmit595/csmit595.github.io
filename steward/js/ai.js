@@ -8,6 +8,7 @@ import * as M from './model.js';
 import { sync } from './sync.js';
 import { icon, btn, modal, toast } from './ui.js';
 import * as C from './organize-core.js';
+import * as X from './context-core.js';
 
 export const aiOn = () => settings.get('aiOn') === true;
 let downUntil = 0, noKey = false;
@@ -123,12 +124,16 @@ export async function sortWithClaude(m, text, kind) {
   const words = store.all('orgwords').slice(0, 80).map(w => `${w.word} → ${[w.area, ...(w.tags || [])].filter(Boolean).join(', ')}`);
   const lessons = store.all('lessons').filter(l => l.text).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 25)
     .map(l => `"${l.text.slice(0, 160)}" → ${JSON.stringify({ area: l.area, tags: l.tags, promise: l.promise, project: l.project, notebook: l.notebook })}`);
+  // His sorting-context note: the names and words that place an entry (customers, crew, family, church, courses).
+  const cn = store.get('notes', X.CONTEXT_ID);
+  const context = cn && !cn.trashed && !cn.deleted ? X.contextForClaude(X.contextText(cn.body)) : '';
   const system = [
     'You file new entries in Steward, the task and note app of Charles, who owns CS Outdoors (a landscape management company in Greenville, SC), is a first-year BJU Seminary student, serves at church (including ESL teaching at Embrace English), and is married to Elise with a baby due January 2027.',
     'Areas (pick at most one): cs-outdoors, seminary, church, home-family, personal.',
     'Tags he uses, by area:\n' + tagsByArea + (loose.length ? '\nother: ' + loose.join(', ') : ''),
     projects.length ? 'Task projects: ' + projects.join(' | ') : '', notebooks.length ? 'Note notebooks: ' + notebooks.join(' | ') : '',
     words.length ? 'Names and words that always mean an area:\n' + words.join('\n') : '',
+    context ? 'His sorting context. Check every entry against these keywords first: a customer, crew member, supplier, family member, church person or course named here decides the area, tags and project. Lines under "Customer promises" are wording that means he told a customer he would do something.\n<context>\n' + context + '\n</context>' : '',
     lessons.length ? 'How he filed recent entries (follow his habits):\n' + lessons.join('\n') : '',
     '"promise" is true only when the entry records something Charles told a customer he would do (a date, a call back, a quote, a visit). His own plans and deadlines are not promises.',
     '"kind" is "task" if the entry is something to do, "note" if it is information to keep.',

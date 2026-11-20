@@ -7,6 +7,7 @@ import { h, fill, debounce } from './util.js';
 import { store, settings } from './store.js';
 import { icon, menu, promptDlg, toast } from './ui.js';
 import * as C from './organize-core.js';
+import * as X from './context-core.js';
 import { embed } from './semantic.js';
 import { sortWithClaude, aiReady } from './ai.js';
 
@@ -18,10 +19,24 @@ const areaName = id => AREAS.find(a => a.id === id)?.name || id;
 // ---- the model: rebuilt only when lessons, words, projects or notebooks change --------------------------------------
 let model = null;
 const WATCH = new Set(['lessons', 'orgwords', 'projects', 'notebooks']);
-store.on(info => { if (info.remote || WATCH.has(info.type)) { model = null; vecDirty = true; } });
+store.on(info => {
+  if (info.remote || WATCH.has(info.type)) { model = null; vecDirty = true; }
+  else if (info.type === 'notes' && contextBody() !== ctx.body) model = null; // the sorting-context note was edited
+});
+// The sorting-context note (js/context-core.js): his keywords, read again whenever the note changes.
+const ctx = { body: null, words: [], text: '' };
+const contextBody = () => { const n = store.get('notes', X.CONTEXT_ID); return n && !n.trashed && !n.deleted ? n.body || '' : ''; };
+function readContext() {
+  const b = contextBody();
+  if (b !== ctx.body) { ctx.body = b; ctx.text = X.contextText(b); ctx.words = X.parseContext(ctx.text).words; }
+  return ctx;
+}
+/** The sorting-context note as plain text, for Claude ('' when there is none). */
+export const contextNoteText = () => readContext().text;
+export const contextWordCount = () => readContext().words.length;
 export function getModel() {
   if (!model) model = C.train({
-    lessons: store.all('lessons'), words: store.all('orgwords'),
+    lessons: store.all('lessons'), words: [...store.all('orgwords'), ...readContext().words],
     projects: store.all('projects').map(p => p.name).filter(Boolean),
     notebooks: store.all('notebooks').map(n => n.name).filter(Boolean),
   });
