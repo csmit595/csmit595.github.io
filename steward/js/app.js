@@ -23,8 +23,8 @@ import * as offline from './offline.js';
 import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug } from './organize.js';
 
-const VERSION = '4.8.1';
-const WHATS_NEW = `Steward updated to ${VERSION}: 31 fixes. Among them: “3:30” now means the afternoon, “Call Tom” is no longer read as tomorrow, moving leftover work never lands on Sunday, the weekly review looks back to your last review (weekend included), and a recording is saved even if you leave the note.`;
+const VERSION = '4.8.2';
+const WHATS_NEW = `Steward updated to ${VERSION}: Inbox now shows all your tasks, grouped by project (⋯ menu: one list, sort, show completed).`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -115,7 +115,7 @@ function drawSidebar(route) {
     h('div', { class: 'addline' }, h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task', h('kbd', { class: 'only-desktop' }, 'Q')), canDictate() && iconBtn('mic', 'Speak tasks (D)', () => { closeDrawer(); openQuickAdd({ ...defaultsForRoute(), dictate: true }); }), iconBtn('sidebar', 'Hide sidebar (⌘\\)', toggleSide, 'only-desktop')),
     h('button', { class: 'sside-search', type: 'button', onclick: () => { closeDrawer(); location.hash = '#/search'; } }, icon('search', 16), h('span', { class: 'grow' }, 'Search everything'), h('kbd', { class: 'only-desktop' }, '⌘K')),
     h('nav', null,
-      link('#/inbox', 'inbox', 'Inbox', open.filter(t => (t.projectId || 'inbox') === 'inbox' && !t.parentId).length),
+      link('#/inbox', 'inbox', 'Inbox', open.filter(t => !t.parentId).length),
       link('#/today', 'today', 'Today', todayCount ? h('span', { class: 'badge' + (open.some(t => t.due && t.due.date < now) ? ' late' : '') }, todayCount) : 0),
       link('#/upcoming', 'upcoming', 'Upcoming'),
       link('#/calendar', 'cal', 'Calendar'),

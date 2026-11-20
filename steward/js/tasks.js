@@ -237,7 +237,7 @@ export function renderTasks(route, main) {
   const v = route.view;
   if (v === 'today') return viewToday(main);
   if (v === 'upcoming') return viewUpcoming(main);
-  if (v === 'inbox') return viewProject(main, 'inbox');
+  if (v === 'inbox') return viewInbox(main);
   if (v === 'project') return viewProject(main, route.id);
   if (v === 'label') return viewLabel(main, decodeURIComponent(route.id));
   if (v === 'filter') return viewFilter(main, route.id);
@@ -275,6 +275,51 @@ function viewUpcoming(main) {
   }
   const later = tasks.filter(t => t.due.date > addDays(now, 13)).sort(byDue);
   if (later.length) main.append(group(`Later (${later.length})`, taskList(later, { showProject: true, flat: true })));
+}
+
+// Inbox shows every task: the ones with no project first, then each project in the sidebar's order (or one list).
+function viewInbox(main) {
+  const showDone = !!settings.get('inboxShowDone'), sort = SORTS[settings.get('inboxSort')] ? settings.get('inboxSort') : 'manual';
+  const grouped = settings.get('inboxGrouped') !== false;
+  const setS = (k, v) => { settings.set(k, v); store.emit({}); };
+  const all = store.all('tasks');
+  const ids = new Set(all.map(t => t.id));
+  const top = all.filter(t => (!t.parentId || !ids.has(t.parentId)) && (showDone || !t.completedAt));
+  const openCount = all.filter(t => !t.completedAt && (!t.parentId || !ids.has(t.parentId))).length;
+  const more = e => menu(e.currentTarget, [
+    { label: grouped ? 'Show as one list' : 'Group by project', icon: grouped ? 'list' : 'board', onclick: () => setS('inboxGrouped', !grouped) },
+    { label: `Sort: ${sort}`, icon: 'filter', onclick: () => menu(document.querySelector('.vhead .ibtn:last-child'), Object.keys(SORTS).map(k => ({ label: 'Sort by ' + (k === 'manual' ? 'my own order' : k === 'due' ? 'due date' : k), onclick: () => setS('inboxSort', k) }))) },
+    { label: showDone ? 'Hide completed' : 'Show completed', icon: 'done', onclick: () => setS('inboxShowDone', !showDone) },
+  ]);
+  main.append(header('Inbox', `All tasks · ${openCount} open`, iconBtn('more', 'More', more)));
+  if (!top.length) { main.append(empty('No tasks', 'Anything you capture lands here.'), addRow('Add task', {})); return; }
+  if (!grouped) {
+    const list = top.slice().sort(SORTS[sort === 'manual' ? 'due' : sort]);
+    main.append(h('section', { class: 'group' }, h('div', null, taskList(list, { showProject: true, showDone }), addRow('Add task', {}))));
+    return;
+  }
+  // Drag reorders within a project only; it never moves a task to another project.
+  const drop = (pid, list) => (id, order, targetId, before) => {
+    const t = store.get('tasks', id); if (!t || (t.projectId || 'inbox') !== pid) return;
+    if (sort !== 'manual') {
+      list.forEach((x, i) => { if (x.id !== id && x.order !== (i + 1) * 1000) store.patch('tasks', x.id, { order: (i + 1) * 1000 }, { silent: true, noHistory: true }); });
+      order = orderFor(list.map(x => store.get('tasks', x.id)).filter(Boolean), id, targetId, before);
+      setS('inboxSort', 'manual');
+    }
+    store.patch('tasks', id, { parentId: null, order });
+  };
+  const projects = [{ id: 'inbox', name: 'Inbox', depth: 0 }, ...projectTree()];
+  const known = new Set(projects.map(p => p.id));
+  const wrap = h('div', { class: 'plist' });
+  for (const p of projects) {
+    const list = top.filter(t => (known.has(t.projectId || 'inbox') ? (t.projectId || 'inbox') : 'inbox') === p.id).sort(SORTS[sort]);
+    if (!list.length && p.id !== 'inbox') continue;
+    const title = p.id === 'inbox' ? 'No project' : h('a', { href: '#/project/' + p.id }, p.name);
+    wrap.append(h('section', { class: 'group' },
+      h('div', { class: 'ghead' }, h('h3', null, title, h('span', { class: 'count' }, list.filter(t => !t.completedAt).length))),
+      h('div', null, taskList(list, { drag: true, showDone, onDrop: drop(p.id, list) }), addRow('Add task', p.id === 'inbox' ? {} : { projectId: p.id }))));
+  }
+  main.append(wrap);
 }
 
 function viewProject(main, pid) {
