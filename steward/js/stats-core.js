@@ -21,7 +21,7 @@ export function roles(identities) {
   const ids = [...identities].sort(byOrder), by = id => ids.find(i => i.id === id);
   return {
     worship: by('id-christ') || ids[0] || null,
-    family: ids.find(i => i.timed) || by('id-family') || null,
+    family: (by('id-family')?.timed && by('id-family')) || ids.find(i => i.timed) || by('id-family') || null,
     health: by('id-health') || ids.find(i => (i.labels || []).includes('health')) || null,
     work: by('id-work') || ids.find(i => (i.areas || []).includes('cs-outdoors')) || null,
     study: by('id-seminary') || ids.find(i => (i.areas || []).includes('seminary')) || null,

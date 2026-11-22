@@ -14,12 +14,15 @@ const colorOf = i => M.COLORS[i?.color] || M.COLORS.stone;
 const clockOf = min => fmtTime(`${pad(Math.floor(min / 60) % 24)}:${pad(min % 60)}`);
 const sessions = () => store.all('sessions');
 export const runningSession = () => S.running(sessions());
-export const familyIdentity = () => M.identities().find(i => i.timed) || null;
+// The family timer belongs to the Family identity; any other identity ticked "timed" gets its own count-up timer.
+export const familyIdentity = () => { const ids = M.identities(), f = ids.find(i => i.id === 'id-family'); return (f?.timed && f) || ids.find(i => i.timed && ((i.areas || []).includes('home-family') || /family|elise|wife/i.test(i.name || ''))) || ids.find(i => i.timed) || null; };
+/** The name a count-up timer goes by: its identity ("Family time" for the family one). */
+const timerName = s => { const i = s?.identityId && store.get('identities', s.identityId); return !i || i.id === familyIdentity()?.id ? 'Family time' : i.name; };
 const save = s => store.put('sessions', s);
 
 /** What a session is for, in words: the task, else the goal, else the identity. */
 export function sessionTitle(s) {
-  if (s.kind === 'family') return 'Family time';
+  if (s.kind === 'family') return timerName(s);
   const t = s.taskId && store.rawGet('tasks', s.taskId), g = s.goalId && store.get('goals', s.goalId), i = s.identityId && store.get('identities', s.identityId);
   return (t && !t.deleted && t.content) || g?.title || i?.name || 'Focus';
 }
@@ -95,10 +98,16 @@ function begin(f) {
 export async function startFamily() {
   const fam = familyIdentity();
   if (!fam) { toast('No identity is set to use the family timer. Edit an identity and tick “Counted with a start/stop timer”.'); return null; }
+  return startTimer(fam.id);
+}
+/** One tap: start the count-up timer for one identity (its time counts toward that identity until Stop). */
+export async function startTimer(identityId) {
+  const i = identityId && store.get('identities', identityId);
+  if (!i) return null;
   const r = runningSession();
-  if (r?.kind === 'family') { go('#/focus'); return r; }
+  if (r?.kind === 'family' && r.identityId === i.id) { go('#/focus'); return r; }
   if (!(await endOther())) return null;
-  return begin({ kind: 'family', identityId: fam.id });
+  return begin({ kind: 'family', identityId: i.id });
 }
 /** A "Focus" button for a task, a goal or an identity. */
 export const focusButton = (target, cls = 'tiny') => btn('Focus', () => openFocusStart(target), cls, 'clock');
@@ -181,7 +190,7 @@ function askStale(s) {
   const guess = blk ? new Date(started.getFullYear(), started.getMonth(), started.getDate(), Math.floor(blk.end / 60), blk.end % 60) : new Date(Math.min(now.getTime(), s.startedAt + 2 * 3600e3));
   const when = h('input', { type: 'datetime-local', class: 'field', value: `${S.dayOf(guess.getTime())}T${pad(guess.getHours())}:${pad(guess.getMinutes())}` });
   let answered = false;
-  modal(close => h('div', { class: 'form fs-stale' }, h('p', { class: 'dlg-msg' }, `Family time has been running since ${started.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} (${S.clock(S.elapsedMs(s))}). Still going, or was the timer forgotten?`),
+  modal(close => h('div', { class: 'form fs-stale' }, h('p', { class: 'dlg-msg' }, `${timerName(s)} has been running since ${started.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} (${S.clock(S.elapsedMs(s))}). Still going, or was the timer forgotten?`),
     h('label', null, 'Stop it at', when),
     h('div', { class: 'row end wrap' }, btn('Keep it going', () => { answered = true; store.patch('sessions', s.id, { staleAsked: true }); close(); }),
       btn('Stop at that time', () => { const at = new Date(when.value).getTime(); if (!(at > s.startedAt) || at > Date.now()) return toast('Pick a time after it started and not in the future'); answered = true; save(S.finish(store.get('sessions', s.id), at)); close(); toast('Family time saved'); }, 'primary'))),
@@ -218,7 +227,7 @@ function drawPill() {
   if (!pill) { pill = h('a', { class: 'focus-pill', href: '#/focus' }); document.body.append(pill); }
   const i = r.identityId && store.get('identities', r.identityId);
   pill.style.setProperty('--idc', colorOf(i));
-  const label = `${r.kind === 'family' ? 'Family time' : sessionTitle(r).slice(0, 28)} · ${S.isPaused(r) ? 'paused' : r.plannedMin ? S.clock(S.remainingMs(r)) : S.clock(S.elapsedMs(r))}`;
+  const label = `${r.kind === 'family' ? timerName(r).slice(0, 28) : sessionTitle(r).slice(0, 28)} · ${S.isPaused(r) ? 'paused' : r.plannedMin ? S.clock(S.remainingMs(r)) : S.clock(S.elapsedMs(r))}`;
   if (pill.textContent !== label) fill(pill, icon('clock', 14), label);
 }
 function paintFace(face) {
@@ -245,14 +254,14 @@ export function renderFocus(route, main) {
   keepAwake(!fam && !S.isPaused(s));
   const paused = S.isPaused(s);
   const face = h('section', { class: 'fs-face' + (fam ? ' family' : ''), dataset: { id: s.id }, style: { '--idc': colorOf(i) } },
-    h('div', { class: 'fs-kicker' }, i ? i.name : fam ? 'Family' : 'Focus', s.format === '5-50-5' && ' · 5-50-5'),
+    h('div', { class: 'fs-kicker' }, fam && i?.id !== familyIdentity()?.id ? 'Timer' : i ? i.name : fam ? 'Family' : 'Focus', s.format === '5-50-5' && ' · 5-50-5'),
     h('h1', { class: 'fs-title' }, sessionTitle(s)),
     h('div', { class: 'fs-time', role: 'timer', 'aria-live': 'off' }, ''),
     h('div', { class: 'fs-sub' }, ''),
     !fam && h('div', { class: 'fs-ring' }, h('span')),
     h('div', { class: 'row fs-acts' },
       btn(paused ? 'Resume' : 'Pause', () => { primeAudio(); set(paused ? S.resume : S.pause); }, paused ? 'primary' : ''),
-      btn(fam ? 'Stop' : 'End early', async () => { if (!fam && !(await ask(`End this session now? ${S.clock(S.elapsedMs(store.get('sessions', s.id)))} will be saved.`, [['Keep going', false], ['End it', true, 'primary']]))) return; const closed = save(S.finish(store.get('sessions', s.id))); keepAwake(false); if (fam) toast(`Family time saved: ${fmtHours(closed.actualMin)}`); else checkIn(closed.id); }, fam ? 'primary' : '')),
+      btn(fam ? 'Stop' : 'End early', async () => { if (!fam && !(await ask(`End this session now? ${S.clock(S.elapsedMs(store.get('sessions', s.id)))} will be saved.`, [['Keep going', false], ['End it', true, 'primary']]))) return; const closed = save(S.finish(store.get('sessions', s.id))); keepAwake(false); if (fam) toast(`${timerName(closed)} saved: ${fmtHours(closed.actualMin)}`); else checkIn(closed.id); }, fam ? 'primary' : '')),
     !fam && h('button', { type: 'button', class: 'fs-pulled', onclick: () => set(c => ({ ...c, interruptions: (c.interruptions || 0) + 1 })) }, 'I got pulled away', s.interruptions ? h('span', { class: 'count' }, s.interruptions) : null),
     h('a', { class: 'sub fs-back', href: '#/' + settings.get('home') }, 'Back to Steward (the timer keeps running)'),
     s.device && s.device !== deviceName() && h('div', { class: 'sub' }, `Started on the ${s.device}`));
@@ -279,25 +288,25 @@ export function identityTimeLine(i) {
   const target = i.weeklyTargetMin || 0;
   return h('div', { class: 'idtime' },
     h('div', { class: 'row between' }, h('span', null, h('b', null, fmtHours(min)), target ? ` of ${fmtHours(target)} this week` : ' this week', i.timed ? ' (Monday to Saturday)' : ''),
-      h('span', { class: 'row' }, i.timed ? btn(runningSession()?.kind === 'family' ? 'Timer running' : 'Start family time', () => startFamily(), 'tiny', 'clock') : btn('Focus', () => openFocusStart({ identityId: i.id }), 'tiny', 'clock'), btn('Add time', () => logTime({ identityId: i.id }), 'tiny', 'plus'))),
+      h('span', { class: 'row' }, i.timed ? (r => btn(r?.kind === 'family' && r.identityId === i.id ? 'Timer running' : 'Start timer', () => startTimer(i.id), 'tiny', 'clock'))(runningSession()) : btn('Focus', () => openFocusStart({ identityId: i.id }), 'tiny', 'clock'), btn('Add time', () => logTime({ identityId: i.id }), 'tiny', 'plus'))),
     target > 0 && h('div', { class: 'gbar' }, h('span', { style: { width: Math.min(100, Math.round(min / target * 100)) + '%', background: colorOf(i) } })));
 }
 /** Today: the two one-tap starts. */
 export function todayStarts() {
   const r = runningSession(), fam = familyIdentity();
-  if (r) return h('div', { class: 'row wrap fs-today' }, h('a', { class: 'btn tiny primary', href: '#/focus' }, icon('clock', 14), `${r.kind === 'family' ? 'Family time' : 'Focus'} running · open`));
+  if (r) return h('div', { class: 'row wrap fs-today' }, h('a', { class: 'btn tiny primary', href: '#/focus' }, icon('clock', 14), `${r.kind === 'family' ? timerName(r) : 'Focus'} running · open`));
   return h('div', { class: 'row wrap fs-today' }, btn('Focus session', () => { primeAudio(); openFocusStart({}); }, 'tiny', 'clock'), fam && btn('Start family time', () => startFamily(), 'tiny', 'pin'));
 }
 /** A fixed block that belongs to a timed identity just began: offer the timer, once per block per day. */
 function offerFamilyAtBlock() {
-  const fam = familyIdentity();
-  if (!fam || runningSession() || document.hidden) return;
+  if (runningSession() || document.hidden) return;
   const now = new Date(), nowMin = now.getHours() * 60 + now.getMinutes(), day = today();
   for (const x of M.blocksOn(day)) {
-    if (x.b.identityId !== fam.id || nowMin < x.start || nowMin > Math.min(x.end, x.start + 15)) continue;
+    const bi = x.b.identityId && store.get('identities', x.b.identityId);
+    if (!bi?.timed || nowMin < x.start || nowMin > Math.min(x.end, x.start + 15)) continue;
     const key = 'steward.famAsked.' + x.b.id;
     try { if (localStorage.getItem(key) === day) continue; localStorage.setItem(key, day); } catch { continue; }
-    toast(`${x.b.name}: start the family timer?`, 'Start', () => startFamily(), 20000);
+    toast(`${x.b.name}: start the ${bi.id === familyIdentity()?.id ? 'family ' : ''}timer?`, 'Start', () => startTimer(bi.id), 20000);
   }
 }
 /** Sessions that finished while Steward was closed still get their check-in, once, if it was recent. */
