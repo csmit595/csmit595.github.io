@@ -1,4 +1,4 @@
-// Google sign-in, Google Drive sync, Google Calendar, and reminder notifications on the phone and the Mac (sent by
+// Google sign-in, Google Drive sync, and reminder notifications on the phone and the Mac (sent by
 // the Google helper through Web Push; the old "Steward Reminders" calendar is kept only until they are proven).
 // Since 4.0 Steward asks Google only for per-file Drive access ("drive.file": the files Steward itself made), so the
 // sign-in has no warning screen and needs no Google review. What it cannot see that way (Claude's change files and
@@ -327,8 +327,7 @@ export const sync = {
       if (wrote || !d.files.summary) await this.writeSummary(d);
       ls.set('drive', d);
       await this.syncPush().catch(e => { if (e.message === 'auth') throw e; console.warn('notifications', e); });
-      // (The backup "Steward Reminders" calendar is kept by the helper now: Steward itself has no Calendar access.)
-      await this.refreshEvents().catch(e => { if (e.message === 'auth') throw e; console.warn('calendar', e); if (this.helperUrl() && !this.helperTrouble) this.helperTrouble = e.helper ? e.message : 'The Steward helper could not be reached'; });
+      // (Steward no longer reads or changes Google Calendar; the helper keeps only the backup "Steward Reminders" calendar.)
       await this.shareSecret(d).catch(e => { if (e.message === 'auth') throw e; console.warn('login file', e); });
       ls.set('drive', d);
       this.lastSync = Date.now(); ls.set('lastSync', this.lastSync);
@@ -642,73 +641,6 @@ export const sync = {
       await store.putBlob(att.id, b);
       return b;
     } catch { return null; }
-  },
-
-  // ---- Google Calendar ---------------------------------------------------------------
-  calendars() { return ls.get('calendars', []); },
-  events: [],
-  async loadCachedEvents() { this.events = (await store.getKV('events')) || []; },
-  window() { const a = new Date(); a.setDate(a.getDate() - 45); const b = new Date(); b.setDate(b.getDate() + 150); return [a, b]; },
-  norm(e, cal) {
-    return {
-      id: e.id, calId: cal.id, title: e.summary || '(No title)', allDay: !!e.start?.date,
-      start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date,
-      location: e.location || '', description: e.description || '', color: cal.backgroundColor || '#3b74c4',
-      recurringEventId: e.recurringEventId || null, link: e.htmlLink || '', readOnly: !['owner', 'writer'].includes(cal.accessRole),
-    };
-  },
-  async fetchRange(from, to) {
-    const r = await this.helper('calendar', { from: from.toISOString(), to: to.toISOString(), hidden: settings.get('hidden') });
-    ls.set('calendars', r.calendars || []);
-    const byId = new Map((r.calendars || []).map(c => [c.id, c]));
-    return (r.events || []).filter(x => byId.has(x.calId)).map(x => this.norm(x.e, byId.get(x.calId)));
-  },
-  // Stretches of the calendar outside the usual window that were fetched for the screen (last month, next year):
-  // [{ a, b, at }]. Remembered for ten minutes, so looking at one asks Google once, not on every redraw.
-  _extra: [],
-  async refreshEvents() {
-    const [a, b] = this.window();
-    const fresh = await this.fetchRange(a, b);
-    this._extra = this._extra.filter(x => Date.now() - x.at < 10 * 60000);
-    // keep what was fetched for an earlier or later stretch, so it stays on the screen
-    const ids = new Set(fresh.map(e => e.calId + e.id));
-    const outside = this._extra.length ? this.events.filter(e => !ids.has(e.calId + e.id) && (new Date(e.end) <= a || new Date(e.start) >= b)) : [];
-    this.events = fresh.concat(outside);
-    await store.putKV('events', outside.length ? fresh : this.events);
-    store.emit({ events: true });
-  },
-  async ensureRange(from, to) {
-    const [a, b] = this.window();
-    if ((from >= a && to <= b) || !this.connected() || !navigator.onLine) return false;
-    const now = Date.now();
-    this._extra = this._extra.filter(x => now - x.at < 10 * 60000);
-    // already fetched (or being fetched, or it just failed): never ask again on every redraw of the calendar
-    if (this._extra.some(x => x.a <= from && x.b >= to)) return false;
-    const mark = { a: from, b: to, at: now };
-    this._extra.push(mark); if (this._extra.length > 8) this._extra.shift();
-    try {
-      const extra = await this.fetchRange(from, to);
-      const ids = new Set(extra.map(e => e.calId + e.id));
-      // what Google has for that stretch now replaces what was shown for it (events deleted since go away)
-      this.events = this.events.filter(e => !ids.has(e.calId + e.id) && !(new Date(e.start) < to && new Date(e.end) > from && (new Date(e.end) <= a || new Date(e.start) >= b))).concat(extra);
-      return true;
-    } catch { mark.at = now - 9 * 60000; return false; } // try again in a minute, not at once
-  },
-  eventBody(ev) {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const b = { summary: ev.title, location: ev.location || '', description: ev.description || '' };
-    if (ev.allDay) { b.start = { date: ev.start.slice(0, 10) }; b.end = { date: ev.end.slice(0, 10) }; }
-    else { b.start = { dateTime: new Date(ev.start).toISOString(), timeZone: tz }; b.end = { dateTime: new Date(ev.end).toISOString(), timeZone: tz }; }
-    if (ev.rrule) b.recurrence = [ev.rrule];
-    return b;
-  },
-  async saveEvent(ev) {
-    await this.helper('calSave', { calId: ev.calId, eventId: ev.id || null, body: this.eventBody(ev) });
-    await this.refreshEvents();
-  },
-  async deleteEvent(ev, whole) {
-    await this.helper('calDelete', { calId: ev.calId, eventId: whole && ev.recurringEventId ? ev.recurringEventId : ev.id });
-    await this.refreshEvents();
   },
 
   // ---- notifications on this device ---------------------------------------------------------------------------

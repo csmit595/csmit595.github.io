@@ -5,7 +5,6 @@ import * as M from './model.js';
 import * as ST from './stats-core.js';
 import { fmtHours, quarterRange } from './goals-core.js';
 import { computePlan } from './dayplan.js';
-import { sync } from './sync.js';
 import { icon, btn, iconBtn } from './ui.js';
 import { openTask } from './tasks.js';
 import { startFamily, logTime } from './focus.js';
@@ -17,7 +16,7 @@ let mode = 'week', anchor = null; // anchor: a day inside the week or quarter sh
 function fitOf(day) {
   const dayStart = fromYmd(day).getTime();
   const tasks = store.all('tasks').filter(t => !t.parentId && t.due?.date === day && (!t.completedAt || t.completedAt >= dayStart));
-  return computePlan({ day, tasks, events: sync.events || [], window: (settings.get('hours') || [])[fromYmd(day).getDay()] || null, blocks: M.blocksOn(day), restDay: settings.get('restDay') }).state;
+  return computePlan({ day, tasks, window: (settings.get('hours') || [])[fromYmd(day).getDay()] || null, blocks: M.blocksOn(day), restDay: settings.get('restDay') }).state;
 }
 /** Everything stats-core needs, read from the store. */
 export function statsFor(days, now = today(), opts = {}) {
@@ -59,7 +58,7 @@ export function statsCards(st, { week = true, now = today(), label = '' } = {}) 
   if (st.goals.length) out.push(card('Goals', 'by the calendar', st.goals.map(g => { const i = store.get('identities', g.identityId); return h('a', { class: 'stgoal', href: '#/goal/' + g.id }, barRow(g.title, g.pct, colorOf(i?.color), g.label, { title: `${g.title}: ${g.label}` }), g.pace !== 'open' && h('span', { class: 'gpace ' + g.pace }, g.pace === 'on-track' ? 'On track' : 'Behind the calendar')); })));
   if (st.fit) out.push(card('Did the work fit?', null, st.fit.days ? h('p', { class: 'stbig' }, h('b', null, `${st.fit.fits} of ${st.fit.days}`), ` day${st.fit.days === 1 ? '' : 's'} the planned work fit in your hours`) : h('p', { class: 'sub' }, 'No days with planned work yet.'),
     week && h('div', { class: 'stdays' }, st.days.map(d => { const s = d > now ? 'ahead' : fitOf(d); const lbl = { fits: 'fit', over: 'over', rest: 'rest', empty: 'nothing planned', after: 'fit', ahead: '' }[s]; return h('div', { class: 'stday ' + s, title: `${fmtDate(d, true)}: ${lbl || 'not yet'}` }, h('b', null, DAY1[fromYmd(d).getDay()]), h('span', null, { fits: 'fit', over: 'over', rest: 'rest', empty: '–', after: 'fit', ahead: '' }[s])); })),
-    h('p', { class: 'sub' }, 'Looked at afterwards: what was due each day, finished or not, against the hours left after fixed blocks and calendar events.')));
+    h('p', { class: 'sub' }, 'Looked at afterwards: what was due each day, finished or not, against the hours left after fixed blocks.')));
   const maxA = Math.max(1, ...st.areas.map(a => a.n));
   out.push(card('Tasks finished', `${st.completed} in all`, st.areas.length ? st.areas.map(a => barRow(a.name, a.n / maxA, 'var(--accent)', String(a.n), { dot: false, noTarget: true })) : h('p', { class: 'sub' }, 'None yet.')));
   return out;

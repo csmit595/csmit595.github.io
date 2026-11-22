@@ -19,7 +19,6 @@ async function work(reason) {
   sync.lastSync = Number(JSON.parse(localStorage.getItem('steward.lastSync') || '0')) || 0;
   try {
     await store.init();
-    await sync.loadCachedEvents();
     for (let i = 0; i < 3; i++) { sync.again = false; await sync._run(false); if (!sync.again) break; }
     await store.flush();
   } finally {

@@ -1,12 +1,12 @@
 // Focus sessions and the family-time timer: one tap to start, a calm full-screen timer, a short check-in at the end.
 // The timing rules are in session-core.js. Sessions are saved in the goals file, so a timer started on the phone is
 // seen running on the Mac, and the Google helper can send the end alert while Steward is closed.
-import { h, fill, today, fromYmd, fmtTime, pad } from './util.js';
+import { h, fill, today, fmtTime, pad } from './util.js';
 import { store, settings } from './store.js';
 import * as M from './model.js';
 import * as S from './session-core.js';
 import { fmtHours } from './goals-core.js';
-import { sync, deviceName } from './sync.js';
+import { deviceName } from './sync.js';
 import { icon, btn, modal, confirmDlg, toast, menu } from './ui.js';
 
 const go = hash => { location.hash = hash; };
@@ -30,17 +30,9 @@ function resolve(target) {
   const identityId = target.identityId || g?.identityId || (t ? M.identityOfTask(t)?.id : null) || null;
   return { taskId: t?.id || null, goalId: g?.id || null, identityId };
 }
-/** Fixed blocks and timed calendar events today, as minute ranges. */
+/** Fixed blocks today, as minute ranges. */
 function busyToday() {
-  const day = today(), s0 = fromYmd(day), s1 = new Date(s0); s1.setDate(s1.getDate() + 1);
-  const out = M.blocksOn(day).map(x => ({ start: x.start, end: x.end, title: x.b.name }));
-  for (const e of sync.events || []) {
-    if (e.allDay) continue;
-    const a = new Date(e.start), b = new Date(e.end);
-    if (!(a < s1 && b > s0) || b - a >= 864e5) continue;
-    out.push({ start: a < s0 ? 0 : a.getHours() * 60 + a.getMinutes(), end: b >= s1 ? 1440 : b.getHours() * 60 + b.getMinutes(), title: e.title || 'a calendar event' });
-  }
-  return out;
+  return M.blocksOn(today()).map(x => ({ start: x.start, end: x.end, title: x.b.name }));
 }
 const ask = (message, buttons) => new Promise(res => { let done = false; modal(close => h('div', null, h('p', { class: 'dlg-msg' }, message), h('div', { class: 'row end wrap' }, buttons.map(([label, value, cls]) => btn(label, () => { done = true; res(value); close(); }, cls || '')))), { cls: 'small', onClose: () => { if (!done) res(null); } }); });
 

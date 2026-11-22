@@ -7,7 +7,6 @@ import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpe
 import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from './tasks.js';
 import { renderNotes, leaveNotes, newNote, dictateNote, noteAddMenu, createClip, importEnex, noteBusy } from './notes.js';
 import { canDictate, dictEngine, setDictEngine } from './dictate.js';
-import { renderCalendar } from './calendar.js';
 import { compileFilter } from './filters.js';
 import { renderGoals, activeGoals } from './goals.js';
 import { renderStats } from './stats.js';
@@ -24,14 +23,15 @@ import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug, contextWordCount } from './organize.js';
 import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
 
-const VERSION = '4.9.0';
-const WHATS_NEW = `Steward updated to ${VERSION}: new notes open ready to type in the body, Add task closes after each task, and a Sorting context note of your keywords helps file every new entry (Settings → Organize automatically).`;
+const VERSION = '4.9.1';
+const WHATS_NEW = `Steward updated to ${VERSION}: the Calendar screen is gone. Steward no longer reads Google Calendar; the day plan and focus check count your fixed blocks.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
 function parseRoute() {
   const p = location.hash.replace(/^#\/?/, '').split('/');
-  const v = p[0] || settings.get('home');
+  let v = p[0] || settings.get('home');
+  if (v === 'calendar') { v = 'today'; if (p[0]) history.replaceState(null, '', '#/today'); } // the Calendar screen was removed in 4.9.1
   if (v === 'notes') return { view: 'notes', scope: p[1] === 'nb' ? { kind: 'nb', id: p[2] } : p[1] === 'tag' ? { kind: 'tag', id: decodeURIComponent(p[2] || '') } : { kind: 'all' } };
   return { view: v, id: p[1] };
 }
@@ -52,8 +52,7 @@ function render(info = {}) {
   if (route.view !== 'focus') leaveFocus();
   const y = key === lastRouteKey ? main.scrollTop : 0;
   main.className = ''; fill(main, );
-  if (route.view === 'calendar') renderCalendar(route, main);
-  else if (route.view === 'search') viewSearch(main);
+  if (route.view === 'search') viewSearch(main);
   else if (route.view === 'settings') { viewSettings(main); if (route.id === 'blocks') setTimeout(() => document.getElementById('blocks-card')?.scrollIntoView({ block: 'start' }), 30); }
   else if (['goals', 'goal'].includes(route.view)) renderGoals(route, main);
   else if (route.view === 'focus') renderFocus(route, main);
@@ -119,7 +118,6 @@ function drawSidebar(route) {
       link('#/inbox', 'inbox', 'Inbox', open.filter(t => !t.parentId).length),
       link('#/today', 'today', 'Today', todayCount ? h('span', { class: 'badge' + (open.some(t => t.due && t.due.date < now) ? ' late' : '') }, todayCount) : 0),
       link('#/upcoming', 'upcoming', 'Upcoming'),
-      link('#/calendar', 'cal', 'Calendar'),
       link('#/filters', 'filter', 'Filters & labels'),
       link('#/completed', 'done', 'Completed'),
       sec('plan', 'Goals & review', null,
@@ -149,14 +147,14 @@ function defaultsForRoute() {
 const closeDrawer = () => document.body.classList.remove('drawer');
 // Keyboard: "g" then a letter jumps to a screen; "?" shows every shortcut.
 let goPending = 0;
-const GO = { r: '#/review', a: '#/stats', f: '#/focus', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', c: '#/calendar', n: '#/notes', s: '#/settings' };
+const GO = { r: '#/review', a: '#/stats', f: '#/focus', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', n: '#/notes', s: '#/settings' };
 function shortcuts() {
-  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then C', 'Calendar'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then F', 'Focus'], ['G then A', 'Stats'], ['G then R', 'Weekly review'], ['Esc', 'Close a window'], ['?', 'This list']];
+  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then F', 'Focus'], ['G then A', 'Stats'], ['G then R', 'Weekly review'], ['Esc', 'Close a window'], ['?', 'This list']];
   modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
 }
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
 const setSideHidden = on => { document.body.classList.toggle('side-hidden', on); try { localStorage.setItem('steward.sideHidden', on ? '1' : ''); } catch {} };
-const toggleSide = () => { setSideHidden(!document.body.classList.contains('side-hidden')); if (parseRoute().view === 'calendar') schedule({ force: true }); };
+const toggleSide = () => setSideHidden(!document.body.classList.contains('side-hidden'));
 
 // ---- search -------------------------------------------------------------------------------
 let searchKind = '';
@@ -307,7 +305,7 @@ function viewSettings(main) {
   const g = [];
   if (!sync.configured()) {
     const id = h('input', { class: 'field mono', placeholder: '1234567890-abc…apps.googleusercontent.com' });
-    g.push(h('p', null, 'Steward keeps everything on this device and works without a connection. To sync between your Mac and phone, back up to Google Drive, show Google Calendar and get phone reminders, connect it to your Google account once.'),
+    g.push(h('p', null, 'Steward keeps everything on this device and works without a connection. To sync between your Mac and phone, back up to Google Drive and get phone reminders, connect it to your Google account once.'),
       h('p', null, 'Paste the Google client ID from the setup guide:'), h('div', { class: 'row gap' }, id, btn('Save', () => { const v = id.value.trim(); if (!/\.apps\.googleusercontent\.com$/.test(v)) return toast('That does not look like a client ID. It ends in apps.googleusercontent.com'); settings.set('clientId', v); again(); }, 'primary')));
   } else if (!sync.connected()) {
     g.push(h('p', null, 'Ready to connect. Google will ask you to let Steward use the files it makes in your Drive (only its own files, nothing else).'),
@@ -318,8 +316,8 @@ function viewSettings(main) {
       h('p', { class: 'sub', id: 'sync-line' }, syncLine()),
       sync.code === 'no-folder' ? h('div', { class: 'row gap wrap' }, btn('Start a new, empty Steward in this account instead', async () => { if (await confirmDlg('Make a new, empty Steward folder in this Google account? Only do this if you have never used Steward with another account.', 'Start new')) sync.startFresh().then(again); }, 'link')) : null,
       h('p', { class: 'sub', id: 'bg-line' }, bgLine()),
-      sync.helperUrl() ? h('p', { class: 'sub' }, '✓ Steward helper connected (Claude’s changes, your calendar and notifications).')
-        : h('p', { class: 'sub' }, 'Waiting for the Steward helper: until it is connected, your calendar, notifications and Claude’s note changes will not come through.'),
+      sync.helperUrl() ? h('p', { class: 'sub' }, '✓ Steward helper connected (Claude’s changes and notifications).')
+        : h('p', { class: 'sub' }, 'Waiting for the Steward helper: until it is connected, notifications and Claude’s note changes will not come through.'),
       sync.staysSignedIn() ? h('p', { class: 'sub' }, '✓ Stays signed in on this device — no reconnecting needed.')
         : sync.secret() ? h('p', { class: 'sub' }, 'One step left on this device: tap ', h('b', null, 'Stay signed in'), ' and allow Steward in the Google window.')
         : h('details', null, h('summary', { class: 'sub' }, 'Stop having to reconnect to Google'),
@@ -331,18 +329,13 @@ function viewSettings(main) {
   const auto = h('input', { type: 'checkbox', checked: settings.get('autoRemind'), onchange: () => { settings.set('autoRemind', auto.checked); if (sync.connected()) sync.run(); } });
   const lead = h('select', { class: 'field slim', onchange: () => { settings.set('remindLead', +lead.value); if (sync.connected()) sync.run(); } }, [[0, 'at the due time'], [10, '10 minutes before'], [30, '30 minutes before'], [60, '1 hour before']].map(([v, l]) => h('option', { value: v }, l)));
   lead.value = settings.get('remindLead');
-  // Calendars
-  const hidden = settings.get('hidden');
-  const cals = sync.calendars().filter(c => c.summary !== 'Steward Reminders');
   const timeIn = k => { const i = h('input', { type: 'time', class: 'field slim', value: settings.get(k), onchange: () => { if (i.value) settings.set(k, i.value); } }); return i; };
   const restSel = h('select', { class: 'field slim', onchange: () => settings.set('restDay', +restSel.value) }, h('option', { value: -1 }, 'none'), ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => h('option', { value: i }, d)));
   restSel.value = settings.get('restDay');
-  const ws = h('select', { class: 'field slim', onchange: () => settings.set('weekStart', +ws.value) }, h('option', { value: 0 }, 'Sunday'), h('option', { value: 1 }, 'Monday'));
-  ws.value = settings.get('weekStart');
   const theme = h('select', { class: 'field slim', onchange: () => { settings.set('theme', theme.value); applyTheme(); } }, [['auto', 'Match my device'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => h('option', { value: v }, l)));
   theme.value = settings.get('theme');
-  const home = h('select', { class: 'field slim', onchange: () => settings.set('home', home.value) }, [['today', 'Today'], ['inbox', 'Inbox'], ['upcoming', 'Upcoming'], ['calendar', 'Calendar'], ['notes', 'Notes']].map(([v, l]) => h('option', { value: v }, l)));
-  home.value = settings.get('home');
+  const home = h('select', { class: 'field slim', onchange: () => settings.set('home', home.value) }, [['today', 'Today'], ['inbox', 'Inbox'], ['upcoming', 'Upcoming'], ['notes', 'Notes']].map(([v, l]) => h('option', { value: v }, l)));
+  home.value = settings.get('home') === 'calendar' ? 'today' : settings.get('home');
   const semBox = h('input', { type: 'checkbox', checked: semanticOn(), onchange: () => { settings.set('semantic', semBox.checked); if (semBox.checked) semantic.kick(500); const l = $('#sem-line'); if (l) l.textContent = semLine(); } });
   // The "Clip to Steward" bookmark. It opens Steward, waits for Steward to say it is ready, then hands over the whole
   // article and copies of its pictures (fetched by the page itself, which is allowed to read them), so a clip keeps its
@@ -368,13 +361,11 @@ function viewSettings(main) {
       h('label', { class: 'inline nowrap' }, auto, h('span', { class: 'grow' }, 'Remind me about every task that has a time')),
       h('label', { class: 'inline block' }, 'When: ', lead),
       pushPanel(again)),
-    card('Calendar', cals.length ? h('div', null, h('p', { class: 'sub' }, 'Calendars to show:'), cals.map(c => { const cb = h('input', { type: 'checkbox', checked: !hidden.includes(c.id), onchange: () => { const hd = new Set(settings.get('hidden')); cb.checked ? hd.delete(c.id) : hd.add(c.id); settings.set('hidden', [...hd]); sync.refreshEvents().catch(() => {}); } }); return h('label', { class: 'inline block' }, cb, h('span', { class: 'pdot', style: { background: c.backgroundColor } }), c.summary); })) : h('p', { class: 'sub' }, 'Your Google calendars appear here once connected.'),
-      h('label', { class: 'inline' }, 'Week starts on ', ws)),
-    card('Day plan', h('p', { class: 'sub' }, 'Today and Upcoming add up the time on each day’s tasks (and, on Today, anything overdue) and compare it with the hours you can plan in, after your fixed blocks and calendar events. These settings apply on all your devices.'),
+    card('Day plan', h('p', { class: 'sub' }, 'Today and Upcoming add up the time on each day’s tasks (and, on Today, anything overdue) and compare it with the hours you can plan in, after your fixed blocks. These settings apply on all your devices.'),
       hoursEditor(again), h('label', { class: 'inline block' }, 'Rest day ', restSel)),
     h('section', { class: 'card', id: 'blocks-card' }, h('h3', null, 'Fixed blocks'), blocksEditor(again)),
     card('Weekly review', reviewSettings(again)),
-    card('Use with no signal', h('p', { class: 'sub' }, 'Steward keeps your tasks, notes and calendar on this device, so it opens and works with no connection. Changes you make offline sync when the signal comes back. Adding or changing Google Calendar events still needs a connection.'),
+    card('Use with no signal', h('p', { class: 'sub' }, 'Steward keeps your tasks and notes on this device, so it opens and works with no connection. Changes you make offline sync when the signal comes back.'),
       h('label', { class: 'inline nowrap' }, keepBox, h('span', { class: 'grow' }, 'Keep a copy of every photo, PDF and recording on this device')),
       h('div', { class: 'row gap wrap' }, btn('Download everything to this device', async () => { if (!navigator.onLine) return toast('Connect to the internet first (Wi-Fi is best: about 140 MB plus your attachments).'); await offline.downloadAll(); offLine(); }, 'primary', 'download')),
       h('p', { class: 'sub', id: 'off-line' }, 'Checking…'), h('p', { class: 'sub', id: 'off-busy' }, offline.state.line)),
@@ -402,8 +393,7 @@ function viewSettings(main) {
       h('p', null, h('b', null, 'One-tap “Add task” on your phone: '), 'press and hold the Steward icon, then drag “Add task” onto your home screen. Tapping it opens Steward straight to a new task.')),
     card('Bring in your old data',
       h('p', null, h('b', null, 'Evernote: '), 'in the Evernote desktop app, right-click a notebook, choose Export, pick the ENEX format, then load the file here. Notes, tags and attachments come across.'), btn('Import Evernote .enex files', () => enex.click(), '', 'note'), enex,
-      h('p', null, h('b', null, 'Todoist: '), 'brings over every open task with its project, section, sub-tasks, dates, repeats, priority, labels, deadlines, comments and reminders, plus your projects and filters. Doing it again later updates what came over instead of making copies, and finishes here whatever you finished in Todoist. Anything you changed, finished or deleted in Steward since stays the way you left it.'), btn('Import from Todoist', () => todoistDialog(again), '', 'check'),
-      h('p', null, h('b', null, 'Google Calendar: '), 'needs no import; it shows up as soon as Google is connected.')),
+      h('p', null, h('b', null, 'Todoist: '), 'brings over every open task with its project, section, sub-tasks, dates, repeats, priority, labels, deadlines, comments and reminders, plus your projects and filters. Doing it again later updates what came over instead of making copies, and finishes here whatever you finished in Todoist. Anything you changed, finished or deleted in Steward since stays the way you left it.'), btn('Import from Todoist', () => todoistDialog(again), '', 'check')),
     card('Backup', h('p', { class: 'sub' }, 'Google Drive keeps earlier versions of your data files for 30 days. You can also save a copy yourself.'),
       h('div', { class: 'row gap wrap' }, btn('Download a backup', async () => { const blob = new Blob([JSON.stringify(await store.exportAll())], { type: 'application/json' }); const a = h('a', { href: URL.createObjectURL(blob), download: `steward-backup-${today()}.json` }); a.click(); }), btn('Restore from a backup', () => restore.click()), restore)),
     card('Appearance', h('label', { class: 'inline' }, 'Theme ', theme), h('label', { class: 'inline' }, 'Open Steward on ', home)),
@@ -485,7 +475,7 @@ function blocksEditor(again) {
       M.identities().length > 0 && h('label', null, 'This time belongs to', idSel),
       h('div', { class: 'row between' }, b.id ? btn('Delete', async () => { if (await confirmDlg(`Delete "${b.name}"?`)) { store.remove('blocks', b.id); close(); again(); } }, 'tiny danger') : h('span'), h('div', { class: 'row' }, btn('Cancel', close), btn('Save', save, 'primary'))));
   }, { title: b.id ? 'Edit fixed block' : 'New fixed block', cls: 'small' });
-  return h('div', null, h('p', { class: 'sub' }, 'Times that are always taken: devotions, classes, family dinner, church, date night. The day plan never counts them as open, and they show faintly on the calendar.'),
+  return h('div', null, h('p', { class: 'sub' }, 'Times that are always taken: devotions, classes, family dinner, church, date night. The day plan never counts them as open.'),
     h('div', { class: 'blocks-list' }, list.map(b => h('div', { class: 'brow' }, h('span', null, h('b', null, b.name), h('br'), h('small', { class: 'sub' }, `${b.days.map(d => DN[d]).join(' ')} · ${fmtTime(b.start)}–${fmtTime(b.end)}${(b.every || 1) > 1 ? ' · every other week' : ''}${b.until ? ' · until ' + fmtDate(b.until) : ''}${b.identityId && store.get('identities', b.identityId) ? ' · ' + store.get('identities', b.identityId).name : ''}`)), btn('Edit', () => edit(b), 'tiny')))),
     !list.length && h('p', { class: 'sub' }, 'None yet.'), btn('Add a fixed block', () => edit(), 'link', 'plus'));
 }
@@ -784,7 +774,6 @@ async function start() {
   M.repairTasks();
   settings.adoptLocal();
   if (!localStorage.getItem('steward.seeded')) { seed(); localStorage.setItem('steward.seeded', '1'); }
-  await sync.loadCachedEvents();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     // updateViaCache 'none': the phone always asks GitHub for a fresh sw.js (and its imports) instead of a saved copy.
     navigator.serviceWorker.register('sw.js', { type: 'module', updateViaCache: 'none' }).then(reg => { watchForUpdates(reg); return setupBackground(reg); }).catch(e => console.warn('sw', e));
@@ -797,8 +786,7 @@ async function start() {
     await hydrate();
     await store.init();
     try { sync.lastSync = JSON.parse(localStorage.getItem('steward.lastSync')) || 0; } catch {}
-    await sync.loadCachedEvents();
-    store.emit({ remote: true, events: true });
+    store.emit({ remote: true });
   };
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (parseRoute().view === 'settings') render({ force: true }); });
   fabGestures();
@@ -806,9 +794,7 @@ async function start() {
   $('#scrim').addEventListener('click', closeDrawer);
   try { if (localStorage.getItem('steward.sideHidden')) document.body.classList.add('side-hidden'); } catch {}
   $('#side-show').addEventListener('click', toggleSide);
-  // Resizing the window (split screen, full screen) redraws the calendar so its hour height fits.
-  window.addEventListener('resize', debounce(() => { if (parseRoute().view === 'calendar' && !isMobile()) schedule({ force: true }); }, 200));
-  // Rotating the phone switches between layouts: redraw so the calendar etc. pick up the new size.
+  // Rotating the phone switches between layouts: redraw so each screen picks up the new size.
   window.matchMedia(PHONE_MQ).addEventListener('change', () => { closeDrawer(); schedule({ force: true }); });
   window.addEventListener('hashchange', () => { closeDrawer(); if (!location.hash.startsWith('#clip=') && location.hash !== '#shared') render(); else intake(); });
   const pushSoon = debounce(() => sync.run(), 4000);

@@ -1,9 +1,8 @@
-// Day plan: does the day's work fit in the hours left after fixed calendar blocks?
+// Day plan: does the day's work fit in the hours left after fixed blocks?
 // Shown at the top of Today (full card) and on each day in Upcoming (one line).
 import { h, today, fromYmd, pad, fmtTime, addDays } from './util.js';
 import { store, settings } from './store.js';
 import * as M from './model.js';
-import { sync } from './sync.js';
 import { icon, btn, toast } from './ui.js';
 import { aiReady, planWithClaude, planStatus } from './ai.js';
 
@@ -29,7 +28,7 @@ const overlap = (a, b) => a.start < b.end && b.start < a.end;
 // Pure computation (exported for tests). nowMin is minutes past midnight when `day` is today, else null.
 // window: {start,end} hours tasks may be planned in that day, or null (rest / no planning).
 // blocks: fixed blocks that day as {b, start, end} in minutes. overdue: tasks past due, counted on today only.
-export function computePlan({ day, tasks, events, window, blocks = [], restDay, nowMin = null, overdue = [] }) {
+export function computePlan({ day, tasks, events = [], window, blocks = [], restDay, nowMin = null, overdue = [] }) {
   const evs = eventsOn(day, events);
   const rest = fromYmd(day).getDay() === restDay || !window;
   const ws = window ? toMin(window.start) : 0, we = window ? toMin(window.end) : 0;
@@ -66,7 +65,7 @@ export function planFor(day) {
   const d = new Date(), isToday = day === today(), nowMin = isToday ? d.getHours() * 60 + d.getMinutes() : null;
   const tasks = M.openTasks();
   const hours = settings.get('hours') || [];
-  return computePlan({ day, tasks, events: sync.events || [], window: hours[fromYmd(day).getDay()] || null, blocks: M.blocksOn(day), restDay: settings.get('restDay'), nowMin,
+  return computePlan({ day, tasks, window: hours[fromYmd(day).getDay()] || null, blocks: M.blocksOn(day), restDay: settings.get('restDay'), nowMin,
     overdue: isToday ? tasks.filter(t => t.due && t.due.date < day && !t.parentId) : [] });
 }
 
@@ -91,7 +90,7 @@ function headline(p) {
 export function planLine(day) {
   const p = planFor(day);
   if (p.state === 'empty' && !p.evs.length) return null;
-  return h('span', { class: 'plan-line ' + p.state, title: 'Planned work (with time estimates) vs. open hours after fixed blocks and calendar events' }, verdict(p) + (p.clashes.length ? ` · ${p.clashes.length} clash${p.clashes.length === 1 ? '' : 'es'}` : ''));
+  return h('span', { class: 'plan-line ' + p.state, title: 'Planned work (with time estimates) vs. open hours after fixed blocks' }, verdict(p) + (p.clashes.length ? ` · ${p.clashes.length} clash${p.clashes.length === 1 ? '' : 'es'}` : ''));
 }
 
 // Full card for Today: a calm headline, a capacity meter, what needs attention, and the day's timeline (folds away).

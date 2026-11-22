@@ -168,7 +168,7 @@ const PLAN_RULES = `How Charles wants a day planned, in this order:
 1. Promises to customers come first (label "promise"). If one cannot fit, say so plainly and suggest telling the customer early and asking to move the date. Never quietly drop one.
 2. Invoicing stays current.
 3. Then work by how fast it spoils: leaf cleanups (most urgent), mowing (keep weekly/biweekly rhythm), weed treatments (can flex a little), bush trimming (flexes most), then projects like mulch, irrigation and tree work (flex a lot, unless a date was promised).
-Never place anything over a fixed block or calendar event (devotions, classes, family dinner, church, ESL teaching, date night). Stay inside his planning hours. Sunday is his rest day.
+Never place anything over a fixed block (devotions, classes, family dinner, church, ESL teaching, date night). Stay inside his planning hours. Sunday is his rest day.
 Guard the quiet priorities: time with God, Elise and the coming baby, seminary work, rest and health. If the necessary work already fits, say so, so he can stop adding hours "just in case". If it does not fit, say what should move rather than stretching into family or rest time.
 Leave a little margin between field jobs for driving and loading.`;
 

@@ -278,7 +278,7 @@ export const store = {
 // data (reminders, work hours, rest day) are SHARED: kept in the synced "prefs" item so the Mac and phone agree.
 // hours: per weekday (0 = Sunday) the window tasks may be planned in, or null for no planning that day.
 const WEEK_HOURS = [null, ...Array(5).fill({ start: '07:00', end: '22:30' }), { start: '07:00', end: '22:30' }];
-const defaults = { theme: 'light', weekStart: 0, home: 'today', autoRemind: true, remindLead: 0, clientId: '953176719624-701gj43chqpp040biv5qvvr628o8rflo.apps.googleusercontent.com', calView: 'week', hidden: [], workStart: '07:00', workEnd: '18:00', restDay: 0, hours: WEEK_HOURS };
+const defaults = { theme: 'light', weekStart: 0, home: 'today', autoRemind: true, remindLead: 0, clientId: '953176719624-701gj43chqpp040biv5qvvr628o8rflo.apps.googleusercontent.com', workStart: '07:00', workEnd: '18:00', restDay: 0, hours: WEEK_HOURS };
 export const SHARED = ['autoRemind', 'remindLead', 'remindersPaused', 'workStart', 'workEnd', 'restDay', 'hours', 'helperUrl', 'aiOn', 'reviewAt', 'seedsGone'];
 const local = {
   get(k) { try { return JSON.parse(localStorage.getItem('steward.set.' + k)); } catch { return null; } },

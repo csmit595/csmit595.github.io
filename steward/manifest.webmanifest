@@ -1,7 +1,7 @@
 {
   "name": "Steward",
   "short_name": "Steward",
-  "description": "Tasks, notes and calendar in one place.",
+  "description": "Tasks and notes in one place.",
   "start_url": "./",
   "scope": "./",
   "id": "./",
@@ -46,10 +46,6 @@
     {
       "name": "New note",
       "url": "./#/new-note"
-    },
-    {
-      "name": "Calendar",
-      "url": "./#/calendar"
     }
   ],
   "share_target": {

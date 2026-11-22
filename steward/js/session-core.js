@@ -67,7 +67,7 @@ export function phase(s, now = Date.now()) {
 
 /**
  * Before starting: would this session run into something fixed?
- * nowMin: minutes past midnight now; busy: [{ start, end, title }] (fixed blocks and calendar events today, in minutes).
+ * nowMin: minutes past midnight now; busy: [{ start, end, title }] (fixed blocks today, in minutes).
  * Returns { clash: null } or { clash: { title, start, end }, fitMin } where fitMin is how long a session could run
  * and still end in time (0 when the block has already begun).
  */

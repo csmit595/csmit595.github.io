@@ -446,7 +446,7 @@ export function applyOps(ops) {
   return results;
 }
 
-// ---- fixed blocks (devotions, classes, dinner, church): synced, used by the day plan and calendar ----
+// ---- fixed blocks (devotions, classes, dinner, church): synced, used by the day plan ----
 /** Blocks that happen on a day, as {b, start, end} in minutes after midnight. */
 export function blocksOn(day) {
   const [y, mo, d] = day.split('-').map(Number), dow = new Date(y, mo - 1, d).getDay();
