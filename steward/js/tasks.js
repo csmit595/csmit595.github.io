@@ -11,6 +11,7 @@ import { orgPanel, readOrg, mergeList, hasArea, projectIdByName, orgOn } from '.
 import { extractGoal } from './goals-core.js';
 import { goalStrip, goalSelect } from './goals.js';
 import { openFocusStart, todayStarts } from './focus.js';
+import { pickControl, sortHeadButtons } from './inbox-sort.js';
 
 const go = hash => { location.hash = hash; };
 const byDue = (a, b) => ((a.due?.date || '9999') + (a.due?.time || '99')).localeCompare((b.due?.date || '9999') + (b.due?.time || '99')) || (a.priority || 4) - (b.priority || 4) || M.byOrder(a, b);
@@ -101,7 +102,7 @@ function goalItems(t) {
 /** Phones: swipe a task right to complete it, left to give it a new day. */
 function swipe(row, t) {
   row.addEventListener('touchstart', e => {
-    if (e.touches.length !== 1 || e.target.closest('.check, a')) return;
+    if (e.touches.length !== 1 || e.target.closest('.check, a, .sortpick')) return;
     const s = e.touches[0]; let dx = 0, on = false, dead = false;
     const move = ev => {
       const p = ev.touches[0], x = p.clientX - s.clientX, y = p.clientY - s.clientY;
@@ -137,7 +138,7 @@ const clearMarks = () => document.querySelectorAll('.drop-before,.drop-after,.dr
 /** Phones: press and hold a task, then drag it to a new spot or section. */
 function touchDrag(row, t) {
   row.addEventListener('touchstart', e => {
-    if (e.touches.length !== 1 || e.target.closest('.check')) return;
+    if (e.touches.length !== 1 || e.target.closest('.check, .sortpick')) return;
     const start = e.touches[0]; let active = false, ghost = null, target = null, last = start;
     const timer = setTimeout(() => {
       active = true; navigator.vibrate?.(15);
@@ -193,6 +194,7 @@ function taskRow(t, o = {}) {
         t.goalId && store.get('goals', t.goalId) && h('span', { class: 'meta goal', title: 'Goal' }, icon('flag', 11), store.get('goals', t.goalId).title),
         (t.labels || []).map(l => h('span', { class: 'meta label' + (l === 'promise' ? ' promise' : '') }, '@' + l)),
         o.showProject && h('span', { class: 'meta proj' }, h('span', { class: 'pdot', style: { background: M.COLORS[store.get('projects', t.projectId)?.color] || 'var(--line)' } }), M.projectName(t.projectId)))),
+    !done && o.sortPicks && pickControl(t, projectTree),
     !done && finePointer() && h('div', { class: 'tacts' },
       iconBtn('upcoming', 'New date', e => { e.stopPropagation(); scheduleMenu(e.currentTarget, t); }, 'mini'),
       iconBtn('more', 'More', e => { e.stopPropagation(); moreMenu(e.currentTarget, t); }, 'mini')));
@@ -316,8 +318,8 @@ function viewInbox(main) {
     if (!list.length && p.id !== 'inbox') continue;
     const title = p.id === 'inbox' ? 'No project' : h('a', { href: '#/project/' + p.id }, p.name);
     wrap.append(h('section', { class: 'group' },
-      h('div', { class: 'ghead' }, h('h3', null, title, h('span', { class: 'count' }, list.filter(t => !t.completedAt).length))),
-      h('div', null, taskList(list, { drag: true, showDone, onDrop: drop(p.id, list) }), addRow('Add task', p.id === 'inbox' ? {} : { projectId: p.id }))));
+      h('div', { class: 'ghead' }, h('h3', null, title, h('span', { class: 'count' }, list.filter(t => !t.completedAt).length)), p.id === 'inbox' && sortHeadButtons()),
+      h('div', null, taskList(list, { drag: true, showDone, onDrop: drop(p.id, list), sortPicks: p.id === 'inbox' }), addRow('Add task', p.id === 'inbox' ? {} : { projectId: p.id }))));
   }
   main.append(wrap);
 }
