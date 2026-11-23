@@ -4,7 +4,7 @@ import { store, settings } from './store.js';
 import * as M from './model.js';
 import { sync } from './sync.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu, modalOpen, isMobile, PHONE_MQ } from './ui.js';
-import { renderTasks, openQuickAdd, openTask, editProject, projectTree } from './tasks.js';
+import { renderTasks, openQuickAdd, openTask, editProject, projectTree, subProjects } from './tasks.js';
 import { renderNotes, leaveNotes, newNote, dictateNote, noteAddMenu, createClip, importEnex, noteBusy } from './notes.js';
 import { canDictate, dictEngine, setDictEngine } from './dictate.js';
 import { compileFilter } from './filters.js';
@@ -23,8 +23,8 @@ import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug, contextWordCount } from './organize.js';
 import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
 
-const VERSION = '4.11.2';
-const WHATS_NEW = `Steward updated to ${VERSION}: Inbox → No project now has a Sort tasks button. Claude suggests a project for each task; nothing moves until you press Confirm on it (or change the project first).`;
+const VERSION = '4.12.0';
+const WHATS_NEW = `Steward updated to ${VERSION}: a main project (like CS Outdoors or Personal) now shows every task from its sub-projects, grouped under each sub-project, and its count in the menu adds them all up.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -126,7 +126,7 @@ function drawSidebar(route) {
         link('#/review', 'done', 'Weekly review')),
       favs.length > 0 && sec('favs', 'Favorites', null, favs),
       sec('projects', 'Projects', iconBtn('plus', 'New project', () => editProject(), 'mini'),
-        projects.map(p => h('div', { style: { paddingLeft: p.depth * 14 + 'px' } }, link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => t.projectId === p.id).length))),
+        projects.map(p => { const fam = new Set([p.id, ...subProjects(p.id).map(x => x.id)]); return h('div', { style: { paddingLeft: p.depth * 14 + 'px' } }, link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => fam.has(t.projectId)).length)); }),
         !projects.length && h('div', { class: 'snote' }, 'No projects yet')),
       sec('notes', 'Notes', iconBtn('plus', 'New notebook', async () => { const n = await promptDlg('New notebook', '', 'Notebook name'); if (n) { location.hash = '#/notes/nb/' + M.ensureNotebook(n); } }, 'mini'),
         link('#/notes', 'note', 'All notes', notes.length),

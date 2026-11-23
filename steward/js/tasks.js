@@ -28,6 +28,14 @@ export function projectTree() {
   for (const p of all) if (!out.find(x => x.id === p.id)) out.push({ ...p, depth: 0 });
   return out;
 }
+/** A project's sub-projects at every level, in the sidebar's order, each with its depth below `pid` (1 = direct child). */
+export function subProjects(pid) {
+  const tree = projectTree(), i = tree.findIndex(p => p.id === pid);
+  if (i < 0) return [];
+  const out = [], base = tree[i].depth;
+  for (let j = i + 1; j < tree.length && tree[j].depth > base; j++) out.push({ ...tree[j], depth: tree[j].depth - base });
+  return out;
+}
 function projectSelect(value, onchange) {
   const s = h('select', { class: 'field', onchange: () => onchange(s.value) },
     h('option', { value: 'inbox' }, 'Inbox'), projectTree().map(p => h('option', { value: p.id }, '  '.repeat(p.depth) + p.name)));
@@ -359,6 +367,40 @@ function viewProject(main, pid) {
     { label: 'Rename', icon: 'edit', onclick: async () => { const n = await promptDlg('Rename section', s.name); if (n) store.patch('sections', s.id, { name: n }); } },
     { label: 'Delete section', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete section "${s.name}"? Its tasks stay in the project.`)) { for (const t of all) if (t.sectionId === s.id) store.patch('tasks', t.id, { sectionId: null }, { silent: true }); store.remove('sections', s.id); } } },
   ]));
+  const subs = pid === 'inbox' ? [] : subProjects(pid);
+  if (subs.length) {
+    // A parent project also shows every task in its sub-projects, one group per sub-project (like the Inbox).
+    const subIds = new Set(subs.map(p => p.id));
+    const subAll = store.all('tasks').filter(t => subIds.has(t.projectId));
+    const subTaskIds = new Set(subAll.map(t => t.id));
+    const subTop = subAll.filter(t => (!t.parentId || !subTaskIds.has(t.parentId)) && (showDone || !t.completedAt));
+    const subOpen = subAll.filter(t => !t.completedAt && (!t.parentId || !subTaskIds.has(t.parentId))).length;
+    main.querySelector('.vhead .sub').textContent = `${openCount + subOpen} open across ${subs.length} sub-project${subs.length === 1 ? '' : 's'}`;
+    // Drag reorders within a sub-project only; it never moves a task to another project.
+    const subDrop = (spid, list) => (id, order, targetId, before) => {
+      const t = store.get('tasks', id); if (!t || t.projectId !== spid) return;
+      if (sort !== 'manual') {
+        list.forEach((x, i) => { if (x.id !== id && x.order !== (i + 1) * 1000) store.patch('tasks', x.id, { order: (i + 1) * 1000 }, { silent: true, noHistory: true }); });
+        order = orderFor(list.map(x => store.get('tasks', x.id)).filter(Boolean), id, targetId, before);
+        setP({ sort: 'manual' });
+      }
+      store.patch('tasks', id, { parentId: null, order });
+    };
+    const wrap = h('div', { class: board ? 'board' : 'plist' });
+    const ownList = top;
+    if (ownList.length) wrap.append(h('section', { class: 'group' + (board ? ' col' : '') }, h('div', { class: 'ghead' }, h('h3', null, proj.name, h('span', { class: 'count' }, ownList.filter(t => !t.completedAt).length))),
+      h('div', null, taskList(ownList, { drag: true, showDone, onDrop: drop(null) }))));
+    for (const sp of subs) {
+      const list = subTop.filter(t => t.projectId === sp.id).sort(SORTS[sort]);
+      const n = list.filter(t => !t.completedAt).length;
+      const title = h('a', { href: '#/project/' + sp.id }, h('span', { class: 'pdot', style: { background: M.COLORS[sp.color] || 'var(--line)', marginRight: '6px' } }), sp.name);
+      wrap.append(h('section', { class: 'group' + (board ? ' col' : '') + (sp.depth > 1 && !board ? ' subgroup' : ''), style: sp.depth > 1 && !board ? { marginLeft: (sp.depth - 1) * 14 + 'px' } : null },
+        h('div', { class: 'ghead' }, h('h3', null, title, h('span', { class: 'count' }, n))),
+        h('div', null, list.length ? taskList(list, { drag: true, showDone, onDrop: subDrop(sp.id, list) }) : null, addRow('Add task', { projectId: sp.id }))));
+    }
+    main.append(wrap);
+    return;
+  }
   const cols = [{ id: null, name: board ? 'No section' : '' }, ...sections];
   const wrap = h('div', { class: board ? 'board' : 'plist' });
   for (const s of cols) {
