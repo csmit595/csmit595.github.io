@@ -23,7 +23,7 @@ import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug, contextWordCount } from './organize.js';
 import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
 
-const VERSION = '4.11.1';
+const VERSION = '4.11.2';
 const WHATS_NEW = `Steward updated to ${VERSION}: Inbox → No project now has a Sort tasks button. Claude suggests a project for each task; nothing moves until you press Confirm on it (or change the project first).`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;

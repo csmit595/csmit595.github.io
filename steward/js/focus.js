@@ -64,7 +64,6 @@ export function openFocusStart(target = {}) {
         gd.clash && h('div', { class: 'banner soft' }, gd.fitMin > 0 ? `This would run into ${gd.clash.title} at ${clockOf(gd.clash.start)}. ` : `${gd.clash.title} is on now (until ${clockOf(gd.clash.end)}). `, gd.fitMin >= 5 && btn(`Shorten to ${gd.fitMin} min`, () => { length = gd.fitMin; format = 'standard'; draw(); }, 'tiny')),
         h('p', { class: 'sub' }, icon('bell', 13), ' Turn on Do Not Disturb before you start, and put the phone face down.'),
         h('div', { class: 'row end' }, btn('Cancel', close), btn(`Start ${length} min`, async () => {
-          if (new Date().getDay() === settings.get('restDay') && !(await ask('Today is your rest day. Start anyway?', [['Not today', false], ['Start anyway', true, 'primary']]))) return;
           const g2 = S.guard({ nowMin: new Date().getHours() * 60 + new Date().getMinutes(), lengthMin: length, busy: busyToday() });
           if (g2.clash) {
             const a = await ask(g2.fitMin > 0 ? `This session would run into ${g2.clash.title} at ${clockOf(g2.clash.start)}.` : `${g2.clash.title} is on now, until ${clockOf(g2.clash.end)}.`,
@@ -112,11 +111,10 @@ export async function startTimer(identityId) {
   return begin({ kind: 'family', identityId: i.id });
 }
 /** Swipe the plus button up: a standard 50-minute session starts at once, then a small window asks which identity
- *  it counts toward (closing it leaves the session without one). Same guards as the start sheet: one timer at a time,
- *  a question on the rest day, and a heads-up if a fixed block starts before the 50 minutes are up. */
+ *  it counts toward (closing it leaves the session without one). Same guards as the start sheet: one timer at a time
+ *  and a heads-up if a fixed block starts before the 50 minutes are up. */
 export async function quickFocus() {
   primeAudio();
-  if (new Date().getDay() === settings.get('restDay') && !(await ask('Today is your rest day. Start anyway?', [['Not today', false], ['Start anyway', true, 'primary']]))) return null;
   if (!(await endOther())) return null;
   const s = begin({ kind: 'focus', plannedMin: 50, format: 'standard' });
   const gd = S.guard({ nowMin: new Date().getHours() * 60 + new Date().getMinutes(), lengthMin: 50, busy: busyToday() });
