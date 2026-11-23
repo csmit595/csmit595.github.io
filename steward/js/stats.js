@@ -7,7 +7,7 @@ import { fmtHours, quarterRange } from './goals-core.js';
 import { computePlan } from './dayplan.js';
 import { icon, btn, iconBtn } from './ui.js';
 import { openTask } from './tasks.js';
-import { startFamily, logTime, recentSessions } from './focus.js';
+import { focusStarts, recentSessions } from './focus.js';
 
 const colorOf = c => M.COLORS[c] || M.COLORS.stone;
 let mode = 'week', anchor = null; // anchor: a day inside the week or quarter shown
@@ -49,8 +49,7 @@ export function statsCards(st, { week = true, now = today(), label = '' } = {}) 
     q.familyBlocksWorked.length > 0 && week && h('li', { class: 'sub stsubline' }, 'Work ran into: ' + q.familyBlocksWorked.map(b => `${b.name} (${DAY1[fromYmd(b.day).getDay()]})`).join(', ')),
     line('bell', restLine),
     line('book', `Seminary and church ${fmtHours(q.studyMin)}${q.studyTargetMin ? ` of ${fmtHours(q.studyTargetMin)}` : ''}`),
-    line('spark', `Health ${fmtHours(q.healthMin)}${q.healthDone ? ` · ${q.healthDone} task${q.healthDone === 1 ? '' : 's'} finished` : ''}`)),
-    week && h('div', { class: 'row wrap' }, btn('Start family time', () => startFamily(), 'tiny', 'clock'), btn('Add time by hand', () => logTime({}), 'tiny', 'plus'))));
+    line('spark', `Health ${fmtHours(q.healthMin)}${q.healthDone ? ` · ${q.healthDone} task${q.healthDone === 1 ? '' : 's'} finished` : ''}`))));
   const p = st.promises;
   out.push(card('Customer promises', null, h('div', { class: 'sttiles' }, tile(p.onTime, 'kept on time'), tile(p.late, 'finished late', p.late ? 'warn' : ''), tile(p.openPastDue, 'past due, still open', p.openPastDue ? 'warn' : '')),
     p.openTasks.length > 0 && h('div', null, p.openTasks.slice(0, 8).map(t => h('button', { type: 'button', class: 'rowlink', onclick: () => openTask(t.id) }, icon('flag', 15), h('span', { class: 'grow' }, t.content, h('small', null, `promised for ${fmtDate(t.deadline || t.due.date, true)} · ${M.projectName(t.projectId)}`)), icon('right', 14)))),
@@ -76,6 +75,7 @@ export function renderStats(route, main) {
   main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Stats'), h('div', { class: 'sub' }, label)),
     h('div', { class: 'row' }, h('div', { class: 'seg' }, [['week', 'Week'], ['quarter', 'Quarter']].map(([k, l]) => h('button', { type: 'button', class: mode === k ? 'on' : '', onclick: () => { mode = k; anchor = now; store.emit({}); } }, l))),
       iconBtn('left', week ? 'Earlier week' : 'Earlier quarter', () => step(-1)), iconBtn('right', week ? 'Later week' : 'Later quarter', () => { if (!isNow) step(1); }, isNow ? 'off' : ''))));
+  main.append(focusStarts());
   main.append(h('p', { class: 'verse' }, '“Be thou diligent to know the state of thy flocks, and look well to thy herds.” ', h('span', null, 'Proverbs 27:23')));
   main.append(h('div', { class: 'stgrid' }, statsCards(st, { week, now })));
   main.append(recentSessions('card stcard strecent'));

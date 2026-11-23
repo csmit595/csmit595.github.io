@@ -23,7 +23,7 @@ import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug, contextWordCount } from './organize.js';
 import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
 
-const VERSION = '4.11.0';
+const VERSION = '4.11.1';
 const WHATS_NEW = `Steward updated to ${VERSION}: Inbox → No project now has a Sort tasks button. Claude suggests a project for each task; nothing moves until you press Confirm on it (or change the project first).`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
@@ -58,7 +58,7 @@ function render(info = {}) {
   else if (route.view === 'focus') renderFocus(route, main);
   else if (route.view === 'stats') renderStats(route, main);
   else if (route.view === 'review') renderReview(route, main);
-  else if (route.view === 'family-start') { location.replace('#/focus'); setTimeout(() => startFamily(), 60); return; }
+  else if (route.view === 'family-start') { location.replace('#/' + settings.get('home')); setTimeout(() => startFamily(), 60); return; }
   else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
   else if (route.view === 'task') { location.replace('#/' + settings.get('home')); const id = decodeURIComponent(route.id || ''); setTimeout(() => openTaskSoon(id), 80); return; }
   else if (route.view === 'new-note') { location.replace('#/notes'); setTimeout(() => newNote(), 60); return; }
@@ -146,9 +146,9 @@ function defaultsForRoute() {
 const closeDrawer = () => document.body.classList.remove('drawer');
 // Keyboard: "g" then a letter jumps to a screen; "?" shows every shortcut.
 let goPending = 0;
-const GO = { r: '#/review', a: '#/stats', f: '#/focus', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', n: '#/notes', s: '#/settings' };
+const GO = { r: '#/review', a: '#/stats', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', n: '#/notes', s: '#/settings' };
 function shortcuts() {
-  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then F', 'Focus'], ['G then A', 'Stats'], ['G then R', 'Weekly review'], ['Esc', 'Close a window'], ['?', 'This list']];
+  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then A', 'Stats'], ['G then R', 'Weekly review'], ['Esc', 'Close a window'], ['?', 'This list']];
   modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
 }
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.

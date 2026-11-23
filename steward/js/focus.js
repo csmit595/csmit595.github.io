@@ -10,6 +10,8 @@ import { deviceName } from './sync.js';
 import { icon, btn, modal, confirmDlg, toast, menu } from './ui.js';
 
 const go = hash => { location.hash = hash; };
+/** When a timer ends, Steward goes back to the home screen (the check-in, if any, opens there). */
+const goHome = () => { if (document.body.dataset.view === 'focus') location.replace('#/' + settings.get('home')); };
 const colorOf = i => M.COLORS[i?.color] || M.COLORS.stone;
 const clockOf = min => fmtTime(`${pad(Math.floor(min / 60) % 24)}:${pad(min % 60)}`);
 const sessions = () => store.all('sessions');
@@ -201,9 +203,10 @@ function timeUp(s) {
   const fresh = Date.now() - closed.endedAt < 3 * 60000;
   if (fresh) {
     chime(); try { navigator.vibrate?.([120, 80, 120]); } catch {}
-    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') navigator.serviceWorker?.ready.then(r => r.showNotification('Focus session done', { body: sessionTitle(closed) + ' · time to check in', icon: 'icons/icon-192.png', tag: 'fs-' + closed.id, data: { url: '#/focus' } })).catch(() => {});
+    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') navigator.serviceWorker?.ready.then(r => r.showNotification('Focus session done', { body: sessionTitle(closed) + ' · time to check in', icon: 'icons/icon-192.png', tag: 'fs-' + closed.id, data: { url: '#/' + settings.get('home') } })).catch(() => {});
   }
-  if (!document.hidden) checkIn(closed.id);
+  keepAwake(false); goHome();
+  if (!document.hidden) setTimeout(() => checkIn(closed.id), 80);
 }
 /** A family timer left running: ask once whether to keep it or stop it at a chosen time. */
 function askStale(s) {
@@ -271,7 +274,8 @@ export const leaveFocus = () => { keepAwake(false); };
 export function renderFocus(route, main) {
   main.classList.add('focus-view');
   const s = runningSession();
-  if (!s) { keepAwake(false); return viewIdle(main); }
+  // No timer running: there is no Focus page any more (starting and recent sessions live on Stats), so go home.
+  if (!s) { keepAwake(false); location.replace('#/' + settings.get('home')); return; }
   const i = s.identityId && store.get('identities', s.identityId), fam = s.kind === 'family';
   const set = fn => { const cur = store.get('sessions', s.id); if (cur && !cur.endedAt) save(fn(cur)); };
   keepAwake(!fam && !S.isPaused(s));
@@ -284,19 +288,19 @@ export function renderFocus(route, main) {
     !fam && h('div', { class: 'fs-ring' }, h('span')),
     h('div', { class: 'row fs-acts' },
       btn(paused ? 'Resume' : 'Pause', () => { primeAudio(); set(paused ? S.resume : S.pause); }, paused ? 'primary' : ''),
-      btn(fam ? 'Stop' : 'End early', async () => { if (!fam && !(await ask(`End this session now? ${S.clock(S.elapsedMs(store.get('sessions', s.id)))} will be saved.`, [['Keep going', false], ['End it', true, 'primary']]))) return; const closed = save(S.finish(store.get('sessions', s.id))); keepAwake(false); if (fam) toast(`${timerName(closed)} saved: ${fmtHours(closed.actualMin)}`); else checkIn(closed.id); }, fam ? 'primary' : '')),
+      btn(fam ? 'Stop' : 'End early', async () => { if (!fam && !(await ask(`End this session now? ${S.clock(S.elapsedMs(store.get('sessions', s.id)))} will be saved.`, [['Keep going', false], ['End it', true, 'primary']]))) return; const closed = save(S.finish(store.get('sessions', s.id))); keepAwake(false); goHome(); if (fam) toast(`${timerName(closed)} saved: ${fmtHours(closed.actualMin)}`); else setTimeout(() => checkIn(closed.id), 80); }, fam ? 'primary' : '')),
     !fam && h('button', { type: 'button', class: 'fs-pulled', onclick: () => set(c => ({ ...c, interruptions: (c.interruptions || 0) + 1 })) }, 'I got pulled away', s.interruptions ? h('span', { class: 'count' }, s.interruptions) : null),
     h('a', { class: 'sub fs-back', href: '#/' + settings.get('home') }, 'Back to Steward (the timer keeps running)'),
     s.device && s.device !== deviceName() && h('div', { class: 'sub' }, `Started on the ${s.device}`));
   main.append(face); paintFace(face);
 }
-function viewIdle(main) {
-  const fam = familyIdentity();
-  main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Focus'), h('div', { class: 'sub' }, 'One thing at a time, with an end.'))),
-    h('div', { class: 'row wrap fs-starts' }, btn('Start a focus session', () => { primeAudio(); openFocusStart({}); }, 'primary', 'clock'), fam && btn('Start family time', () => startFamily(), '', 'pin'), btn('Add time by hand', () => logTime({}), '', 'plus')),
-    recentSessions());
+/** The starting buttons (on Stats): a focus session, the family timer, time added by hand; or the running timer. */
+export function focusStarts() {
+  const r = runningSession(), fam = familyIdentity();
+  if (r) return h('div', { class: 'row wrap fs-starts' }, h('a', { class: 'btn primary', href: '#/focus' }, icon('clock', 16), `${r.kind === 'family' ? timerName(r) : sessionTitle(r).slice(0, 40)} running · open`));
+  return h('div', { class: 'row wrap fs-starts' }, btn('Start a focus session', () => { primeAudio(); openFocusStart({}); }, 'primary', 'clock'), fam && btn('Start family time', () => startFamily(), '', 'pin'), btn('Add time by hand', () => logTime({}), '', 'plus'));
 }
-/** The last dozen finished sessions, newest first (on Stats, and on the Focus screen when no timer runs). */
+/** The last dozen finished sessions, newest first (on Stats). */
 export function recentSessions(cls = 'group') {
   const recent = sessions().filter(x => x.endedAt).sort((a, b) => b.endedAt - a.endedAt).slice(0, 12);
   return h('section', { class: cls }, h('div', { class: 'ghead' }, h('h3', null, 'Recent sessions')),
