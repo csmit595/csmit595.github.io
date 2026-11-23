@@ -109,6 +109,29 @@ export async function startTimer(identityId) {
   if (!(await endOther())) return null;
   return begin({ kind: 'family', identityId: i.id });
 }
+/** Swipe the plus button up: a standard 50-minute session starts at once, then a small window asks which identity
+ *  it counts toward (closing it leaves the session without one). Same guards as the start sheet: one timer at a time,
+ *  a question on the rest day, and a heads-up if a fixed block starts before the 50 minutes are up. */
+export async function quickFocus() {
+  primeAudio();
+  if (new Date().getDay() === settings.get('restDay') && !(await ask('Today is your rest day. Start anyway?', [['Not today', false], ['Start anyway', true, 'primary']]))) return null;
+  if (!(await endOther())) return null;
+  const s = begin({ kind: 'focus', plannedMin: 50, format: 'standard' });
+  const gd = S.guard({ nowMin: new Date().getHours() * 60 + new Date().getMinutes(), lengthMin: 50, busy: busyToday() });
+  const ids = M.identities();
+  if (!ids.length && !gd.clash) return s;
+  const patch = fn => { const cur = store.get('sessions', s.id); if (cur && !cur.endedAt) save(fn(cur)); };
+  modal(close => h('div', { class: 'form fs-pick' },
+    h('p', { class: 'sub' }, icon('clock', 13), ' 50 minutes started. Which identity is this for?'),
+    gd.clash && h('div', { class: 'banner soft' }, gd.fitMin > 0 ? `Heads up: ${gd.clash.title} starts at ${clockOf(gd.clash.start)}. ` : `${gd.clash.title} is on now (until ${clockOf(gd.clash.end)}). `,
+      gd.fitMin >= 5 && btn(`Shorten to ${gd.fitMin} min`, e => { patch(c => { const n = { ...c, plannedMin: gd.fitMin }; return { ...n, endsAt: S.endsAtOf(n) }; }); e.currentTarget.closest('.banner')?.remove(); toast(`Shortened to ${gd.fitMin} minutes`); }, 'tiny')),
+    h('div', { class: 'fs-idlist' }, ids.map(i => h('button', { type: 'button', class: 'rowlink', onclick: () => { patch(c => ({ ...c, identityId: i.id })); close(); } },
+      h('span', { class: 'pdot idot', style: { background: colorOf(i) } }), h('span', { class: 'grow' }, i.name))),
+      h('button', { type: 'button', class: 'rowlink sub', onclick: close }, h('span', { class: 'pdot idot' }), h('span', { class: 'grow' }, 'No identity')))),
+    { title: 'Focus session', cls: 'small' });
+  return s;
+}
+
 /** A "Focus" button for a task, a goal or an identity. */
 export const focusButton = (target, cls = 'tiny') => btn('Focus', () => openFocusStart(target), cls, 'clock');
 
@@ -268,15 +291,18 @@ export function renderFocus(route, main) {
   main.append(face); paintFace(face);
 }
 function viewIdle(main) {
-  const fam = familyIdentity(), now = Date.now();
-  const recent = sessions().filter(x => x.endedAt).sort((a, b) => b.endedAt - a.endedAt).slice(0, 12);
+  const fam = familyIdentity();
   main.append(h('header', { class: 'vhead' }, h('div', null, h('h1', null, 'Focus'), h('div', { class: 'sub' }, 'One thing at a time, with an end.'))),
     h('div', { class: 'row wrap fs-starts' }, btn('Start a focus session', () => { primeAudio(); openFocusStart({}); }, 'primary', 'clock'), fam && btn('Start family time', () => startFamily(), '', 'pin'), btn('Add time by hand', () => logTime({}), '', 'plus')),
-    h('section', { class: 'group' }, h('div', { class: 'ghead' }, h('h3', null, 'Recent')),
+    recentSessions());
+}
+/** The last dozen finished sessions, newest first (on Stats, and on the Focus screen when no timer runs). */
+export function recentSessions(cls = 'group') {
+  const recent = sessions().filter(x => x.endedAt).sort((a, b) => b.endedAt - a.endedAt).slice(0, 12);
+  return h('section', { class: cls }, h('div', { class: 'ghead' }, h('h3', null, 'Recent sessions')),
       recent.length ? h('div', null, recent.map(x => { const i = x.identityId && store.get('identities', x.identityId); return h('div', { class: 'rowlink fs-row' }, h('span', { class: 'pdot idot', style: { background: colorOf(i) } }), h('span', { class: 'grow' }, sessionTitle(x), h('small', null, [new Date(x.startedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }), i?.name, x.byHand ? 'added by hand' : null, x.rating ? `focus ${x.rating}/5` : null, x.note].filter(Boolean).join(' · '))), h('b', null, fmtHours(x.actualMin || 0)),
         h('button', { class: 'ibtn mini', title: 'Remove', 'aria-label': 'Remove', onclick: async () => { if (await confirmDlg(`Remove this ${fmtHours(x.actualMin || 0)} entry?`, 'Remove')) store.remove('sessions', x.id); } }, icon('x', 14))); }))
-        : h('p', { class: 'sub gnone' }, 'Nothing yet. Sessions you finish show here.')));
-  void now;
+        : h('p', { class: 'sub gnone' }, 'Nothing yet. Sessions you finish show here.'));
 }
 
 // ---- pieces other screens use ------------------------------------------------------------------------------------

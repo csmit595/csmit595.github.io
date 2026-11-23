@@ -11,7 +11,7 @@ import { compileFilter } from './filters.js';
 import { renderGoals, activeGoals } from './goals.js';
 import { renderStats } from './stats.js';
 import { renderReview, ensureReviewTask, reviewSettings } from './review.js';
-import { renderFocus, leaveFocus, initFocus, startFamily, openFocusStart, runningSession, familyIdentity } from './focus.js';
+import { renderFocus, leaveFocus, initFocus, startFamily, openFocusStart, quickFocus, runningSession, familyIdentity } from './focus.js';
 import { ocr } from './ocr.js';
 import { search, highlight, excerpt } from './search.js';
 import { semantic, enabled as semanticOn, status as semStatus } from './semantic.js';
@@ -23,7 +23,7 @@ import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug, contextWordCount } from './organize.js';
 import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
 
-const VERSION = '4.10.1';
+const VERSION = '4.11.0';
 const WHATS_NEW = `Steward updated to ${VERSION}: Inbox → No project now has a Sort tasks button. Claude suggests a project for each task; nothing moves until you press Confirm on it (or change the project first).`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
@@ -122,7 +122,6 @@ function drawSidebar(route) {
       link('#/completed', 'done', 'Completed'),
       sec('plan', 'Goals & review', null,
         link('#/goals', 'flag', 'Goals', activeGoals().length),
-        link('#/focus', 'clock', 'Focus', runningSession() ? h('span', { class: 'badge' }, 'on') : 0),
         link('#/stats', 'board', 'Stats'),
         link('#/review', 'done', 'Weekly review')),
       favs.length > 0 && sec('favs', 'Favorites', null, favs),
@@ -669,16 +668,17 @@ function bgLine() {
 }
 
 // Phone plus button. Tap: a new note (inside a note: add a photo or file). Swipe it left: it turns into
-// "Add task" with two quick clicks; let go there to open Add task. Slide back before letting go to cancel.
+// "Add task" with two quick clicks; let go there to open Add task. Swipe it up: it turns into "Start focus" with the
+// same two clicks; let go there to start a 50-minute focus session and pick its identity. Slide back before letting go to cancel.
 function fabGestures() {
   const fab = $('#fab'), ARM = 44, MAX = 96;
   let g = null, swallowClick = false;
   const buzz = p => { try { navigator.vibrate?.(p); } catch {} };
-  const reset = () => { fab.classList.remove('swiping', 'task-mode'); fab.style.transform = ''; };
+  const reset = () => { fab.classList.remove('swiping', 'task-mode', 'focus-mode'); fab.style.transform = ''; };
   fab.addEventListener('pointerdown', e => {
     if (parseRoute().view === 'note') e.preventDefault(); // keep the keyboard and cursor where they are
     if (e.button > 0) return;
-    g = { id: e.pointerId, x: e.clientX, y: e.clientY, far: 0, armed: false, long: false };
+    g = { id: e.pointerId, x: e.clientX, y: e.clientY, far: 0, armed: null, long: false };
     try { fab.setPointerCapture(e.pointerId); } catch {}
     // Press and hold: speak a note or tasks instead of typing.
     const mine = g;
@@ -700,18 +700,21 @@ function fabGestures() {
     if (g.far < 8 || g.long) return;
     clearTimeout(g.timer);
     fab.classList.add('swiping');
-    fab.style.transform = `translateX(${Math.max(-MAX, Math.min(0, dx))}px)`;
-    const armed = dx < -ARM && Math.abs(dy) < 70;
+    // Whichever way the finger has gone further decides: left for a task, up for focus.
+    const up = -dy > -dx;
+    fab.style.transform = up ? `translateY(${Math.max(-MAX, Math.min(0, dy))}px)` : `translateX(${Math.max(-MAX, Math.min(0, dx))}px)`;
+    const armed = up ? (dy < -ARM && Math.abs(dx) < 70 ? 'focus' : null) : (dx < -ARM && Math.abs(dy) < 70 ? 'task' : null);
     if (armed !== g.armed) {
-      g.armed = armed; fab.classList.toggle('task-mode', armed);
-      buzz(armed ? [7, 70, 7] : 5); // two quick clicks: you're on "Add task"; one tiny tick: back to note
+      g.armed = armed; fab.classList.toggle('task-mode', armed === 'task'); fab.classList.toggle('focus-mode', armed === 'focus');
+      buzz(armed ? [7, 70, 7] : 5); // two quick clicks: you're on "Add task" or "Start focus"; one tiny tick: back to note
     }
   });
   const end = e => {
     if (!g || e.pointerId !== g.id) return;
     const { armed, far, long } = g; clearTimeout(g.timer); g = null; reset();
     if (armed || far > 20 || long) { swallowClick = true; setTimeout(() => { swallowClick = false; }, 450); }
-    if (armed && e.type === 'pointerup') { closeDrawer(); openQuickAdd(defaultsForRoute()); }
+    if (armed === 'task' && e.type === 'pointerup') { closeDrawer(); openQuickAdd(defaultsForRoute()); }
+    if (armed === 'focus' && e.type === 'pointerup') { closeDrawer(); quickFocus(); }
   };
   fab.addEventListener('pointerup', end);
   fab.addEventListener('pointercancel', end);

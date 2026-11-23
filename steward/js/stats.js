@@ -7,7 +7,7 @@ import { fmtHours, quarterRange } from './goals-core.js';
 import { computePlan } from './dayplan.js';
 import { icon, btn, iconBtn } from './ui.js';
 import { openTask } from './tasks.js';
-import { startFamily, logTime } from './focus.js';
+import { startFamily, logTime, recentSessions } from './focus.js';
 
 const colorOf = c => M.COLORS[c] || M.COLORS.stone;
 let mode = 'week', anchor = null; // anchor: a day inside the week or quarter shown
@@ -78,5 +78,6 @@ export function renderStats(route, main) {
       iconBtn('left', week ? 'Earlier week' : 'Earlier quarter', () => step(-1)), iconBtn('right', week ? 'Later week' : 'Later quarter', () => { if (!isNow) step(1); }, isNow ? 'off' : ''))));
   main.append(h('p', { class: 'verse' }, '“Be thou diligent to know the state of thy flocks, and look well to thy herds.” ', h('span', null, 'Proverbs 27:23')));
   main.append(h('div', { class: 'stgrid' }, statsCards(st, { week, now })));
+  main.append(recentSessions('card stcard strecent'));
   if (week) main.append(h('p', { class: 'sub center' }, h('a', { href: '#/review' }, 'Open the weekly review')));
 }
