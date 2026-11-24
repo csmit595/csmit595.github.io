@@ -5,6 +5,7 @@ import { store, settings } from './store.js';
 import * as M from './model.js';
 import { icon, btn, toast } from './ui.js';
 import { aiReady, planWithClaude, planStatus } from './ai.js';
+import { verseEl, pick, todaysChapter, openChapter } from './scripture.js';
 
 export const hm = n => { n = Math.max(0, Math.round(n)); return n >= 60 ? `${Math.floor(n / 60)}h${n % 60 ? ' ' + (n % 60) + 'm' : ''}` : `${n}m`; };
 const toMin = s => { const [a, b] = String(s || '0:0').split(':').map(Number); return a * 60 + (b || 0); };
@@ -104,7 +105,8 @@ export function planCard(day, { openTask, editHours } = {}) {
   if (p.unestimated) notes.push({ ic: 'more', text: `${p.unestimated} task${p.unestimated === 1 ? ' has' : 's have'} no time estimate, so ${p.unestimated === 1 ? 'it isn’t' : 'they aren’t'} counted.`, quiet: true });
   // Fixed blocks and timed tasks, in order.
   const rows = [
-    ...p.blocks.map(x => ({ start: x.start, el: h('li', { class: 'pl-ev pl-block' }, h('span', { class: 'pl-t' }, clock(x.start) + '–' + clock(x.end)), h('span', { class: 'pdot', style: { background: 'var(--muted)' } }), h('span', { class: 'grow' }, x.b.name)) })),
+    // Fixed blocks are "stones": locked, never green, so they never look like tasks. Devotions name the day's Proverbs chapter.
+    ...p.blocks.map(x => { const dev = /devotion|quiet time|bible/i.test(x.b.name); return { start: x.start, el: h('li', { class: 'pl-ev pl-block', ...(dev ? { onclick: () => openChapter(), style: { cursor: 'pointer' }, title: 'Read today’s chapter' } : {}) }, h('span', { class: 'pl-t' }, clock(x.start) + '–' + clock(x.end)), icon('lock', 13), h('span', { class: 'grow' }, x.b.name + (dev ? ` · Proverbs ${todaysChapter(day)}` : ''))) }; }),
     ...p.evs.map(x => ({ start: x.start, el: h('li', { class: 'pl-ev' }, h('span', { class: 'pl-t' }, clock(x.start) + '–' + clock(x.end)), h('span', { class: 'pdot', style: { background: x.e.color } }), h('span', { class: 'grow' }, x.e.title)) })),
     ...M.openTasks().filter(t => t.due?.date === day && t.due.time).map(t => ({ start: toMin(t.due.time), el: h('li', { class: 'pl-task', onclick: () => openTask && openTask(t.id) }, h('span', { class: 'pl-t' }, fmtTime(t.due.time) + (t.duration ? '–' + clock(toMin(t.due.time) + t.duration) : '')), icon('done', 13), h('span', { class: 'grow' }, t.content)) })),
   ].sort((a, b) => a.start - b.start);
@@ -142,6 +144,7 @@ export function planCard(day, { openTask, editHours } = {}) {
     aiReady() && p.state !== 'rest' && p.state !== 'after' && (p.count + p.overdue) > 0 && h('div', { class: 'pl-actions' }, btn(planStatus(day) === 'running' ? 'Claude is planning…' : planStatus(day) === 'ready' ? 'See Claude’s plan' : 'Plan with Claude', () => planWithClaude(day, p), planStatus(day) === 'ready' ? 'primary tiny' : 'tiny', 'spark')),
     (after || over) && h('div', { class: 'pl-actions' }, btn(after ? `Move what’s left to ${nextName}` : `Move unfinished to ${nextName}`, moveLeft, after ? 'primary tiny' : 'tiny', 'upcoming'),
       over && h('a', { class: 'btn tiny', href: '#/upcoming' }, icon('cal', 14), 'See the week')),
+    over && verseEl(pick('over'), { small: true }),
     notes.length ? h('ul', { class: 'pl-notes' }, notes.map(n => h('li', { class: n.quiet ? 'quiet' : '' }, icon(n.ic, 13), h('span', null, n.text)))) : null,
     rows.length ? h('details', { class: 'pl-tl', open: tlOpen, ontoggle: e => { try { localStorage.setItem('steward.planOpen', e.currentTarget.open ? '1' : '0'); } catch {} } },
       h('summary', null, icon('down', 14), `Today’s timeline`, h('span', { class: 'count' }, rows.length)),

@@ -22,9 +22,10 @@ import * as offline from './offline.js';
 import { aiOn, keyStatus, saveKey, clearKey } from './ai.js';
 import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS, tagName, tagSlug, contextWordCount } from './organize.js';
 import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
+import { verseEl, pick, POOLS, scriptureOn, ridgeSvg, renderMemory, maybeFirstLight, showFirstLight, todaysChapter, openChapter } from './scripture.js';
 
-const VERSION = '4.12.0';
-const WHATS_NEW = `Steward updated to ${VERSION}: a main project (like CS Outdoors or Personal) now shows every task from its sub-projects, grouped under each sub-project, and its count in the menu adds them all up.`;
+const VERSION = '5.0.0';
+const WHATS_NEW = `Steward ${VERSION} “Timberline”: a light, living look that follows the sky (dusk after 6 PM), Scripture from Proverbs and Matthew 5–7 on every screen (tap a verse to read it in context), First light each morning, and a weekly memory verse. Settings → Appearance changes the look.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 
@@ -43,7 +44,7 @@ function render(info = {}) {
   drawSidebar(route);
   document.body.dataset.view = route.view;
   $('#fab').setAttribute('aria-label', route.view === 'note' ? 'Add a photo or file to this note' : 'New note');
-  if (NOTE_VIEWS.includes(route.view)) { renderNotes(route, main, info); lastRouteKey = key; return; }
+  if (NOTE_VIEWS.includes(route.view)) { renderNotes(route, main, info); decorate(route, main); lastRouteKey = key; return; }
   if (route.view === 'settings' && key === lastRouteKey && !info.force && main.querySelector('.settings')) return;
   if (route.view === 'search' && key === lastRouteKey && main.querySelector('.results')) return drawResults();
   // The weekly review: a sync finishing must not take the cursor out of the box being typed in (what is typed is kept as it goes).
@@ -58,13 +59,37 @@ function render(info = {}) {
   else if (route.view === 'focus') renderFocus(route, main);
   else if (route.view === 'stats') renderStats(route, main);
   else if (route.view === 'review') renderReview(route, main);
+  else if (route.view === 'memory') renderMemory(main);
   else if (route.view === 'family-start') { location.replace('#/' + settings.get('home')); setTimeout(() => startFamily(), 60); return; }
   else if (route.view === 'add') { location.replace('#/today'); setTimeout(() => openQuickAdd({}), 50); return; }
   else if (route.view === 'task') { location.replace('#/' + settings.get('home')); const id = decodeURIComponent(route.id || ''); setTimeout(() => openTaskSoon(id), 80); return; }
   else if (route.view === 'new-note') { location.replace('#/notes'); setTimeout(() => newNote(), 60); return; }
   else if (['today', 'upcoming', 'inbox', 'project', 'label', 'filter', 'filters', 'completed'].includes(route.view)) { renderTasks(route, main); const acts = main.querySelector('.vhead > .row'); if (acts && isMobile()) acts.prepend(iconBtn('search', 'Search', () => { location.hash = '#/search'; }, 'hsearch')); }
   else { location.hash = '#/today'; return; }
+  decorate(route, main);
   main.scrollTop = y; lastRouteKey = key;
+}
+// 5.0: the ridge behind every screen, the sky's mood, and the screen's verse (one anchor per screen, from js/scripture.js).
+function decorate(route, main) {
+  const v = route.view;
+  let mood = '';
+  if (v === 'filter' || v === 'label') {
+    const name = (v === 'filter' ? store.get('filters', route.id)?.name : decodeURIComponent(route.id || '')) || '';
+    mood = /promise/i.test(name) ? 'ember' : /matrix|priorit/i.test(name) ? 'matrix' : '';
+  }
+  if (mood) document.body.dataset.mood = mood; else delete document.body.dataset.mood;
+  if (!main.querySelector(':scope > .tl-ridge')) main.prepend(ridgeSvg('tl-ridge'));
+  if (!scriptureOn() || main.querySelector('.view-verse')) return;
+  if (v === 'focus') {
+    const t = main.querySelector('.fs-title'), fam = /family/i.test(main.querySelector('.fs-kicker')?.textContent || '');
+    const el = t && verseEl(pick(fam ? 'family' : 'focus'), { cls: 'view-verse' }); if (el) t.after(el);
+    return;
+  }
+  const k = mood === 'ember' ? 'promise' : mood === 'matrix' ? 'matrix' : v === 'filter' ? 'label' : v;
+  if (!POOLS[k] || ['note', 'trash', 'settings', 'memory', 'today'].includes(v)) return;
+  const head = main.querySelector('.vhead');
+  const el = head && verseEl(pick(k), { cls: 'view-verse' });
+  if (el) head.after(el);
 }
 /** Open a task from a reminder. One this device has not received yet (Claude just added it) is fetched first. */
 async function openTaskSoon(id) {
@@ -87,6 +112,7 @@ function drawSidebar(route) {
   const side = $('#side'), now = today(), open = M.openTasks(), hash = location.hash || '#/' + settings.get('home');
   const link = (href, ic, label, count, extra) => h('a', { class: 'slink' + (hash === href ? ' on' : ''), href, onclick: closeDrawer }, typeof ic === 'string' ? icon(ic, 17) : ic, h('span', { class: 'grow' }, label), count instanceof Node ? count : count ? h('span', { class: 'count' }, count) : null, extra);
   const dot = c => h('span', { class: 'pdot', style: { background: M.COLORS[c] || M.COLORS.stone } });
+  const tile = (href, ic, label, count) => h('a', { class: 'stile' + (hash === href ? ' on' : ''), href, onclick: closeDrawer }, h('span', { class: 'row' }, icon(ic, 20), count instanceof Node ? count : count ? h('span', { class: 'count' }, count) : null), h('span', null, label));
   const projects = projectTree(), c = M.ctx();
   const favs = [...projects.filter(p => p.favorite).map(p => link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => t.projectId === p.id).length)),
     ...store.all('filters').filter(f => f.favorite).sort((a, b) => a.name.localeCompare(b.name)).map(f => link('#/filter/' + f.id, 'filter', f.name, open.filter(t => compileFilter(f.query, c).some(g => g.test(t))).length))];
@@ -112,18 +138,22 @@ function drawSidebar(route) {
   const todayCount = open.filter(t => t.due && t.due.date <= now && !t.parentId).length;
   fill(side,
     h('div', { class: 'brand' }, h('img', { src: 'icons/mark.png', alt: '', width: 40, height: 40 }), h('strong', null, 'Steward'), h('span', { class: 'grow' }), pill),
+    verseEl(pick('menu'), { small: true, cls: 'side-verse' }),
     h('div', { class: 'addline' }, h('button', { class: 'btn primary wide', onclick: () => { closeDrawer(); openQuickAdd(defaultsForRoute()); } }, icon('plus', 16), 'Add task', h('kbd', { class: 'only-desktop' }, 'Q')), canDictate() && iconBtn('mic', 'Speak tasks (D)', () => { closeDrawer(); openQuickAdd({ ...defaultsForRoute(), dictate: true }); }), iconBtn('sidebar', 'Hide sidebar (⌘\\)', toggleSide, 'only-desktop')),
     h('button', { class: 'sside-search', type: 'button', onclick: () => { closeDrawer(); location.hash = '#/search'; } }, icon('search', 16), h('span', { class: 'grow' }, 'Search everything'), h('kbd', { class: 'only-desktop' }, '⌘K')),
     h('nav', null,
-      link('#/inbox', 'inbox', 'Inbox', open.filter(t => !t.parentId).length),
-      link('#/today', 'today', 'Today', todayCount ? h('span', { class: 'badge' + (open.some(t => t.due && t.due.date < now) ? ' late' : '') }, todayCount) : 0),
-      link('#/upcoming', 'upcoming', 'Upcoming'),
+      h('div', { class: 'stiles' },
+        tile('#/today', 'today', 'Today', todayCount ? h('span', { class: 'badge' + (open.some(t => t.due && t.due.date < now) ? ' late' : '') }, todayCount) : null),
+        tile('#/inbox', 'inbox', 'Inbox', open.filter(t => !t.parentId).length),
+        tile('#/upcoming', 'upcoming', 'Upcoming'),
+        tile('#/notes', 'note', 'Notes', notes.length)),
       link('#/filters', 'filter', 'Filters & labels'),
       link('#/completed', 'done', 'Completed'),
       sec('plan', 'Goals & review', null,
         link('#/goals', 'flag', 'Goals', activeGoals().length),
         link('#/stats', 'board', 'Stats'),
-        link('#/review', 'done', 'Weekly review')),
+        link('#/review', 'done', 'Weekly review'),
+        scriptureOn() && link('#/memory', 'book', 'Memory verse')),
       favs.length > 0 && sec('favs', 'Favorites', null, favs),
       sec('projects', 'Projects', iconBtn('plus', 'New project', () => editProject(), 'mini'),
         projects.map(p => { const fam = new Set([p.id, ...subProjects(p.id).map(x => x.id)]); return h('div', { style: { paddingLeft: p.depth * 14 + 'px' } }, link('#/project/' + p.id, dot(p.color), p.name, open.filter(t => fam.has(t.projectId)).length)); }),
@@ -146,9 +176,9 @@ function defaultsForRoute() {
 const closeDrawer = () => document.body.classList.remove('drawer');
 // Keyboard: "g" then a letter jumps to a screen; "?" shows every shortcut.
 let goPending = 0;
-const GO = { r: '#/review', a: '#/stats', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', n: '#/notes', s: '#/settings' };
+const GO = { m: '#/memory', r: '#/review', a: '#/stats', o: '#/goals', t: '#/today', i: '#/inbox', u: '#/upcoming', n: '#/notes', s: '#/settings' };
 function shortcuts() {
-  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then A', 'Stats'], ['G then R', 'Weekly review'], ['Esc', 'Close a window'], ['?', 'This list']];
+  const rows = [['Q', 'Add a task'], ['D', 'Speak tasks'], ['N', 'New note'], ['/  or  ⌘K', 'Search everything'], ['⌘\\', 'Show or hide the sidebar'], ['G then T', 'Today'], ['G then I', 'Inbox'], ['G then U', 'Upcoming'], ['G then N', 'Notes'], ['G then O', 'Goals'], ['G then A', 'Stats'], ['G then R', 'Weekly review'], ['G then M', 'Memory verse'], ['Esc', 'Close a window'], ['?', 'This list']];
   modal(() => h('div', { class: 'keys' }, rows.map(([k, l]) => h('div', { class: 'krow' }, h('span', null, l), h('span', null, k.split('  or  ').map((x, i) => [i ? ' or ' : '', ...x.split(' then ').map((y, j) => [j ? ' then ' : '', h('kbd', null, y)])]))))), { title: 'Keyboard shortcuts', cls: 'small' });
 }
 // Desktop: hide the sidebar for a wider work area (button or ⌘\). Remembered on this computer.
@@ -331,7 +361,7 @@ function viewSettings(main) {
   const timeIn = k => { const i = h('input', { type: 'time', class: 'field slim', value: settings.get(k), onchange: () => { if (i.value) settings.set(k, i.value); } }); return i; };
   const restSel = h('select', { class: 'field slim', onchange: () => settings.set('restDay', +restSel.value) }, h('option', { value: -1 }, 'none'), ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => h('option', { value: i }, d)));
   restSel.value = settings.get('restDay');
-  const theme = h('select', { class: 'field slim', onchange: () => { settings.set('theme', theme.value); applyTheme(); } }, [['auto', 'Match my device'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => h('option', { value: v }, l)));
+  const theme = h('select', { class: 'field slim', onchange: () => { settings.set('theme', theme.value); applyTheme(); } }, [['sky', 'Follow the sky: light by day, dusk after 6 PM'], ['auto', 'Match my device'], ['light', 'Light'], ['dark', 'Dusk (dark)']].map(([v, l]) => h('option', { value: v }, l)));
   theme.value = settings.get('theme');
   const home = h('select', { class: 'field slim', onchange: () => settings.set('home', home.value) }, [['today', 'Today'], ['inbox', 'Inbox'], ['upcoming', 'Upcoming'], ['notes', 'Notes']].map(([v, l]) => h('option', { value: v }, l)));
   home.value = settings.get('home') === 'calendar' ? 'today' : settings.get('home');
@@ -395,7 +425,10 @@ function viewSettings(main) {
       h('p', null, h('b', null, 'Todoist: '), 'brings over every open task with its project, section, sub-tasks, dates, repeats, priority, labels, deadlines, comments and reminders, plus your projects and filters. Doing it again later updates what came over instead of making copies, and finishes here whatever you finished in Todoist. Anything you changed, finished or deleted in Steward since stays the way you left it.'), btn('Import from Todoist', () => todoistDialog(again), '', 'check')),
     card('Backup', h('p', { class: 'sub' }, 'Google Drive keeps earlier versions of your data files for 30 days. You can also save a copy yourself.'),
       h('div', { class: 'row gap wrap' }, btn('Download a backup', async () => { const blob = new Blob([JSON.stringify(await store.exportAll())], { type: 'application/json' }); const a = h('a', { href: URL.createObjectURL(blob), download: `steward-backup-${today()}.json` }); a.click(); }), btn('Restore from a backup', () => restore.click()), restore)),
-    card('Appearance', h('label', { class: 'inline' }, 'Theme ', theme), h('label', { class: 'inline' }, 'Open Steward on ', home)),
+    card('Appearance', h('label', { class: 'inline' }, 'Look ', theme), h('label', { class: 'inline' }, 'Open Steward on ', home),
+      h('label', { class: 'inline block' }, h('input', { type: 'checkbox', checked: scriptureOn(), onchange: e => { settings.set('scriptureOn', e.currentTarget.checked); again(); } }), h('span', { class: 'grow' }, 'Show a verse on each screen (Proverbs and Matthew 5–7, KJV; on all your devices)')),
+      h('label', { class: 'inline block' }, h('input', { type: 'checkbox', checked: settings.get('firstLight') !== false, onchange: e => settings.set('firstLight', e.currentTarget.checked) }), h('span', { class: 'grow' }, 'First light: a verse, today’s chapter of Proverbs and the memory verse, once each morning (this device)')),
+      h('div', { class: 'row gap wrap' }, btn('Show First light now', showFirstLight, 'tiny'), btn(`Read Proverbs ${todaysChapter()}`, () => openChapter(), 'tiny', 'book'))),
     card('Updates', h('p', { class: 'sub' }, 'Steward updates itself: it checks whenever you come back to it and switches to the new version on its own. You never need to uninstall it to get an update.'),
       h('div', { class: 'row gap wrap' }, btn('Check for updates now', checkForUpdate, 'primary'), btn('Reload Steward fresh', repairApp)),
       h('p', { class: 'sub' }, '“Reload Steward fresh” is for when something looks stuck on an old version. It downloads the app again; your tasks, notes and settings stay right where they are.')),
@@ -496,12 +529,17 @@ offline.onChange(() => { if (/speech model/.test(offline.state.line)) { const l 
 offline.onChange(() => { const b = $('#off-busy'); if (b) b.textContent = offline.state.line; if (!offline.state.busy) offLine(); });
 const syncLine = () => sync.status === 'error' ? 'Sync problem: ' + sync.message : sync.status === 'syncing' ? (sync.message || 'Syncing…') : sync.status === 'auth' ? (sync.code || /did not finish|blocked/.test(sync.message) ? sync.message.replace(/Tap here/g, 'Tap Sync now') : 'Google needs you to reconnect. Tap Sync now.') : sync.status === 'offline' ? sync.message : (sync.lastSync ? 'Last synced ' + new Date(sync.lastSync).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not synced yet') + (sync.helperTrouble ? ` · ${sync.helperTrouble}: Claude’s changes, your calendar and notifications are waiting (tasks and notes still sync)` : '') + (sync.attWaiting ? ` · ${sync.attWaiting} attachment${sync.attWaiting === 1 ? '' : 's'} waiting to upload (Steward keeps trying; tasks and notes still sync)` : '');
 
+// 5.0: "Follow the sky" is light by day and dusk from 6 PM to 5 AM; the sky's color follows the hour (dawn 5-9,
+// day, golden hour 4-6 PM and all of the rest day).
 function applyTheme() {
-  const t = settings.get('theme');
-  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
-  // The phone's status bar follows the theme chosen here, not only the phone's own light/dark setting.
-  const dark = t === 'dark' || (t === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  document.querySelectorAll('meta[name=theme-color]').forEach(m => { m.removeAttribute('media'); m.content = dark ? '#171a15' : '#f6f1e5'; });
+  const t = settings.get('theme'), d = new Date(), hr = d.getHours(), root = document.documentElement;
+  const evening = hr >= 18 || hr < 5;
+  let rest = false; try { rest = d.getDay() === settings.get('restDay'); } catch {}
+  root.dataset.sky = hr >= 5 && hr < 9 ? 'dawn' : rest || (hr >= 16 && hr < 18) ? 'gold' : 'day';
+  if (t === 'auto') delete root.dataset.theme; else root.dataset.theme = t === 'sky' ? (evening ? 'dark' : 'light') : t;
+  // The phone's status bar follows the look chosen here, not only the phone's own light/dark setting.
+  const dark = root.dataset.theme === 'dark' || (t === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelectorAll('meta[name=theme-color]').forEach(m => { m.removeAttribute('media'); m.content = dark ? '#122019' : '#f2f5ef'; });
 }
 
 // ---- notifications on this device (Settings → Reminders) -------------------------------------------
@@ -764,6 +802,8 @@ async function repairApp() {
 }
 
 async function start() {
+  // 5.0: everyone moves once to "Follow the sky"; Settings → Appearance can change it back.
+  try { if (!localStorage.getItem('steward.timberline')) { localStorage.setItem('steward.timberline', '1'); settings.set('theme', 'sky'); } } catch {}
   applyTheme();
   const seen = localStorage.getItem('steward.seenVersion');
   if (seen !== VERSION) { localStorage.setItem('steward.seenVersion', VERSION); if (seen) setTimeout(() => toast(WHATS_NEW, null, null, 9000), 1200); }
@@ -818,6 +858,7 @@ async function start() {
   offline.speechHere().catch(() => {});
   if (!(await intake())) render();
   document.body.classList.add('ready');
+  setTimeout(maybeFirstLight, 400);
   extBridge(); extAnnounce();
   if (sync.connected()) sync.run();
   // Load Google's sign-in script now, so tapping Connect opens Google's window straight away: on phones a window
@@ -825,7 +866,7 @@ async function start() {
   if (sync.configured() && navigator.onLine && !sync.staysSignedIn()) sync.loadGis().catch(() => {});
   window.addEventListener('online', () => sync.run());
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { backgroundIsNewer().then(b => { if (b || Date.now() - sync.lastSync > 60000) sync.run(); }); checkReminders(); schedule(); return; }
+    if (!document.hidden) { backgroundIsNewer().then(b => { if (b || Date.now() - sync.lastSync > 60000) sync.run(); }); checkReminders(); applyTheme(); schedule(); maybeFirstLight(); return; }
     // Leaving Steward: save state for the background sync, and hand it anything not yet sent.
     snapshot().catch(() => {});
     if (sync.connected() && (store.isDirty('tasks') || ['offline', 'error'].includes(sync.status))) {
@@ -839,7 +880,9 @@ async function start() {
   setInterval(() => { if (!document.hidden) sync.run(); }, 3 * 60000);
   setInterval(checkReminders, 30000); checkReminders();
   let day = today();
-  setInterval(() => { if (today() !== day) { day = today(); schedule(); } }, 60000);
+  let sky = document.documentElement.dataset.sky + document.documentElement.dataset.theme;
+  setInterval(() => { applyTheme(); const s2 = document.documentElement.dataset.sky + document.documentElement.dataset.theme, hr = new Date().getHours();
+    if (today() !== day || s2 !== sky || (hr === 18 && new Date().getMinutes() === 0)) { day = today(); sky = s2; schedule({ force: true }); } }, 60000);
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === '\\' && !isMobile()) { e.preventDefault(); toggleSide(); return; }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !e.shiftKey) { e.preventDefault(); while (modalOpen()) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); if (location.hash === '#/search') document.querySelector('.field.big')?.select(); else location.hash = '#/search'; return; }

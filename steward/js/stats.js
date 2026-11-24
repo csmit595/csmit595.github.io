@@ -76,7 +76,6 @@ export function renderStats(route, main) {
     h('div', { class: 'row' }, h('div', { class: 'seg' }, [['week', 'Week'], ['quarter', 'Quarter']].map(([k, l]) => h('button', { type: 'button', class: mode === k ? 'on' : '', onclick: () => { mode = k; anchor = now; store.emit({}); } }, l))),
       iconBtn('left', week ? 'Earlier week' : 'Earlier quarter', () => step(-1)), iconBtn('right', week ? 'Later week' : 'Later quarter', () => { if (!isNow) step(1); }, isNow ? 'off' : ''))));
   main.append(focusStarts());
-  main.append(h('p', { class: 'verse' }, '“Be thou diligent to know the state of thy flocks, and look well to thy herds.” ', h('span', null, 'Proverbs 27:23')));
   main.append(h('div', { class: 'stgrid' }, statsCards(st, { week, now })));
   main.append(recentSessions('card stcard strecent'));
   if (week) main.append(h('p', { class: 'sub center' }, h('a', { href: '#/review' }, 'Open the weekly review')));

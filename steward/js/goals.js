@@ -8,6 +8,7 @@ import { AREAS, tagName } from './organize-core.js';
 import { icon, btn, iconBtn, modal, confirmDlg, toast, menu } from './ui.js';
 import { openTask, openQuickAdd, taskList } from './tasks.js';
 import { focusButton, identityTimeLine } from './focus.js';
+import { refChip, identityRef } from './scripture.js';
 
 const go = hash => { location.hash = hash; };
 const colorOf = i => M.COLORS[i?.color] || M.COLORS.stone;
@@ -46,7 +47,6 @@ function viewGoals(main) {
   const now = today(), q = GC.quarterRange(now), d = data(), ids = M.identities(), all = store.all('goals');
   const nActive = all.filter(g => g.status === 'active' && started(g, now)).length;
   main.append(header('Goals', `${q.label} · ${nActive} active goal${nActive === 1 ? '' : 's'}`, btn('New identity', () => editIdentity(), 'tiny', 'plus'), btn('New goal', () => editGoal({}), 'primary', 'plus')));
-  main.append(h('p', { class: 'verse' }, '“A man’s heart deviseth his way: but the LORD directeth his steps.” ', h('span', null, 'Proverbs 16:9')));
   if (!ids.length) main.append(h('div', { class: 'empty' }, h('strong', null, 'No identities yet'), h('p', null, 'An identity is a role you live in. Goals sit under them.'), btn('Add the starting six', () => { M.ensureIdentities(true); store.emit({ local: true }); }, 'primary')));
   for (const i of ids) {
     const mine = GC.sortGoals(all.filter(g => g.identityId === i.id), i);
@@ -58,7 +58,7 @@ function viewGoals(main) {
       '-', { label: 'Delete identity', icon: 'trash', danger: true, onclick: async () => { if (await confirmDlg(`Delete “${i.name}”${mine.length ? ` and its ${mine.length} goal${mine.length === 1 ? '' : 's'}` : ''}? Tasks stay; they are only unlinked.`)) M.deleteIdentity(i.id); } },
     ]); };
     main.append(h('section', { class: 'idcard', style: { '--idc': colorOf(i) } },
-      h('div', { class: 'idhead' }, h('span', { class: 'idicon' }, icon(i.icon || 'star', 16)), h('div', { class: 'grow' }, h('h2', null, i.name), i.purpose && h('div', { class: 'sub' }, i.purpose)), iconBtn('more', 'Identity options', more, 'mini')),
+      h('div', { class: 'idhead' }, h('span', { class: 'idicon' }, icon(i.icon || 'star', 16)), h('div', { class: 'grow' }, h('h2', null, i.name, refChip(identityRef(i.name))), i.purpose && h('div', { class: 'sub' }, i.purpose)), iconBtn('more', 'Identity options', more, 'mini')),
       identityTimeLine(i),
       act.length ? h('div', { class: 'glist' }, act.map(g => goalRow(g, i, d, now))) : h('p', { class: 'sub gnone' }, 'No goal this quarter. That can be the right answer.'),
       later.length > 0 && h('details', { class: 'gfold' }, h('summary', null, `Coming up (${later.length})`), h('div', { class: 'glist' }, later.map(g => goalRow(g, i, d, now)))),

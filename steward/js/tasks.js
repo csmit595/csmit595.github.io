@@ -4,13 +4,14 @@ import { store, settings } from './store.js';
 import * as M from './model.js';
 import { parseQuickAdd, parseDue, describeDue, looksRepeating } from './dates.js';
 import { compileFilter } from './filters.js';
-import { planCard, planLine } from './dayplan.js';
+import { planCard, planLine, planFor } from './dayplan.js';
+import { verseEl, pick as pickVerse } from './scripture.js';
 import { icon, btn, iconBtn, modal, confirmDlg, promptDlg, toast, menu } from './ui.js';
 import { canDictate, listen, spokenTask, splitTasks, saysStop, withoutStop } from './dictate.js';
 import { orgPanel, readOrg, mergeList, hasArea, projectIdByName, orgOn } from './organize.js';
 import { extractGoal } from './goals-core.js';
 import { goalStrip, goalSelect } from './goals.js';
-import { openFocusStart, todayStarts } from './focus.js';
+import { openFocusStart, todayStarts, startFamily } from './focus.js';
 import { pickControl, sortHeadButtons } from './inbox-sort.js';
 
 const go = hash => { location.hash = hash; };
@@ -259,9 +260,17 @@ function viewToday(main) {
   const now = today(), tasks = M.openTasks();
   const overdue = tasks.filter(t => t.due && t.due.date < now).sort(byDue);
   const todays = tasks.filter(t => t.due?.date === now).sort((a, b) => (a.due.time || '99').localeCompare(b.due.time || '99') || byPri(a, b));
-  const d = new Date(), n = todays.length + overdue.length;
-  main.append(header('Today', `${d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}${n ? ` · ${n} task${n === 1 ? '' : 's'}` : ''}`));
+  const d = new Date(), n = todays.length + overdue.length, hr = d.getHours();
+  // 5.0: on the rest day Today is the Lord's Day; from 6 PM it is Evening. Work is folded away (never hidden for good).
+  const rest = d.getDay() === settings.get('restDay'), evening = !rest && (hr >= 18 || hr < 4);
+  main.append(header(rest ? 'The Lord’s Day' : evening ? 'Evening' : 'Today', `${d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}${n ? ` · ${n} task${n === 1 ? '' : 's'}` : ''}`));
+  const v = verseEl(pickVerse(rest ? 'lordsday' : evening ? 'evening' : 'today'), { cls: 'view-verse' }); if (v) main.append(v);
+  if (rest) main.append(lordsDayCard(now));
+  else if (evening) main.append(eveningCard(now));
   main.append(planCard(now, { openTask, editHours: () => go('#/settings') }));
+  const fold = (rest || evening) && n > 0;
+  const outer = main;
+  if (fold) main = h('div');
   main.append(todayStarts());
   const strip = goalStrip(); if (strip) main.append(strip);
   if (overdue.length) main.append(group(`Overdue (${overdue.length})`, taskList(overdue, { showProject: true, flat: true }),
@@ -270,6 +279,43 @@ function viewToday(main) {
   // deadlines in the coming week for work not already on today's list
   const soon = tasks.filter(t => t.deadline && t.deadline <= addDays(now, 7) && !(t.due && t.due.date <= now)).sort((a, b) => a.deadline.localeCompare(b.deadline));
   if (soon.length) main.append(group(`Deadlines this week (${soon.length})`, taskList(soon, { showProject: true, flat: true })));
+  if (fold) {
+    const nd = M.nextPlanDay(now), when = nd === addDays(now, 1) ? (rest ? 'tomorrow' : 'morning') : fromYmd(nd).toLocaleDateString(undefined, { weekday: 'long' });
+    let open = false; try { open = sessionStorage.getItem('steward.foldOpen.' + now) === '1'; } catch {}
+    outer.append(h('details', { class: 'rest-fold', open, ontoggle: e => { try { sessionStorage.setItem('steward.foldOpen.' + now, e.currentTarget.open ? '1' : ''); } catch {} } },
+      h('summary', null, icon('down', 16), h('span', { class: 'grow' }, `${n} task${n === 1 ? '' : 's'} resting until ${when}`), h('span', { class: 'sub' }, 'Show')), main));
+  }
+}
+// The evening: a shutdown check (his three conditions for a free evening), family time, and the work put away.
+function eveningCard(now) {
+  const key = 'steward.shutdown.' + now;
+  let st = {}; try { st = JSON.parse(localStorage.getItem(key)) || {}; } catch {}
+  const save = () => { try { localStorage.setItem(key, JSON.stringify(st)); } catch {} };
+  const next = M.nextPlanDay(now), q = planFor(next);
+  const nextName = next === addDays(now, 1) ? 'Tomorrow' : fromYmd(next).toLocaleDateString(undefined, { weekday: 'long' });
+  const promises = M.openTasks().filter(t => (t.labels || []).includes('promise') && t.due && t.due.date <= next).length;
+  const row = (k, label, hint, auto) => {
+    const c = h('input', { type: 'checkbox', checked: !!(st[k] ?? auto), onchange: () => { st[k] = c.checked; save(); } });
+    return h('label', null, c, h('span', { class: 'grow' }, label), hint && h('small', { class: 'sub' }, hint));
+  };
+  return h('section', { class: 'card tl-card' },
+    h('h2', null, 'Shutdown check'),
+    h('p', { class: 'sub' }, 'When these three are done, the rest of the night is free.'),
+    h('div', { class: 'shut' },
+      row('plan', `${nextName} is planned`, q.count ? `${q.count} task${q.count === 1 ? '' : 's'} · ${q.state === 'over' ? 'over' : q.state === 'rest' ? 'rest day' : 'fits'}` : 'nothing on it yet', q.count > 0 && q.state !== 'over'),
+      row('supplies', 'Supplies ordered'),
+      row('customers', 'Customers answered', promises ? `${promises} open promise${promises === 1 ? '' : 's'}` : '')),
+    h('div', { class: 'row gap wrap' }, btn('Start family time', () => startFamily(), 'warm', 'star'), h('a', { class: 'btn', href: '#/upcoming' }, icon('upcoming', 16), 'See ' + nextName.toLowerCase())),
+    verseEl(pickVerse('family'), { small: true }));
+}
+// The rest day: church and rest; work waits for tomorrow, and anything captured lands in the Inbox.
+function lordsDayCard() {
+  const god = M.identities().find(i => /christ|worship|god/i.test(i.name));
+  return h('section', { class: 'card tl-card' },
+    h('h2', null, 'No work today'),
+    h('p', { class: 'sub' }, 'Work lists rest until tomorrow. Anything you capture today waits in the Inbox.'),
+    verseEl(pickVerse('lilies'), { small: true }),
+    h('div', { class: 'row gap wrap' }, btn('Time with God', () => openFocusStart(god ? { identityId: god.id } : {}), 'warm', 'book'), btn('Family time', () => startFamily(), '', 'star')));
 }
 
 function viewUpcoming(main) {
@@ -600,6 +646,7 @@ export function openQuickAdd(defaults = {}) {
     refresh();
     desc.addEventListener('input', () => org.refresh());
     return h('div', { class: 'form qa-form' }, h('div', { class: 'qa-line' }, input, micBtn), dictLine, chips, org.el, toolbar, desc,
+      verseEl(pickVerse('capture'), { small: true }),
       h('div', { class: 'row between qa-foot' },
         h('details', { class: 'qa-help' }, h('summary', null, 'Typing shortcuts'),
           h('p', { class: 'hint' }, 'Write it the way you would say it: ', h('code', null, 'tomorrow 3pm'), ' ', h('code', null, 'every other fri'), ' ', h('code', null, 'p1'), ' ', h('code', null, '#Project'), ' ', h('code', null, '@promise'), ' ', h('code', null, 'for 45m'), ' ', h('code', null, '{nov 20}'), ' deadline, ', h('code', null, 'goal:name'), ' a goal. If a word is mistaken for a date, tap the date chip to keep it in the name.')),

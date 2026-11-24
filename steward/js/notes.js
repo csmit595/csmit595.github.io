@@ -9,6 +9,7 @@ import { ocr } from './ocr.js';
 import { search } from './search.js';
 import { canDictate, listen, listeningBar, insertSpoken, caretAtEnd, titleFrom } from './dictate.js';
 import { orgPanel, readOrg, mergeList, hasArea, notebookIdByName } from './organize.js';
+import { findRefs, refChip } from './scripture.js';
 import * as V from './versions.js';
 import { shrunk, diffWords, textOf as plainOf, GONE_DAYS } from './versions-core.js';
 
@@ -378,6 +379,11 @@ function mountEditor(pane, id) {
     fill(tagsEl, icon('tag', 14), (n.tags || []).map(t => h('span', { class: 'chip' }, t, !trashed && h('button', { 'aria-label': 'Remove tag', onclick: () => { store.patch('notes', id, { tags: n.tags.filter(x => x !== t) }); drawTags(); } }, '×'))), !trashed && input, h('datalist', { id: 'tag-list' }, M.allTags().map(([t]) => h('option', { value: t }))));
   };
   drawTags();
+  // 5.0: Proverbs and Matthew 5-7 references in the note, each opening the passage in context.
+  const refsEl = h('div', { class: 'ref-strip' });
+  const drawRefs = () => { const n = get(); if (!n) return; const refs = findRefs((n.title || '') + ' ' + stripHtml(n.body || '')).slice(0, 12); fill(refsEl, refs.length ? [h('span', null, 'Scripture in this note'), refs.map(refChip)] : null); refsEl.hidden = !refs.length; };
+  drawRefs();
+  body.addEventListener('input', debounce(drawRefs, 1500));
   // Organize: as the note is written, suggest an area, tags, "customer promise" and a notebook; Confirm files it.
   const nbLower = () => { const nb = store.get('notebooks', get()?.notebookId); return nb && !/^notes$/i.test(nb.name) ? nb.name.toLowerCase() : null; };
   const org = orgPanel({ kind: 'note', minWords: 3, delay: 1200,
@@ -418,7 +424,7 @@ function mountEditor(pane, id) {
     h('div', { class: 'ebar' }, iconBtn('back', 'Back to notes', () => { save(true); go(scope.kind === 'nb' ? '#/notes/nb/' + scope.id : scope.kind === 'tag' ? '#/notes/tag/' + encodeURIComponent(scope.id) : scope.kind === 'trash' ? '#/trash' : scope.kind === 'gone' ? '#/trash/deleted' : '#/notes'); }, 'only-mobile'),
       icon('book', 15), nbSel, h('span', { class: 'grow' }), h('span', { class: 'sub saved' }, 'Edited ' + new Date(n0.updatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), dictBtn, iconBtn('share', 'Share this note', share, 'eshare'), iconBtn('more', 'Note options', more)),
     trashed && h('div', { class: 'banner' }, n0.gone ? `This note was deleted. It is kept until ${new Date(n0.gone + GONE_DAYS * 864e5).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}. ` : 'This note is in the trash. ', btn('Restore', () => { M.restoreNote(id); toast('Note restored'); go('#/note/' + id); }, 'tiny')),
-    !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, !trashed && org.el, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn, photoIn);
+    !trashed && toolbar, h('div', { class: 'escroll' }, title, tagsEl, refsEl, !trashed && org.el, body, n0.sourceUrl && h('div', { class: 'sub src' }, 'Clipped from ', h('a', { href: n0.sourceUrl, target: '_blank', rel: 'noopener' }, n0.sourceUrl.replace(/^https?:\/\//, '').slice(0, 60))), tasksEl), fileIn, camIn, photoIn);
   hydrate(body, n0.attachments, urls);
   // What this editor last knew of the note, to tell a change made on another device from its own saves.
   const sig = n => (n ? JSON.stringify([n.title || '', n.body || '', n.notebookId || '', n.tags || [], !!n.trashed, n.gone || 0]) : '');
