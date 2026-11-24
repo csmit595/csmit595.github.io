@@ -267,7 +267,7 @@ function viewToday(main) {
   const v = verseEl(pickVerse(rest ? 'lordsday' : evening ? 'evening' : 'today'), { cls: 'view-verse' }); if (v) main.append(v);
   if (rest) main.append(lordsDayCard(now));
   else if (evening) main.append(eveningCard(now));
-  main.append(planCard(now, { openTask, editHours: () => go('#/settings') }));
+  main.append(planCard(now, { openTask, editHours: () => go('#/settings'), complete: toggle }));
   const fold = (rest || evening) && n > 0;
   const outer = main;
   if (fold) main = h('div');

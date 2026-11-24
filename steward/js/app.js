@@ -24,8 +24,8 @@ import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS
 import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
 import { verseEl, pick, POOLS, scriptureOn, ridgeSvg, renderMemory, maybeFirstLight, showFirstLight, todaysChapter, openChapter } from './scripture.js';
 
-const VERSION = '5.0.0';
-const WHATS_NEW = `Steward ${VERSION} “Timberline”: a light, living look that follows the sky (dusk after 6 PM), Scripture from Proverbs and Matthew 5–7 on every screen (tap a verse to read it in context), First light each morning, and a weekly memory verse. Settings → Appearance changes the look.`;
+const VERSION = '5.0.1';
+const WHATS_NEW = `Steward ${VERSION}: the check marks in Today’s timeline now complete their task (with Undo). Tap the task’s name to open it.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
 

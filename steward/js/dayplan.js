@@ -95,7 +95,7 @@ export function planLine(day) {
 }
 
 // Full card for Today: a calm headline, a capacity meter, what needs attention, and the day's timeline (folds away).
-export function planCard(day, { openTask, editHours } = {}) {
+export function planCard(day, { openTask, editHours, complete } = {}) {
   const p = planFor(day);
   const pct = p.open ? Math.min(100, Math.round(p.planned / p.open * 100)) : (p.planned ? 100 : 0);
   const notes = [];
@@ -108,7 +108,8 @@ export function planCard(day, { openTask, editHours } = {}) {
     // Fixed blocks are "stones": locked, never green, so they never look like tasks. Devotions name the day's Proverbs chapter.
     ...p.blocks.map(x => { const dev = /devotion|quiet time|bible/i.test(x.b.name); return { start: x.start, el: h('li', { class: 'pl-ev pl-block', ...(dev ? { onclick: () => openChapter(), style: { cursor: 'pointer' }, title: 'Read today’s chapter' } : {}) }, h('span', { class: 'pl-t' }, clock(x.start) + '–' + clock(x.end)), icon('lock', 13), h('span', { class: 'grow' }, x.b.name + (dev ? ` · Proverbs ${todaysChapter(day)}` : ''))) }; }),
     ...p.evs.map(x => ({ start: x.start, el: h('li', { class: 'pl-ev' }, h('span', { class: 'pl-t' }, clock(x.start) + '–' + clock(x.end)), h('span', { class: 'pdot', style: { background: x.e.color } }), h('span', { class: 'grow' }, x.e.title)) })),
-    ...M.openTasks().filter(t => t.due?.date === day && t.due.time).map(t => ({ start: toMin(t.due.time), el: h('li', { class: 'pl-task', onclick: () => openTask && openTask(t.id) }, h('span', { class: 'pl-t' }, fmtTime(t.due.time) + (t.duration ? '–' + clock(toMin(t.due.time) + t.duration) : '')), icon('done', 13), h('span', { class: 'grow' }, t.content)) })),
+    // The check completes the task (with Undo); tapping anywhere else on the row opens it.
+    ...M.openTasks().filter(t => t.due?.date === day && t.due.time).map(t => { let row; row = h('li', { class: 'pl-task', onclick: () => openTask && openTask(t.id) }, h('span', { class: 'pl-t' }, fmtTime(t.due.time) + (t.duration ? '–' + clock(toMin(t.due.time) + t.duration) : '')), h('button', { class: 'pl-check', type: 'button', 'aria-label': 'Complete ' + t.content, title: 'Mark done', onclick: e => { e.stopPropagation(); if (complete) complete(t, row); else M.completeTask(t.id); } }, icon('done', 15)), h('span', { class: 'grow' }, t.content)); return { start: toMin(t.due.time), el: row }; }),
   ].sort((a, b) => a.start - b.start);
   const win = (settings.get('hours') || [])[fromYmd(day).getDay()];
   const hoursLbl = win ? `${clock(toMin(win.start))}–${clock(toMin(win.end))}` : 'No planning hours';

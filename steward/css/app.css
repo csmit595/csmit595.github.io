@@ -506,6 +506,11 @@ h1 { font-size: 30px; }
 .pl-tl .pl-day { border-top: 0; margin-top: 2px; padding-top: 0; }
 .pl-day li { border-radius: 6px; padding: 4px 6px; margin: 0 -6px; }
 .pl-day .pl-task:hover { background: var(--soft); }
+.pl-day .pl-check { flex: none; display: grid; place-items: center; width: 26px; height: 26px; margin: -3px 0; padding: 0; border: 0; border-radius: 50%; background: none; color: inherit; cursor: pointer; position: relative; transition: background .12s, transform .12s, color .12s; }
+.pl-day .pl-check::after { content: ""; position: absolute; inset: -6px; }
+.pl-day .pl-check:hover, .pl-day .pl-check:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); transform: scale(1.1); }
+.pl-day .pl-check:active { transform: scale(.92); }
+.pl-day .pl-task.completing { opacity: .35; text-decoration: line-through; transition: opacity .15s; }
 .pl-tomorrow { display: flex; align-items: center; gap: 8px; margin: 12px -16px -14px; padding: 9px 16px; background: var(--line2); color: var(--text); text-decoration: none; font-size: 13px; border-top: 1px solid var(--line); }
 .pl-tomorrow:hover { background: var(--soft); }
 .pl-tomorrow.over b { color: var(--danger); }
