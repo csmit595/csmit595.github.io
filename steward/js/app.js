@@ -24,7 +24,7 @@ import { orgOn, orgModelOn, lessonCount, warmUp as orgWarmUp, AREAS as ORG_AREAS
 import { CONTEXT_ID, CONTEXT_TITLE } from './context-core.js';
 import { verseEl, pick, POOLS, scriptureOn, ridgeSvg, renderMemory, maybeFirstLight, showFirstLight, todaysChapter, openChapter } from './scripture.js';
 
-const VERSION = '5.0.1';
+const VERSION = '5.0.2';
 const WHATS_NEW = `Steward ${VERSION}: the check marks in Today’s timeline now complete their task (with Undo). Tap the task’s name to open it.`;
 const $ = s => document.querySelector(s);
 let lastRouteKey = '', searchQ = '', installEvt = null;
